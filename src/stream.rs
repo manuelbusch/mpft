@@ -329,6 +329,52 @@ mod tests {
         }
     }
 
+    proptest::proptest! {
+        /// Whatever the chunk size, the queue depth and the number of readers,
+        /// every reader that stays sees exactly the source bytes — including
+        /// when one of them gives up right away.
+        #[test]
+        fn tee_hands_every_reader_the_same_bytes(
+            data in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..20_000),
+            chunk in 1usize..4096,
+            capacity in 1usize..8,
+            readers in 1usize..5,
+            drop_first in proptest::prelude::any::<bool>(),
+        ) {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let (mut rs, driver) = tee(
+                    boxed(std::io::Cursor::new(data.clone())),
+                    readers,
+                    TeeOptions {
+                        chunk_size: chunk,
+                        capacity,
+                        send_timeout: None,
+                    },
+                );
+                if drop_first && rs.len() > 1 {
+                    drop(rs.remove(0));
+                }
+                let mut tasks = Vec::new();
+                for mut r in rs {
+                    tasks.push(async move {
+                        let mut v = Vec::new();
+                        r.read_to_end(&mut v).await.unwrap();
+                        v
+                    });
+                }
+                let got = futures::future::join_all(tasks).await;
+                driver.await.unwrap().unwrap();
+                for v in got {
+                    assert!(v == data, "reader saw {} of {} bytes", v.len(), data.len());
+                }
+            });
+        }
+    }
+
     #[tokio::test]
     async fn tee_drops_a_reader_that_stops_accepting_data() {
         let data = payload(300_000);

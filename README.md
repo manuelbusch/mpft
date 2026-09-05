@@ -314,7 +314,9 @@ cargo +nightly fuzz run <target>     # location_parse, safe_name, parse_sidecar,
 
 The fuzz targets in `fuzz/` cover everything that parses input from the far
 side: URLs, file names, checksum files, the `allowed_signers` trust file and
-the SCP header.
+the SCP header. `stream::tee` has a property test instead, since its contract
+is about bytes rather than parsing: for any chunk size, queue depth and number
+of readers, every reader that stays sees exactly the source bytes.
 
 `cargo deny` accepts one advisory on purpose, RUSTSEC-2023-0071 (a timing side
 channel in the `rsa` crate, reachable through `pgp` and `russh`). No fixed
