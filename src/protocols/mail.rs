@@ -68,6 +68,9 @@ impl MailEndpoint {
             }
         };
         server.host_required()?;
+        // The recipient URL was checked in `open`; the server it resolves to
+        // carries the credentials, so it needs the same look.
+        crate::policy::check_credentials(&server)?;
         let tls = match server.opt("tls").map(|s| s.to_ascii_lowercase()).as_deref() {
             Some("starttls") | Some("required") => SmtpTls::StartTls,
             Some("implicit") | Some("wrapper") | Some("tls") => SmtpTls::Implicit,

@@ -49,7 +49,8 @@ Priority: URL > environment > default. Passwords are masked in all log output.
 
 | Variable | Purpose |
 |---|---|
-| `MPT_PASSWORD` | password for sftp/scp/ftp/ftps/http/webdav when not in the URL (`--password` on the CLI) |
+| `MPT_PASSWORD` | password for sftp/scp/ftp/ftps/http/webdav when not in the URL (`--password`, `--password-file`, `--password-stdin` on the CLI) |
+| `MPT_REFUSE_PLAINTEXT_AUTH` | `1` turns the warning about unencrypted credentials into an error |
 | `MPT_SSH_KEY`, `MPT_SSH_KEY_PASSPHRASE` | SSH private key. Without it: ssh-agent (`SSH_AUTH_SOCK`), then `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`, then password |
 | `MPT_SSH_USER` | SSH user when not in the URL (default `$USER`) |
 | `MPT_SSH_KNOWN_HOSTS` | default host-key policy (`strict` if unset) |
@@ -67,6 +68,8 @@ mpt ls <URL>                     list a directory
 mpt schemes                      print the table above
   -v / -vv / -vvv   log level    --insecure   disable TLS verification    --password <pw>
   --color auto|always|never      colored output (auto: only on a terminal, honours NO_COLOR)
+  --password-file <PATH>  --password-stdin   read the password without putting it in argv
+  --refuse-plaintext-auth        make unencrypted credentials an error instead of a warning
   --timeout <SECONDS>            inactivity timeout, 30 by default, 0 disables it
   --no-atomic                    write straight to the target name (see below)
   --hash <ALGO>  --check        checksums (see below)     --sign <SPEC>  --verify-signers/--verify-keyring <FILE>
@@ -163,6 +166,22 @@ verifies the transferred content against it and fails (exit code 1) on a
 mismatch or when no checksum file exists. The target file is left in place so
 you can inspect it; the message shows both digests. Both flags work together and
 with several targets.
+
+## Credentials in the clear
+
+Two things get a warning, once per run:
+
+* **Credentials without encryption.** `ftp://` with a password, `http://` or
+  `webdav://` with basic auth, and SMTP with `tls=none` hand the password to
+  anyone on the path. `--refuse-plaintext-auth` (or
+  `MPT_REFUSE_PLAINTEXT_AUTH=1`) makes it an error instead.
+* **A password in the URL.** It is visible in `ps` and in the shell history.
+  `MPT_PASSWORD`, `--password-file <path>` and `--password-stdin` keep it out
+  of the command line; a password file that others can read is reported too.
+
+`--insecure` switches off certificate checking for *every* endpoint of a run
+and is deprecated for that reason. Put `?insecure=true` on the one URL that
+needs it.
 
 ## Host keys
 

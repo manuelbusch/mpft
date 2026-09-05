@@ -50,6 +50,7 @@ where
 /// are applied here (see [`Location::apply_env`]).
 pub fn open(mut loc: Location) -> Result<Box<dyn Endpoint>> {
     loc.apply_env();
+    crate::policy::check_credentials(&loc)?;
     let scheme = loc.scheme();
     match scheme {
         Scheme::File => Ok(Box::new(file::FileEndpoint::new(loc))),

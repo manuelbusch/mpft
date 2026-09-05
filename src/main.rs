@@ -16,7 +16,8 @@ struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     verbose: u8,
 
-    /// Disable TLS certificate verification for all endpoints
+    /// Disable TLS certificate verification for all endpoints. Deprecated:
+    /// use ?insecure=true on the one URL that needs it.
     #[arg(long, global = true)]
     insecure: bool,
 
@@ -24,9 +25,30 @@ struct Cli {
     #[arg(long, global = true, default_value = "auto", value_name = "WHEN")]
     color: ColorChoice,
 
-    /// Password for the source and target if not given in the URL
+    /// Password for the source and target if not given in the URL. A password
+    /// in the URL or in argv is visible to every other process; prefer
+    /// MPT_PASSWORD, --password-file or --password-stdin.
     #[arg(long, env = "MPT_PASSWORD", global = true, hide_env_values = true)]
     password: Option<String>,
+
+    /// Read the password from this file (first line, no trailing newline)
+    #[arg(long, global = true, value_name = "PATH", conflicts_with = "password")]
+    password_file: Option<PathBuf>,
+
+    /// Read the password from standard input (first line)
+    #[arg(
+        long,
+        global = true,
+        conflicts_with = "password",
+        conflicts_with = "password_file"
+    )]
+    password_stdin: bool,
+
+    /// Refuse instead of warning when credentials would go over the wire
+    /// unencrypted (ftp://, http:// basic auth, smtp without TLS). Also
+    /// settable with MPT_REFUSE_PLAINTEXT_AUTH=1.
+    #[arg(long, global = true)]
+    refuse_plaintext_auth: bool,
 
     /// Hold the whole payload in memory instead of streaming it (enables --retries,
     /// gives senders a known size). Never spills to disk: see --cache-limit.
@@ -183,7 +205,59 @@ fn init_logging(verbosity: u8) {
         .init();
 }
 
+/// Read a password from a file or from standard input, without keeping the
+/// trailing newline an editor or `echo` leaves behind.
+fn read_password(cli: &Cli) -> anyhow::Result<Option<String>> {
+    if let Some(path) = &cli.password_file {
+        warn_if_world_readable(path);
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("reading the password from {}", path.display()))?;
+        return Ok(Some(first_line(&text)));
+    }
+    if cli.password_stdin {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+            .context("reading the password from stdin")?;
+        return Ok(Some(first_line(&text)));
+    }
+    Ok(cli.password.clone())
+}
+
+fn first_line(text: &str) -> String {
+    text.lines().next().unwrap_or("").to_string()
+}
+
+/// A password file that others can read is a password everyone has.
+fn warn_if_world_readable(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(md) = std::fs::metadata(path) {
+            let mode = md.permissions().mode() & 0o077;
+            if mode != 0 {
+                tracing::warn!(
+                    "{} is readable by others (mode {:o}); chmod 600 it",
+                    path.display(),
+                    md.permissions().mode() & 0o777
+                );
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 async fn run(cli: Cli) -> anyhow::Result<()> {
+    if cli.refuse_plaintext_auth {
+        mpt::policy::set_refuse_plaintext_auth(true);
+    }
+    if cli.insecure {
+        tracing::warn!(
+            "--insecure disables certificate checks for every endpoint and is deprecated; \
+             put ?insecure=true on the URL that needs it"
+        );
+    }
+    let password = read_password(&cli)?;
     let timeout = (cli.timeout > 0).then(|| Duration::from_secs(cli.timeout));
     // Ctrl-C stops the transfer, removes partial files and leaves the rest alone.
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -208,7 +282,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         if cli.retries > 0 && loc.opt("connect_retries").is_none() {
             loc.set_option("connect_retries", cli.retries.to_string());
         }
-        if let Some(pw) = &cli.password
+        if let Some(pw) = &password
             && loc.password().is_none()
             && loc.scheme() != Scheme::File
         {

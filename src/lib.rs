@@ -9,6 +9,7 @@ pub mod endpoint;
 pub mod error;
 pub mod hash;
 pub mod location;
+pub mod policy;
 pub mod protocols;
 pub mod sign;
 pub mod stream;

@@ -237,6 +237,9 @@ pub struct Location {
     options: Vec<(String, String)>,
     /// True when the original path ended in `/` (target is a directory).
     dir_hint: bool,
+    /// True when the password came from the URL itself, which means it is
+    /// visible in the process list and the shell history.
+    password_from_url: bool,
 }
 
 impl Location {
@@ -319,6 +322,7 @@ impl Location {
 
         Ok(Location {
             scheme,
+            password_from_url: password.is_some(),
             username,
             password,
             host,
@@ -347,6 +351,7 @@ impl Location {
             path: path.to_string(),
             options: Vec::new(),
             dir_hint: path.ends_with('/'),
+            password_from_url: false,
         }
     }
 
@@ -364,6 +369,7 @@ impl Location {
             && !v.is_empty()
         {
             self.password = Some(v);
+            self.password_from_url = false;
         }
     }
 
@@ -399,6 +405,13 @@ impl Location {
     }
     pub fn set_password(&mut self, pw: impl Into<String>) {
         self.password = Some(pw.into());
+        self.password_from_url = false;
+    }
+
+    /// Whether the password was written into the URL, where the process list
+    /// and the shell history can see it.
+    pub fn password_in_url(&self) -> bool {
+        self.password_from_url
     }
     pub fn set_option(&mut self, key: impl Into<String>, value: impl Into<String>) {
         self.options.push((key.into(), value.into()));
