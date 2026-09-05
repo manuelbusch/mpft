@@ -147,6 +147,30 @@ async fn read_ack<S: AsyncRead + Unpin>(s: &mut S) -> Result<()> {
     }
 }
 
+/// Parse the body of an SCP `C` header, i.e. everything after the leading
+/// `C`: `<mode> <size> <name>`. Returns the announced size and the file name.
+///
+/// The name is what the *remote* proposes; callers that write a file must run
+/// it through [`crate::location::safe_name`] first.
+pub fn parse_c_header(line: &str) -> Result<(u64, String)> {
+    let bad = || Error::Remote(format!("scp: bad header 'C{}'", line.trim_end()));
+    let rest = line.trim_start();
+    // The mode is octal and always four digits in practice, but only its
+    // presence matters here.
+    let (mode, rest) = rest.split_once(' ').ok_or_else(bad)?;
+    if mode.is_empty() || !mode.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(bad());
+    }
+    let rest = rest.trim_start();
+    let (size, name) = rest.split_once(' ').ok_or_else(bad)?;
+    let size: u64 = size.parse().map_err(|_| bad())?;
+    let name = name.trim_end_matches(['\r', '\n']).to_string();
+    if name.is_empty() {
+        return Err(bad());
+    }
+    Ok((size, name))
+}
+
 async fn read_line<S: AsyncRead + Unpin>(s: &mut S) -> Result<String> {
     let mut line = Vec::new();
     let mut b = [0u8; 1];
@@ -181,14 +205,7 @@ impl Receiver for ScpEndpoint {
             match kind[0] {
                 b'C' => {
                     let hdr = read_line(&mut stream).await?;
-                    // "<mode> <size> <name>"
-                    let mut it = hdr.split_whitespace();
-                    let _mode = it.next();
-                    let size: u64 = it
-                        .next()
-                        .and_then(|s| s.parse().ok())
-                        .ok_or_else(|| Error::Remote(format!("scp: bad header 'C{hdr}'")))?;
-                    break size;
+                    break parse_c_header(&hdr)?.0;
                 }
                 b'T' => {
                     // timestamps (only with -p); acknowledge and continue
@@ -334,5 +351,37 @@ impl Sender for ScpEndpoint {
     async fn remove(&self, name: &str) -> Result<()> {
         let path = self.sibling_path(name)?;
         self.run(&format!("rm -f {}", shell_quote(&path))).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn c_headers() {
+        assert_eq!(
+            parse_c_header("0644 1234 report.pdf").unwrap(),
+            (1234, "report.pdf".to_string())
+        );
+        // Leading and repeated spaces are tolerated; names may contain spaces,
+        // since only the first two fields are fixed.
+        assert_eq!(parse_c_header("  0644  7 a.bin").unwrap().0, 7);
+        assert_eq!(
+            parse_c_header("0755 0 two words.txt\n").unwrap(),
+            (0, "two words.txt".to_string())
+        );
+        for bad in [
+            "",
+            "0644",
+            "0644 ",
+            "0644 x name",
+            "0644 12",
+            "-644 12 name",
+            "0644 99999999999999999999999 name",
+            "0644 12 ",
+        ] {
+            assert!(parse_c_header(bad).is_err(), "{bad:?} should be rejected");
+        }
     }
 }

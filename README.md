@@ -308,7 +308,13 @@ Beyond the two suites:
 ```
 cargo deny check                     # licences, advisories, duplicate crates, sources
 cargo audit                          # RustSec advisories against Cargo.lock
+cargo +nightly fuzz run <target>     # location_parse, safe_name, parse_sidecar,
+                                     # allowed_signers, scp_header
 ```
+
+The fuzz targets in `fuzz/` cover everything that parses input from the far
+side: URLs, file names, checksum files, the `allowed_signers` trust file and
+the SCP header.
 
 `cargo deny` accepts one advisory on purpose, RUSTSEC-2023-0071 (a timing side
 channel in the `rsa` crate, reachable through `pgp` and `russh`). No fixed

@@ -1,0 +1,50 @@
+[package]
+name = "multi_protocol_transceiver-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.multi_protocol_transceiver]
+path = ".."
+features = ["all"]
+
+[[bin]]
+name = "location_parse"
+path = "fuzz_targets/location_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "safe_name"
+path = "fuzz_targets/safe_name.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_sidecar"
+path = "fuzz_targets/parse_sidecar.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "allowed_signers"
+path = "fuzz_targets/allowed_signers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scp_header"
+path = "fuzz_targets/scp_header.rs"
+test = false
+doc = false
+bench = false
