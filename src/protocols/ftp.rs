@@ -70,16 +70,27 @@ impl FtpEndpoint {
     }
 
     /// Connect, negotiate TLS and log in, bounded by the `timeout` option
-    /// (default 30 s) so that a stalled handshake fails instead of hanging.
+    /// (default 30 s) so that a stalled handshake fails instead of hanging,
+    /// and retried as often as `connect_retries` allows.
     async fn connect(&self) -> Result<Ftp> {
+        crate::protocols::with_connect_retries(self.loc.connect_retries()?, "ftp connect", || {
+            self.connect_once()
+        })
+        .await
+    }
+
+    async fn connect_once(&self) -> Result<Ftp> {
         let host = self.loc.host_required()?;
         tokio::time::timeout(self.timeout, self.connect_inner(host))
             .await
             .map_err(|_| {
-                Error::Remote(format!(
-                    "ftp: connecting to {host}:{} timed out after {:?}",
-                    self.port(),
-                    self.timeout
+                Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!(
+                        "ftp: connecting to {host}:{} timed out after {:?}",
+                        self.port(),
+                        self.timeout
+                    ),
                 ))
             })?
     }

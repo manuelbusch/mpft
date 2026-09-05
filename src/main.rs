@@ -37,8 +37,9 @@ struct Cli {
     #[arg(long, global = true, default_value = "256M", value_parser = parse_size)]
     cache_limit: u64,
 
-    /// Retries per target after a failure (requires --cache). Mail targets may
-    /// be delivered more than once when retried.
+    /// Retries per target after a failure (requires --cache for the payload;
+    /// connecting and logging in are retried without it). Mail targets may be
+    /// delivered more than once when retried.
     #[arg(long, global = true, default_value_t = 0)]
     retries: u32,
 
@@ -203,6 +204,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         // --timeout is the default; ?timeout= in the URL wins.
         if loc.opt("timeout").is_none() {
             loc.set_option("timeout", cli.timeout.to_string());
+        }
+        if cli.retries > 0 && loc.opt("connect_retries").is_none() {
+            loc.set_option("connect_retries", cli.retries.to_string());
         }
         if let Some(pw) = &cli.password
             && loc.password().is_none()

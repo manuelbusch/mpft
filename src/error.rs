@@ -61,6 +61,46 @@ impl From<std::io::Error> for Error {
 }
 
 impl Error {
+    /// Whether retrying makes sense: connection problems, not bad credentials
+    /// or a rejection by the server.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Error::Transport { .. } => true,
+            Error::Io(e) => matches!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::NotConnected
+                    | std::io::ErrorKind::TimedOut
+                    | std::io::ErrorKind::Interrupted
+                    | std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::HostUnreachable
+                    | std::io::ErrorKind::NetworkUnreachable
+                    | std::io::ErrorKind::NetworkDown
+            ),
+            _ => false,
+        }
+    }
+
+    /// Whether retrying the connect and login phase makes sense. Everything
+    /// that is not a configuration or credential problem qualifies: at that
+    /// point no payload has been read, so a second attempt costs nothing and
+    /// heals a server that answered out of turn.
+    pub fn is_retryable_connect(&self) -> bool {
+        !matches!(
+            self,
+            Error::Auth(_)
+                | Error::InvalidUrl(_)
+                | Error::InvalidOption { .. }
+                | Error::UnsupportedScheme(_)
+                | Error::UnsupportedOperation { .. }
+                | Error::ChecksumMismatch { .. }
+                | Error::Cancelled
+        )
+    }
+
     pub fn transport<E>(protocol: &'static str, source: E) -> Self
     where
         E: std::error::Error + Send + Sync + 'static,

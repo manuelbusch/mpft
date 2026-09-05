@@ -59,8 +59,10 @@ curl -s -X PUT http://127.0.0.1:9000/testbucket > /dev/null
 mkdir -p ssh/data ssh/scp
 cat > env.sh <<ENV
 export AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_REGION=us-east-1
-export MPT_IT_FTP="ftp://ftpuser:ftppass@127.0.0.1:2121/"
-export MPT_IT_FTPS="ftps://ftpuser:ftppass@127.0.0.1:2122/?insecure=true"
+# connect_retries: pyftpdlib duplicates its greeting on ~1.5 % of concurrent
+# connects (see ftp_server.py), which desynchronizes that one control channel.
+export MPT_IT_FTP="ftp://ftpuser:ftppass@127.0.0.1:2121/?connect_retries=1"
+export MPT_IT_FTPS="ftps://ftpuser:ftppass@127.0.0.1:2122/?insecure=true&connect_retries=1"
 export MPT_IT_HTTP="http://127.0.0.1:8082/"
 export MPT_IT_WEBDAV="webdav://127.0.0.1:8081/"
 export MPT_IT_S3="s3://testbucket/it/?endpoint=http://127.0.0.1:9000"

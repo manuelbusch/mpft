@@ -482,6 +482,18 @@ impl Location {
         Ok(self.timeout()?.unwrap_or(fallback))
     }
 
+    /// How often to retry connecting and logging in: `?connect_retries=<n>`,
+    /// none by default. Only the connect phase is repeated, before any payload
+    /// byte has been read, and only for transient errors.
+    pub fn connect_retries(&self) -> Result<u32> {
+        match self.opt("connect_retries") {
+            Some(v) => v
+                .parse::<u32>()
+                .map_err(|e| Error::invalid_option("connect_retries", e)),
+            None => Ok(0),
+        }
+    }
+
     /// First value of a query option.
     pub fn opt(&self, name: &str) -> Option<&str> {
         self.options

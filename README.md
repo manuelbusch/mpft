@@ -112,6 +112,11 @@ applies to connecting and logging in, to every data stream, to the FTP control
 channel, and to a fan-out target that stops draining its queue. `?timeout=` in
 a URL overrides the flag for that endpoint.
 
+`--retries <n>` also repeats the connect and login phase, which is safe because
+no payload has been read at that point; this works without `--cache`. Only
+transient failures are retried, never a rejected password. Per URL:
+`?connect_retries=`.
+
 ## Atomic transfers
 
 A target file appears under its final name only once it is complete: the
@@ -275,6 +280,11 @@ bash tests/local/stop_servers.sh /tmp/mpt-it
 
 Implicit FTPS (`tls=implicit`) is implemented but not covered by these servers.
 
+One caveat of the local setup: under concurrent connects pyftpdlib writes its
+`220` greeting twice on about 1.5 % of connections, which shifts every reply on
+that control channel by one. It is a defect of the test server, reproducible
+with a plain Python client and unrelated to TLS, so the generated FTP URLs carry
+`connect_retries=1`.
 
 ## Possible further protocols
 

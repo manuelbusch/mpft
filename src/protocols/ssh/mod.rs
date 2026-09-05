@@ -64,6 +64,8 @@ pub struct SshConfig {
     pub timeout: Duration,
     /// Inactivity limit for the data streams; `None` disables it.
     pub idle: Option<Duration>,
+    /// How often to retry connecting after a transient failure.
+    pub connect_retries: u32,
 }
 
 impl SshConfig {
@@ -120,11 +122,19 @@ impl SshConfig {
             pinned_host_keys: pinned,
             timeout,
             idle,
+            connect_retries: loc.connect_retries()?,
         })
     }
 
-    /// Connect and authenticate.
+    /// Connect and authenticate, retrying transient failures.
     pub async fn connect(&self) -> Result<Handle<ClientHandler>> {
+        crate::protocols::with_connect_retries(self.connect_retries, "ssh connect", || {
+            self.connect_once()
+        })
+        .await
+    }
+
+    async fn connect_once(&self) -> Result<Handle<ClientHandler>> {
         let config = Arc::new(client::Config {
             inactivity_timeout: Some(self.timeout.max(Duration::from_secs(60))),
             keepalive_interval: Some(Duration::from_secs(15)),
@@ -145,9 +155,10 @@ impl SshConfig {
         )
         .await
         .map_err(|_| {
-            Error::Remote(format!(
-                "connection to {}:{} timed out",
-                self.host, self.port
+            // Io/TimedOut rather than Remote: a timeout is worth retrying.
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("connection to {}:{} timed out", self.host, self.port),
             ))
         })?
         .map_err(|e| match rejection.lock().ok().and_then(|mut r| r.take()) {
