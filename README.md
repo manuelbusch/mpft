@@ -69,6 +69,32 @@ mpt schemes                      print the table above
   -v / -vv / -vvv   log level    --insecure   disable TLS verification    --password <pw>
 ```
 
+## Several targets at once
+
+`copy` and `send` accept any number of targets. The source is read **once** and
+delivered to all targets concurrently. Nothing is written to the disk in between.
+
+```
+mpt copy report.pdf sftp://srv/in/ "s3://bucket/reports/" "mailto:boss@example.com"
+mpt copy --cache --retries 2 big.iso sftp://a/ sftp://b/ webdavs://c/
+```
+
+Two modes:
+
+| Mode | Memory | How it works | When |
+|---|---|---|---|
+| streaming (default) | about 1 MiB, independent of size and target count | each chunk is handed to every target as a reference-counted buffer; the slowest target sets the pace | large files, many targets |
+| `--cache` | the whole payload, up to `--cache-limit` (default 256M) | the source is read into RAM once; every target reads its own copy | `--retries`, targets that need the size up front (SCP), unreliable targets |
+
+Above the cache limit the copy fails instead of falling back to the disk.
+A failing target does not stop the others: every target gets its own result
+line, and the exit code is 1 if at least one failed. `--retries` needs
+`--cache` (a stream cannot be replayed); note that a retried mail target may be
+delivered twice. `--chunk` and `--queue` tune the streaming buffer.
+
+Targets that connect before they read (SCP, SMTP) pause the stream briefly at
+the start until they are ready; this is head-of-line blocking, not a deadlock.
+
 ## Library
 
 ```rust
@@ -76,7 +102,19 @@ let src = mpt::open("sftp://deploy@srv/var/log/app.log")?;
 let dst = mpt::open("s3://bucket/logs/?endpoint=https://minio:9000")?;
 let report = mpt::copy(src.as_ref(), dst.as_ref()).await?;
 println!("{} bytes", report.bytes);
+
+// fan-out: read once, send to many
+let targets: Vec<Box<dyn mpt::Endpoint>> = vec![mpt::open("sftp://a/in/")?, mpt::open("mailto:x@y.z")?];
+let refs: Vec<&dyn mpt::Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
+let opts = mpt::CopyOptions { cache: mpt::CacheMode::Memory { limit: 64 << 20 }, retries: 2, ..Default::default() };
+let report = mpt::copy_many(src.as_ref(), &refs, &opts).await?;
+for t in &report.targets {
+    println!("{}: {:?}", t.target, t.result);
+}
 ```
+
+`stream::tee` (split one `AsyncRead` into N with backpressure) and
+`stream::MemoryCache` are public and usable on their own.
 
 `open` returns a `Box<dyn Endpoint>`. An endpoint exposes `as_receiver()` /
 `as_sender()`; both are optional per protocol, so a send-only channel such as

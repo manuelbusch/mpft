@@ -6,7 +6,21 @@ use std::time::Duration;
 
 use mpt::{Location, SendMeta};
 
+/// Set `MPT_IT_LOG=debug` to see client-side tracing while the tests run.
+fn init_log() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if let Ok(level) = std::env::var("MPT_IT_LOG") {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(level)
+                .with_writer(std::io::stderr)
+                .try_init();
+        }
+    });
+}
+
 fn env(name: &str) -> Option<String> {
+    init_log();
     std::env::var(name).ok().filter(|s| !s.is_empty())
 }
 
@@ -108,6 +122,96 @@ roundtrip_test!(ftps_roundtrip, "MPT_IT_FTPS", 1024 * 1024 + 9, true);
 roundtrip_test!(http_roundtrip, "MPT_IT_HTTP", 512 * 1024 + 1, false);
 roundtrip_test!(webdav_roundtrip, "MPT_IT_WEBDAV", 700 * 1024 + 7, true);
 roundtrip_test!(s3_roundtrip, "MPT_IT_S3", 6 * 1024 * 1024 + 11, true);
+
+/// One source, several real targets at once (stream mode): every target must
+/// receive identical bytes. Uses whichever of sftp/s3/webdav/ftp are configured.
+#[tokio::test]
+async fn fanout_stream_to_many_targets() {
+    fanout_many(mpt::CacheMode::Stream, 0).await;
+}
+
+/// Same with the in-memory cache and retries enabled.
+#[tokio::test]
+async fn fanout_memory_cache_to_many_targets() {
+    fanout_many(mpt::CacheMode::Memory { limit: 64 << 20 }, 1).await;
+}
+
+async fn fanout_many(cache: mpt::CacheMode, retries: u32) {
+    let bases: Vec<String> = [
+        "MPT_IT_SFTP",
+        "MPT_IT_S3",
+        "MPT_IT_WEBDAV",
+        "MPT_IT_FTP",
+        "MPT_IT_SCP",
+    ]
+    .iter()
+    .filter_map(|v| env(v))
+    .collect();
+    if bases.len() < 2 {
+        eprintln!("skipping fan-out test: fewer than two MPT_IT_* targets set");
+        return;
+    }
+    mpt::init_crypto();
+    let len = 2 * 1024 * 1024 + 13;
+    let payload = random_payload(len);
+    let name =
+        format!("fanout_{:?}_{}.bin", cache, std::process::id()).replace([' ', '{', '}', ':'], "_");
+    let tmp = tempfile::tempdir().unwrap();
+    let local = tmp.path().join(&name);
+    std::fs::write(&local, &payload).unwrap();
+
+    let src = mpt::open(local.to_str().unwrap()).unwrap();
+    // one deliberately failing target: wrong FTP password (if ftp is configured) or an unreachable sftp host
+    let bad_url = env("MPT_IT_FTP")
+        .map(|u| u.replace("ftppass", "wrongpass"))
+        .unwrap_or_else(|| {
+            "sftp://nobody@127.0.0.1:1/nowhere/?known_hosts=off&timeout=2".to_string()
+        });
+    let mut targets: Vec<Box<dyn mpt::Endpoint>> =
+        bases.iter().map(|b| mpt::open(b).unwrap()).collect();
+    targets.push(mpt::open(&bad_url).unwrap());
+    let refs: Vec<&dyn mpt::Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
+
+    let opts = mpt::CopyOptions {
+        cache,
+        retries,
+        tee: mpt::TeeOptions {
+            chunk_size: 32 * 1024,
+            capacity: 4,
+        },
+    };
+    let report = tokio::time::timeout(
+        Duration::from_secs(180),
+        mpt::copy_many(src.as_ref(), &refs, &opts),
+    )
+    .await
+    .expect("timeout")
+    .expect("copy_many");
+
+    assert_eq!(report.bytes_read, len as u64);
+    assert_eq!(report.targets.len(), bases.len() + 1);
+    let bad = report.targets.last().unwrap();
+    assert!(
+        bad.result.is_err(),
+        "bad target unexpectedly succeeded: {}",
+        bad.target
+    );
+    if retries > 0 {
+        assert_eq!(bad.attempts, retries + 1);
+    }
+    for (t, base) in report.targets.iter().zip(&bases) {
+        assert!(t.result.is_ok(), "{}: {:?}", t.target, t.result);
+        assert_eq!(t.bytes, len as u64, "{}", t.target);
+        let file_url = dir_url(base, &format!("/{name}"));
+        let ep = mpt::open(&file_url).unwrap();
+        let mut stream = ep.receiver().unwrap().receive().await.expect("download");
+        let mut got = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut got)
+            .await
+            .unwrap();
+        assert!(got == payload, "content mismatch at {file_url}");
+    }
+}
 
 /// Sends an attachment via `mailto:` and, if `MPT_IT_MAILDIR` points at the
 /// receiving maildir, verifies that a new message containing the file arrived.

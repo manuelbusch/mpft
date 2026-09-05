@@ -17,8 +17,10 @@ pub mod transfer;
 pub use endpoint::{Endpoint, Entry, Receiver, SendMeta, Sender};
 pub use error::{Error, Result};
 pub use location::{Location, Scheme};
-pub use stream::ByteStream;
-pub use transfer::{CopyReport, copy};
+pub use stream::{ByteStream, MemoryCache, TeeOptions, tee};
+pub use transfer::{
+    CacheMode, CopyOptions, CopyReport, FanoutReport, TargetReport, copy, copy_many,
+};
 
 /// Parse a URL (or bare local path) and open the matching protocol endpoint.
 ///

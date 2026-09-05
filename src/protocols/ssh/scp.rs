@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use russh::ChannelStream;
 use russh::client::{Handle, Msg};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::{ClientHandler, SshConfig, shell_quote, ssh_err};
 use crate::{
@@ -219,6 +219,9 @@ impl Sender for ScpEndpoint {
         let (mut reader, size): (ByteStream, u64) = match meta.size {
             Some(n) => (body, n),
             None => {
+                warn!(
+                    "scp: source size unknown, spooling to a temporary file (use the memory cache to avoid disk I/O)"
+                );
                 let (file, n) = stream::spool_to_tempfile(body).await?;
                 (stream::boxed(file), n)
             }

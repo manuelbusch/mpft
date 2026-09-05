@@ -31,6 +31,7 @@ pub struct FtpEndpoint {
     insecure: bool,
     passive: bool,
     nat_workaround: bool,
+    timeout: std::time::Duration,
 }
 
 impl FtpEndpoint {
@@ -49,7 +50,17 @@ impl FtpEndpoint {
                 }
             },
         };
+        let timeout = loc
+            .opt("timeout")
+            .map(|t| {
+                t.parse::<u64>()
+                    .map_err(|e| Error::invalid_option("timeout", e))
+            })
+            .transpose()?
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(std::time::Duration::from_secs(30));
         Ok(FtpEndpoint {
+            timeout,
             insecure: loc.opt_bool("insecure")?.unwrap_or(false),
             passive: loc.opt_bool("passive")?.unwrap_or(true),
             nat_workaround: loc.opt_bool("nat")?.unwrap_or(false),
@@ -66,8 +77,22 @@ impl FtpEndpoint {
         }
     }
 
+    /// Connect, negotiate TLS and log in, bounded by the `timeout` option
+    /// (default 30 s) so that a stalled handshake fails instead of hanging.
     async fn connect(&self) -> Result<Ftp> {
         let host = self.loc.host_required()?;
+        tokio::time::timeout(self.timeout, self.connect_inner(host))
+            .await
+            .map_err(|_| {
+                Error::Remote(format!(
+                    "ftp: connecting to {host}:{} timed out after {:?}",
+                    self.port(),
+                    self.timeout
+                ))
+            })?
+    }
+
+    async fn connect_inner(&self, host: &str) -> Result<Ftp> {
         let addr = (host, self.port());
         debug!(host, port = self.port(), tls = ?self.tls, "ftp connect");
         let mut ftp = match self.tls {
@@ -106,6 +131,15 @@ impl FtpEndpoint {
         Ok(ftp)
     }
 
+    /// Bound a control-channel command by the endpoint timeout so a server
+    /// that stops answering yields an error instead of a hang.
+    async fn ctl<T, F>(&self, what: &str, fut: F) -> Result<T>
+    where
+        F: std::future::Future<Output = std::result::Result<T, FtpError>>,
+    {
+        ctl_timeout(self.timeout, what, fut).await
+    }
+
     fn connector(&self) -> Result<AsyncRustlsConnector> {
         let cfg = crate::tls::client_config(self.insecure)?;
         Ok(AsyncRustlsConnector::from(
@@ -115,6 +149,18 @@ impl FtpEndpoint {
 
     fn remote_path(&self) -> &str {
         self.loc.path()
+    }
+}
+
+async fn ctl_timeout<T, F>(timeout: std::time::Duration, what: &str, fut: F) -> Result<T>
+where
+    F: std::future::Future<Output = std::result::Result<T, FtpError>>,
+{
+    match tokio::time::timeout(timeout, fut).await {
+        Ok(r) => r.map_err(ftp_err),
+        Err(_) => Err(Error::Remote(format!(
+            "ftp: no reply to {what} within {timeout:?}"
+        ))),
     }
 }
 
@@ -141,18 +187,58 @@ impl Endpoint for FtpEndpoint {
     }
 }
 
-/// Download stream that completes the transfer (`finish` + `QUIT`) when dropped.
+/// Download stream. At EOF it completes the transfer (`finish`: waits for the
+/// server's 226/250 reply) and checks the byte count against `SIZE`, so a
+/// truncated transfer surfaces as an error instead of a short file.
 struct FtpReader {
-    stream: Option<TransferStream<AsyncRustlsStream>>,
+    stream: Option<stream::Idle<TransferStream<AsyncRustlsStream>>>,
     ftp: Option<Ftp>,
+    timeout: std::time::Duration,
+    expected: Option<u64>,
+    received: u64,
+    finishing:
+        Option<std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send>>>,
+    done: bool,
+}
+
+impl FtpReader {
+    fn start_finish(&mut self) {
+        let stream = self.stream.take();
+        let mut ftp = self.ftp.take();
+        let expected = self.expected;
+        let received = self.received;
+        let timeout = self.timeout;
+        self.finishing = Some(Box::pin(async move {
+            let result = match stream {
+                Some(s) => ctl_timeout(timeout, "transfer completion", s.into_inner().finish())
+                    .await
+                    .map_err(|e| std::io::Error::other(e.to_string())),
+                None => Ok(()),
+            };
+            if let Some(mut ftp) = ftp.take() {
+                let _ = tokio::time::timeout(timeout, ftp.quit()).await;
+            }
+            result?;
+            if let Some(exp) = expected
+                && exp != received
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    format!("ftp: transfer truncated: received {received} of {exp} bytes"),
+                ));
+            }
+            Ok(())
+        }));
+    }
 }
 
 impl Drop for FtpReader {
     fn drop(&mut self) {
+        // Reader dropped before EOF (e.g. the target failed): close what is left.
         if let (Some(stream), Some(mut ftp)) = (self.stream.take(), self.ftp.take()) {
             tokio::spawn(async move {
-                if let Err(e) = stream.finish().await {
-                    warn!("ftp: finishing download: {e}");
+                if let Err(e) = stream.into_inner().finish().await {
+                    warn!("ftp: closing abandoned download: {e}");
                 }
                 let _ = ftp.quit().await;
             });
@@ -166,9 +252,35 @@ impl AsyncRead for FtpReader {
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        match self.stream.as_mut() {
-            Some(s) => std::pin::Pin::new(s).poll_read(cx, buf),
-            None => std::task::Poll::Ready(Ok(())),
+        use std::task::Poll;
+        if self.done {
+            return Poll::Ready(Ok(()));
+        }
+        if let Some(fut) = self.finishing.as_mut() {
+            return match fut.as_mut().poll(cx) {
+                Poll::Ready(r) => {
+                    self.done = true;
+                    self.finishing = None;
+                    Poll::Ready(r)
+                }
+                Poll::Pending => Poll::Pending,
+            };
+        }
+        let Some(stream) = self.stream.as_mut() else {
+            return Poll::Ready(Ok(()));
+        };
+        let before = buf.filled().len();
+        match std::pin::Pin::new(stream).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) => {
+                let n = buf.filled().len() - before;
+                if n == 0 {
+                    self.start_finish();
+                    return self.poll_read(cx, buf);
+                }
+                self.received += n as u64;
+                Poll::Ready(Ok(()))
+            }
+            other => other,
         }
     }
 }
@@ -177,13 +289,22 @@ impl AsyncRead for FtpReader {
 impl Receiver for FtpEndpoint {
     async fn receive(&self) -> Result<ByteStream> {
         let mut ftp = self.connect().await?;
-        let stream = ftp
-            .retr_as_stream(self.remote_path())
+        let expected = self
+            .ctl("SIZE", ftp.size(self.remote_path()))
             .await
-            .map_err(ftp_err)?;
+            .ok()
+            .map(|s| s as u64);
+        let stream = self
+            .ctl("RETR", ftp.retr_as_stream(self.remote_path()))
+            .await?;
         Ok(stream::boxed(FtpReader {
-            stream: Some(stream),
+            stream: Some(stream::Idle::new(stream, self.timeout)),
             ftp: Some(ftp),
+            timeout: self.timeout,
+            expected,
+            received: 0,
+            finishing: None,
+            done: false,
         }))
     }
 
@@ -196,14 +317,14 @@ impl Receiver for FtpEndpoint {
             Some(path)
         };
 
-        let files: Vec<FtpFile> = match ftp.mlsd(path_arg).await {
+        let files: Vec<FtpFile> = match self.ctl("MLSD", ftp.mlsd(path_arg)).await {
             Ok(lines) => lines
                 .iter()
                 .filter_map(|l| ListParser::parse_mlsd(l).ok())
                 .collect(),
             Err(e) => {
                 debug!("MLSD unavailable ({e}); falling back to LIST");
-                let lines = ftp.list(path_arg).await.map_err(ftp_err)?;
+                let lines = self.ctl("LIST", ftp.list(path_arg)).await?;
                 lines
                     .iter()
                     .filter_map(|l| {
@@ -236,7 +357,11 @@ impl Receiver for FtpEndpoint {
 
     async fn size(&self) -> Result<Option<u64>> {
         let mut ftp = self.connect().await?;
-        let size = ftp.size(self.remote_path()).await.ok().map(|s| s as u64);
+        let size = self
+            .ctl("SIZE", ftp.size(self.remote_path()))
+            .await
+            .ok()
+            .map(|s| s as u64);
         let _ = ftp.quit().await;
         Ok(size)
     }
@@ -248,11 +373,32 @@ impl Sender for FtpEndpoint {
         let mut ftp = self.connect().await?;
         let target = self.loc.target_path(meta.filename.as_deref());
         debug!(%target, "ftp upload");
-        let mut up = ftp.put_with_stream(&target).await.map_err(ftp_err)?;
-        let result = stream::pipe(body, &mut up).await;
-        up.shutdown().await.ok();
-        up.finish().await.map_err(ftp_err)?;
-        result?;
+        let up = self.ctl("STOR", ftp.put_with_stream(&target)).await?;
+        let mut up = stream::Idle::new(up, self.timeout);
+        let written = stream::pipe(body, &mut up).await?;
+        up.shutdown().await?;
+        // Drain the server's TLS close_notify before the socket is closed. Closing
+        // with unread data in the receive buffer makes the kernel send RST instead
+        // of FIN, and a RST discards whatever the server has not yet read — the
+        // upload would be silently truncated under load.
+        let mut sink = [0u8; 1024];
+        loop {
+            match tokio::io::AsyncReadExt::read(&mut up, &mut sink).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+        self.ctl("transfer completion", up.into_inner().finish())
+            .await?;
+        // Verify the server really stored everything (SIZE may be unsupported).
+        if let Ok(remote) = self.ctl("SIZE", ftp.size(&target)).await
+            && remote as u64 != written
+        {
+            let _ = ftp.quit().await;
+            return Err(Error::Remote(format!(
+                "ftp: upload incomplete: server stored {remote} of {written} bytes for {target}"
+            )));
+        }
         let _ = ftp.quit().await;
         Ok(())
     }

@@ -29,15 +29,23 @@ pub enum Error {
 
     /// Local I/O error.
     #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(std::io::Error),
 
     /// Wrapped protocol-library error.
+    ///
+    /// The source is part of the message (not exposed via `source()`), so
+    /// error chains printed by callers do not repeat it.
     #[error("{protocol}: {source}")]
     Transport {
         protocol: &'static str,
-        #[source]
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
+}
+
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        Error::Io(e)
+    }
 }
 
 impl Error {

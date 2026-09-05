@@ -116,3 +116,376 @@ impl<R: AsyncRead + Unpin> AsyncRead for Counted<R> {
         res
     }
 }
+
+// ---------------------------------------------------------------------------
+// Fan-out: one source stream, many readers, constant memory, no disk.
+// ---------------------------------------------------------------------------
+
+use bytes::Bytes;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+
+/// Tuning for [`tee`].
+#[derive(Debug, Clone, Copy)]
+pub struct TeeOptions {
+    /// Bytes read from the source per chunk. Default 64 KiB.
+    pub chunk_size: usize,
+    /// Chunks buffered per reader before the source is paused. Default 16.
+    pub capacity: usize,
+}
+
+impl Default for TeeOptions {
+    fn default() -> Self {
+        TeeOptions {
+            chunk_size: 64 * 1024,
+            capacity: 16,
+        }
+    }
+}
+
+/// Split `body` into `n` independent readers that all see the same bytes.
+///
+/// A driver task (spawned, returned as the `JoinHandle`) reads chunks from the
+/// source and hands each chunk, as a reference-counted [`Bytes`], to every
+/// reader through a bounded channel. Nothing is copied and nothing touches the
+/// disk; memory use is about `capacity × chunk_size` regardless of `n`. The
+/// slowest reader dictates the pace (backpressure). A reader that is dropped
+/// early is silently removed; the others keep receiving. A read error on the
+/// source is delivered to every remaining reader and returned by the driver.
+pub fn tee(
+    mut body: ByteStream,
+    n: usize,
+    opts: TeeOptions,
+) -> (Vec<ByteStream>, JoinHandle<std::io::Result<()>>) {
+    let capacity = opts.capacity.max(1);
+    let chunk_size = opts.chunk_size.max(1024);
+    let mut senders: Vec<mpsc::Sender<std::io::Result<Bytes>>> = Vec::with_capacity(n);
+    let mut readers: Vec<ByteStream> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let (tx, mut rx) = mpsc::channel::<std::io::Result<Bytes>>(capacity);
+        senders.push(tx);
+        let stream = futures::stream::poll_fn(move |cx| rx.poll_recv(cx));
+        readers.push(Box::pin(tokio_util::io::StreamReader::new(stream)));
+    }
+
+    let driver = tokio::spawn(async move {
+        let mut buf = bytes::BytesMut::with_capacity(chunk_size);
+        loop {
+            buf.reserve(chunk_size);
+            let n = match tokio::io::AsyncReadExt::read_buf(&mut body, &mut buf).await {
+                Ok(n) => n,
+                Err(e) => {
+                    // io::Error is not Clone: rebuild it for every reader.
+                    for tx in &senders {
+                        let _ = tx
+                            .send(Err(std::io::Error::new(e.kind(), e.to_string())))
+                            .await;
+                    }
+                    return Err(e);
+                }
+            };
+            if n == 0 {
+                return Ok(()); // EOF: dropping the senders closes every reader
+            }
+            let chunk = buf.split().freeze();
+            let mut alive = Vec::with_capacity(senders.len());
+            for tx in senders.drain(..) {
+                // A closed receiver means that target gave up; drop it, keep the rest.
+                if tx.send(Ok(chunk.clone())).await.is_ok() {
+                    alive.push(tx);
+                }
+            }
+            senders = alive;
+            if senders.is_empty() {
+                tracing::debug!("tee: all readers gone, stopping source read");
+                return Ok(());
+            }
+        }
+    });
+
+    (readers, driver)
+}
+
+/// The complete payload held in memory, readable any number of times.
+#[derive(Debug, Clone)]
+pub struct MemoryCache(Bytes);
+
+impl MemoryCache {
+    /// Read the whole stream into memory, failing (without touching the disk)
+    /// if it exceeds `limit` bytes.
+    pub async fn from_stream(body: ByteStream, limit: u64) -> Result<Self> {
+        let data = read_to_vec(body, limit).await?;
+        Ok(MemoryCache(Bytes::from(data)))
+    }
+
+    pub fn from_bytes(data: impl Into<Bytes>) -> Self {
+        MemoryCache(data.into())
+    }
+
+    pub fn len(&self) -> u64 {
+        self.0.len() as u64
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn bytes(&self) -> &Bytes {
+        &self.0
+    }
+
+    /// A fresh reader over the cached bytes (cheap: shares the buffer).
+    pub fn reader(&self) -> ByteStream {
+        Box::pin(std::io::Cursor::new(self.0.clone()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    fn payload(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i * 7 % 251) as u8).collect()
+    }
+
+    #[tokio::test]
+    async fn tee_delivers_identical_bytes_to_all_readers() {
+        let data = payload(1_000_003);
+        let (readers, driver) = tee(
+            boxed(std::io::Cursor::new(data.clone())),
+            3,
+            TeeOptions {
+                chunk_size: 4096,
+                capacity: 2,
+            },
+        );
+        let mut tasks = Vec::new();
+        for mut r in readers {
+            tasks.push(async move {
+                let mut v = Vec::new();
+                r.read_to_end(&mut v).await.unwrap();
+                v
+            });
+        }
+        let results = futures::future::join_all(tasks).await;
+        driver.await.unwrap().unwrap();
+        for v in results {
+            assert!(v == data);
+        }
+    }
+
+    #[tokio::test]
+    async fn tee_survives_dropped_reader_and_slow_reader() {
+        let data = payload(300_000);
+        let (mut readers, driver) = tee(
+            boxed(std::io::Cursor::new(data.clone())),
+            3,
+            TeeOptions {
+                chunk_size: 1024,
+                capacity: 1,
+            },
+        );
+        let slow = readers.pop().unwrap();
+        let fast = readers.pop().unwrap();
+        let dropped = readers.pop().unwrap();
+        drop(dropped);
+
+        let fast_task = async move {
+            let mut r = fast;
+            let mut v = Vec::new();
+            r.read_to_end(&mut v).await.unwrap();
+            v
+        };
+        let slow_task = async move {
+            let mut r = slow;
+            let mut v = Vec::new();
+            let mut buf = [0u8; 700];
+            loop {
+                let n = r.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                v.extend_from_slice(&buf[..n]);
+                tokio::time::sleep(std::time::Duration::from_micros(50)).await;
+            }
+            v
+        };
+        let (a, b) = tokio::join!(fast_task, slow_task);
+        driver.await.unwrap().unwrap();
+        assert!(a == data);
+        assert!(b == data);
+    }
+
+    #[tokio::test]
+    async fn tee_propagates_source_error() {
+        struct Failing(usize);
+        impl AsyncRead for Failing {
+            fn poll_read(
+                mut self: Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+                buf: &mut tokio::io::ReadBuf<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                if self.0 == 0 {
+                    return std::task::Poll::Ready(Err(std::io::Error::other("boom")));
+                }
+                self.0 -= 1;
+                buf.put_slice(&[1u8; 100]);
+                std::task::Poll::Ready(Ok(()))
+            }
+        }
+        let (readers, driver) = tee(boxed(Failing(3)), 2, TeeOptions::default());
+        for mut r in readers {
+            let mut v = Vec::new();
+            let err = r.read_to_end(&mut v).await.unwrap_err();
+            assert_eq!(v.len(), 300);
+            assert!(err.to_string().contains("boom"));
+        }
+        assert!(driver.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn memory_cache_limit_and_replay() {
+        let data = payload(10_000);
+        let err = MemoryCache::from_stream(boxed(std::io::Cursor::new(data.clone())), 9_999)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("exceeds"));
+
+        let cache = MemoryCache::from_stream(boxed(std::io::Cursor::new(data.clone())), 10_000)
+            .await
+            .unwrap();
+        assert_eq!(cache.len(), 10_000);
+        for _ in 0..3 {
+            let mut v = Vec::new();
+            cache.reader().read_to_end(&mut v).await.unwrap();
+            assert!(v == data);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Inactivity timeout for async streams.
+// ---------------------------------------------------------------------------
+
+/// Wraps a reader/writer and fails with `TimedOut` when no progress happens
+/// for `timeout` (each successful read or write resets the clock).
+pub struct Idle<S> {
+    inner: S,
+    timeout: std::time::Duration,
+    sleep: Pin<Box<tokio::time::Sleep>>,
+}
+
+impl<S> Idle<S> {
+    pub fn new(inner: S, timeout: std::time::Duration) -> Self {
+        Idle {
+            inner,
+            timeout,
+            sleep: Box::pin(tokio::time::sleep(timeout)),
+        }
+    }
+
+    pub fn into_inner(self) -> S {
+        self.inner
+    }
+
+    fn reset(&mut self) {
+        let deadline = tokio::time::Instant::now() + self.timeout;
+        self.sleep.as_mut().reset(deadline);
+    }
+
+    fn check_deadline(&mut self, cx: &mut std::task::Context<'_>) -> std::io::Result<()> {
+        use std::future::Future;
+        if self.sleep.as_mut().poll(cx).is_ready() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("no data for {:?} (inactivity timeout)", self.timeout),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for Idle<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match Pin::new(&mut self.inner).poll_read(cx, buf) {
+            std::task::Poll::Pending => {
+                self.check_deadline(cx)?;
+                std::task::Poll::Pending
+            }
+            ready => {
+                self.reset();
+                ready
+            }
+        }
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Idle<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match Pin::new(&mut self.inner).poll_write(cx, buf) {
+            std::task::Poll::Pending => {
+                self.check_deadline(cx)?;
+                std::task::Poll::Pending
+            }
+            ready => {
+                self.reset();
+                ready
+            }
+        }
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match Pin::new(&mut self.inner).poll_flush(cx) {
+            std::task::Poll::Pending => {
+                self.check_deadline(cx)?;
+                std::task::Poll::Pending
+            }
+            ready => ready,
+        }
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match Pin::new(&mut self.inner).poll_shutdown(cx) {
+            std::task::Poll::Pending => {
+                self.check_deadline(cx)?;
+                std::task::Poll::Pending
+            }
+            ready => ready,
+        }
+    }
+}
+
+#[cfg(test)]
+mod idle_tests {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn idle_reader_times_out_when_stalled() {
+        let (mut tx, rx) = tokio::io::duplex(64);
+        let mut r = Idle::new(rx, std::time::Duration::from_millis(100));
+        tokio::io::AsyncWriteExt::write_all(&mut tx, b"abc")
+            .await
+            .unwrap();
+        let mut buf = [0u8; 8];
+        assert_eq!(r.read(&mut buf).await.unwrap(), 3);
+        // Nothing more is written; the read must fail with TimedOut instead of hanging.
+        let err = r.read(&mut buf).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+    }
+}

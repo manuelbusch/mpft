@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use mpt::{Location, Scheme};
+use mpt::{CacheMode, CopyOptions, Location, Scheme, TeeOptions};
 
 /// Send and receive files over many protocols, addressed by URL prefix.
 #[derive(Parser)]
@@ -21,18 +21,48 @@ struct Cli {
     #[arg(long, env = "MPT_PASSWORD", global = true, hide_env_values = true)]
     password: Option<String>,
 
+    /// Hold the whole payload in memory instead of streaming it (enables --retries,
+    /// gives senders a known size). Never spills to disk: see --cache-limit.
+    #[arg(long, global = true)]
+    cache: bool,
+
+    /// Maximum payload size for --cache, e.g. 64M or 2G. Larger inputs fail.
+    #[arg(long, global = true, default_value = "256M", value_parser = parse_size)]
+    cache_limit: u64,
+
+    /// Retries per target after a failure (requires --cache). Mail targets may
+    /// be delivered more than once when retried.
+    #[arg(long, global = true, default_value_t = 0)]
+    retries: u32,
+
+    /// Chunk size for streaming to several targets, e.g. 64K
+    #[arg(long, global = true, default_value = "64K", value_parser = parse_size)]
+    chunk: u64,
+
+    /// Chunks buffered per target before the source is paused
+    #[arg(long, global = true, default_value_t = 16)]
+    queue: usize,
+
     #[command(subcommand)]
     cmd: Cmd,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Copy from one URL to another
-    Copy { src: String, dst: String },
+    /// Copy from one URL to one or more targets (the source is read once)
+    Copy {
+        src: String,
+        #[arg(required = true, num_args = 1..)]
+        dst: Vec<String>,
+    },
     /// List a directory
     Ls { url: String },
-    /// Send a local file to a URL (shorthand for copy <file> <url>)
-    Send { file: PathBuf, dst: String },
+    /// Send a local file to one or more targets (shorthand for copy)
+    Send {
+        file: PathBuf,
+        #[arg(required = true, num_args = 1..)]
+        dst: Vec<String>,
+    },
     /// Receive a URL into a local path (default: current directory)
     Recv { src: String, dst: Option<PathBuf> },
     /// Show supported URL schemes and their options
@@ -83,15 +113,42 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Ok(mpt::protocols::open(loc)?)
     };
 
+    let opts = CopyOptions {
+        cache: if cli.cache {
+            CacheMode::Memory {
+                limit: cli.cache_limit,
+            }
+        } else {
+            CacheMode::Stream
+        },
+        retries: cli.retries,
+        tee: TeeOptions {
+            chunk_size: cli.chunk as usize,
+            capacity: cli.queue,
+        },
+    };
+
     match &cli.cmd {
-        Cmd::Copy { src, dst } => do_copy(open(src)?, open(dst)?).await,
-        Cmd::Send { file, dst } => do_copy(open(&file.to_string_lossy())?, open(dst)?).await,
+        Cmd::Copy { src, dst } => {
+            let targets = dst
+                .iter()
+                .map(|d| open(d))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            do_copy(open(src)?, targets, &opts).await
+        }
+        Cmd::Send { file, dst } => {
+            let targets = dst
+                .iter()
+                .map(|d| open(d))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            do_copy(open(&file.to_string_lossy())?, targets, &opts).await
+        }
         Cmd::Recv { src, dst } => {
             let target = match dst {
                 Some(p) => p.to_string_lossy().into_owned(),
                 None => "./".to_string(),
             };
-            do_copy(open(src)?, open(&target)?).await
+            do_copy(open(src)?, vec![open(&target)?], &opts).await
         }
         Cmd::Ls { url } => {
             let ep = open(url)?;
@@ -143,13 +200,64 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 }
 
-async fn do_copy(src: Box<dyn mpt::Endpoint>, dst: Box<dyn mpt::Endpoint>) -> anyhow::Result<()> {
-    let report = mpt::copy(src.as_ref(), dst.as_ref())
+async fn do_copy(
+    src: Box<dyn mpt::Endpoint>,
+    targets: Vec<Box<dyn mpt::Endpoint>>,
+    opts: &CopyOptions,
+) -> anyhow::Result<()> {
+    let refs: Vec<&dyn mpt::Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
+    let report = mpt::copy_many(src.as_ref(), &refs, opts)
         .await
-        .with_context(|| format!("copy {} -> {}", src.location(), dst.location()))?;
+        .with_context(|| format!("copy {}", src.location()))?;
+    if report.targets.len() == 1 {
+        let t = &report.targets[0];
+        if let Err(e) = &t.result {
+            anyhow::bail!("copy {} -> {}: {e}", report.source, t.target);
+        }
+        eprintln!(
+            "{} -> {}: {} bytes in {:.2?}",
+            report.source, t.target, t.bytes, report.elapsed
+        );
+        return Ok(());
+    }
+    for t in &report.targets {
+        match &t.result {
+            Ok(()) => eprintln!(
+                "ok      {:>12} bytes  {:>9.2?}  {}",
+                t.bytes, t.elapsed, t.target
+            ),
+            Err(e) => eprintln!(
+                "FAILED  {:>12} bytes  {:>9.2?}  {}: {e}",
+                t.bytes, t.elapsed, t.target
+            ),
+        }
+    }
+    let failed = report.failures().count();
     eprintln!(
-        "{} -> {}: {} bytes in {:.2?}",
-        report.source, report.target, report.bytes, report.elapsed
+        "{}: {} bytes read, {}/{} targets ok in {:.2?}",
+        report.source,
+        report.bytes_read,
+        report.targets.len() - failed,
+        report.targets.len(),
+        report.elapsed
     );
+    if failed > 0 {
+        anyhow::bail!("{failed} of {} targets failed", report.targets.len());
+    }
     Ok(())
+}
+
+/// Parse sizes like `512`, `64K`, `256M`, `2G` (binary units).
+fn parse_size(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    let (num, mult) = match s.chars().last().map(|c| c.to_ascii_uppercase()) {
+        Some('K') => (&s[..s.len() - 1], 1u64 << 10),
+        Some('M') => (&s[..s.len() - 1], 1u64 << 20),
+        Some('G') => (&s[..s.len() - 1], 1u64 << 30),
+        _ => (s, 1),
+    };
+    num.trim()
+        .parse::<u64>()
+        .map(|n| n * mult)
+        .map_err(|e| format!("invalid size '{s}': {e}"))
 }
