@@ -87,21 +87,14 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Copy from one URL to one or more targets (the source is read once)
-    Copy {
+    #[command(alias = "copy")]
+    Cp {
         src: String,
         #[arg(required = true, num_args = 1..)]
         dst: Vec<String>,
     },
     /// List a directory
     Ls { url: String },
-    /// Send a local file to one or more targets (shorthand for copy)
-    Send {
-        file: PathBuf,
-        #[arg(required = true, num_args = 1..)]
-        dst: Vec<String>,
-    },
-    /// Receive a URL into a local path (default: current directory)
-    Recv { src: String, dst: Option<PathBuf> },
     /// Show supported URL schemes and their options
     Schemes,
 }
@@ -210,26 +203,12 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     match &cli.cmd {
-        Cmd::Copy { src, dst } => {
+        Cmd::Cp { src, dst } => {
             let targets = dst
                 .iter()
                 .map(|d| open(d))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             do_copy(open(src)?, targets, &opts).await
-        }
-        Cmd::Send { file, dst } => {
-            let targets = dst
-                .iter()
-                .map(|d| open(d))
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            do_copy(open(&file.to_string_lossy())?, targets, &opts).await
-        }
-        Cmd::Recv { src, dst } => {
-            let target = match dst {
-                Some(p) => p.to_string_lossy().into_owned(),
-                None => "./".to_string(),
-            };
-            do_copy(open(src)?, vec![open(&target)?], &opts).await
         }
         Cmd::Ls { url } => {
             let ep = open(url)?;

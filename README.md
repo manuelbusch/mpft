@@ -4,10 +4,10 @@ Send and receive files over many protocols. Every endpoint is a URL whose
 prefix selects the protocol:
 
 ```
-mpt copy sftp://deploy@srv.example.com/var/log/app.log ./
-mpt copy report.pdf "mailto:boss@example.com?subject=Report%20KW36"
-mpt copy ftps://user@ftp.example.com/in/x.csv "s3://bucket/import/?endpoint=https://minio:9000"
-mpt copy https://example.com/data.json "smtp://me@mail.example.com:587/team@example.com?subject=Data"
+mpt cp sftp://deploy@srv.example.com/var/log/app.log ./
+mpt cp report.pdf "mailto:boss@example.com?subject=Report%20KW36"
+mpt cp ftps://user@ftp.example.com/in/x.csv "s3://bucket/import/?endpoint=https://minio:9000"
+mpt cp https://example.com/data.json "smtp://me@mail.example.com:587/team@example.com?subject=Data"
 mpt ls   "s3://bucket/import/?endpoint=https://minio:9000"
 mpt schemes
 ```
@@ -61,9 +61,7 @@ Priority: URL > environment > default. Passwords are masked in all log output.
 ## CLI
 
 ```
-mpt copy <SRC_URL> <DST_URL>     copy between any two endpoints
-mpt send <LOCAL_FILE> <DST_URL>  shorthand for copy
-mpt recv <SRC_URL> [LOCAL_PATH]  shorthand for copy into a local path (default ./)
+mpt cp <SRC_URL> <DST_URL>...    copy from one endpoint to one or more targets
 mpt ls <URL>                     list a directory
 mpt schemes                      print the table above
   -v / -vv / -vvv   log level    --insecure   disable TLS verification    --password <pw>
@@ -73,12 +71,12 @@ mpt schemes                      print the table above
 
 ## Several targets at once
 
-`copy` and `send` accept any number of targets. The source is read **once** and
+`cp` accepts any number of targets. The source is read **once** and
 delivered to all targets concurrently. Nothing is written to the disk in between.
 
 ```
-mpt copy report.pdf sftp://srv/in/ "s3://bucket/reports/" "mailto:boss@example.com"
-mpt copy --cache --retries 2 big.iso sftp://a/ sftp://b/ webdavs://c/
+mpt cp report.pdf sftp://srv/in/ "s3://bucket/reports/" "mailto:boss@example.com"
+mpt cp --cache --retries 2 big.iso sftp://a/ sftp://b/ webdavs://c/
 ```
 
 Two modes:
@@ -100,8 +98,8 @@ the start until they are ready; this is head-of-line blocking, not a deadlock.
 ## Checksums
 
 ```
-mpt copy --hash sha256 report.pdf sftp://srv/in/ "s3://bucket/reports/" "mailto:boss@example.com"
-mpt copy --check sftp://srv/in/report.pdf ./
+mpt cp --hash sha256 report.pdf sftp://srv/in/ "s3://bucket/reports/" "mailto:boss@example.com"
+mpt cp --check sftp://srv/in/report.pdf ./
 ```
 
 `--hash sha256|sha512|blake3` computes the digest **while the data streams**
@@ -122,10 +120,10 @@ with several targets.
 ## Signatures
 
 ```
-mpt copy --sign ssh:~/.ssh/id_ed25519 report.pdf sftp://srv/in/
-mpt copy --sign pgp:release-key.asc --hash blake3 report.pdf "s3://bucket/releases/"
-mpt copy --verify-signers allowed_signers sftp://srv/in/report.pdf ./
-mpt copy --verify-keyring release-pub.asc "s3://bucket/releases/report.pdf" ./
+mpt cp --sign ssh:~/.ssh/id_ed25519 report.pdf sftp://srv/in/
+mpt cp --sign pgp:release-key.asc --hash blake3 report.pdf "s3://bucket/releases/"
+mpt cp --verify-signers allowed_signers sftp://srv/in/report.pdf ./
+mpt cp --verify-keyring release-pub.asc "s3://bucket/releases/report.pdf" ./
 ```
 
 A checksum alone protects against transfer errors, not against someone who can
