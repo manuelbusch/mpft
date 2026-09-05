@@ -83,6 +83,20 @@ mpt config check                 read the configuration file and print what it s
 Ctrl-C stops a running copy: open connections are dropped, partial files are
 removed, every unfinished target reports `cancelled`, and the exit code is 130.
 
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | everything succeeded |
+| 1 | a target failed, or the remote side reported an error |
+| 2 | the command line, a URL or the configuration is wrong |
+| 3 | a checksum did not match, or a signature was missing, invalid or not trusted |
+| 4 | authentication failed |
+| 130 | stopped with Ctrl-C |
+
+With several targets a mixed outcome is 1; with one target the code says what
+went wrong with it.
+
 ## Configuration
 
 Everything that is not a source or a target can come from a TOML file, so

@@ -258,6 +258,42 @@ impl Settings {
     }
 }
 
+// Exit codes, so a script can tell the cases apart without reading messages.
+// clap already uses 2 for a malformed command line, which is why a bad URL or
+// configuration joins it there.
+/// At least one target failed.
+const FAILED: u8 = 1;
+/// The command, a URL or the configuration is wrong.
+const USAGE: u8 = 2;
+/// A checksum did not match, or a signature was missing or not trusted.
+const UNTRUSTED: u8 = 3;
+/// Authentication failed.
+const DENIED: u8 = 4;
+/// Terminated by Ctrl-C, as the shell convention has it.
+const INTERRUPTED: u8 = 130;
+
+/// Which of the codes above an error stands for.
+fn exit_code(err: &anyhow::Error) -> u8 {
+    if err.chain().any(|c| c.is::<Interrupted>()) {
+        return INTERRUPTED;
+    }
+    for cause in err.chain() {
+        if let Some(e) = cause.downcast_ref::<mpt::Error>() {
+            return match e {
+                mpt::Error::ChecksumMismatch { .. } | mpt::Error::Signature(_) => UNTRUSTED,
+                mpt::Error::Auth(_) => DENIED,
+                mpt::Error::Config(_)
+                | mpt::Error::InvalidUrl(_)
+                | mpt::Error::InvalidOption { .. }
+                | mpt::Error::UnsupportedScheme(_)
+                | mpt::Error::UnsupportedOperation { .. } => USAGE,
+                _ => FAILED,
+            };
+        }
+    }
+    FAILED
+}
+
 /// Marks a run that was stopped with Ctrl-C, so `main` can exit with 130.
 #[derive(Debug)]
 struct Interrupted;
@@ -275,19 +311,18 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
     // The configuration decides the log level and the colors, so it is read
     // before either is set up; its own complaints are logged afterwards.
-    let cfg = match mpt::Config::load(cli.config.as_deref()) {
+    let mut cfg = match mpt::Config::load(cli.config.as_deref()) {
         Ok(cfg) => cfg,
         Err(e) => {
             eprintln!("error: {e}");
-            return ExitCode::FAILURE;
+            return ExitCode::from(USAGE);
         }
     };
-    let mut cfg = cfg;
     let settings = match Settings::resolve(&cli, &cfg) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: {e:#}");
-            return ExitCode::FAILURE;
+            return ExitCode::from(USAGE);
         }
     };
     init_colors(settings.color);
@@ -305,7 +340,7 @@ async fn main() -> ExitCode {
         .await
     {
         anstream::eprintln!("{FAIL}error:{FAIL:#} {e}");
-        return ExitCode::FAILURE;
+        return ExitCode::from(exit_code(&anyhow::Error::new(e)));
     }
     mpt::config::install(cfg);
     mpt::init_crypto();
@@ -313,12 +348,7 @@ async fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             anstream::eprintln!("{FAIL}error:{FAIL:#} {e:#}");
-            // 130 is the conventional "terminated by Ctrl-C".
-            if e.chain().any(|c| c.is::<Interrupted>()) {
-                ExitCode::from(130)
-            } else {
-                ExitCode::FAILURE
-            }
+            ExitCode::from(exit_code(&e))
         }
     }
 }
@@ -623,11 +653,16 @@ async fn do_copy(
         .any(|t| matches!(t.result, Err(mpt::Error::Cancelled)));
     if report.targets.len() == 1 {
         let t = &report.targets[0];
-        if let Err(e) = &t.result {
+        if t.result.is_err() {
             if cancelled {
                 return Err(anyhow::Error::new(Interrupted));
             }
-            anyhow::bail!("copy {} -> {}: {e}", report.source, t.target);
+            // Hand on the error itself, not its text: the exit code is read
+            // off its type.
+            let mut report = report;
+            let t = report.targets.remove(0);
+            let what = format!("copy {} -> {}", report.source, t.target);
+            return Err(anyhow::Error::new(t.result.unwrap_err()).context(what));
         }
         anstream::eprintln!(
             "{DIM}{}{DIM:#} -> {DIM}{}{DIM:#}: {NUM}{}{NUM:#} bytes in {NUM}{:.2?}{NUM:#}",
@@ -965,6 +1000,31 @@ mod tests {
         let s = Settings::resolve(&cli(&["--no-atomic", "--hash", "sha512"]), &config("")).unwrap();
         assert!(!s.atomic);
         assert_eq!(s.hash, Some(HashAlgo::Sha512));
+    }
+
+    #[test]
+    fn errors_map_to_exit_codes() {
+        let code = |e: mpt::Error| exit_code(&anyhow::Error::new(e));
+        assert_eq!(code(mpt::Error::Auth("no".into())), DENIED);
+        assert_eq!(code(mpt::Error::Signature("bad key".into())), UNTRUSTED);
+        assert_eq!(
+            code(mpt::Error::ChecksumMismatch {
+                algo: "SHA-256",
+                expected: "a".into(),
+                actual: "b".into()
+            }),
+            UNTRUSTED
+        );
+        assert_eq!(code(mpt::Error::InvalidUrl("x".into())), USAGE);
+        assert_eq!(code(mpt::Error::Config("x".into())), USAGE);
+        assert_eq!(code(mpt::Error::Remote("server said no".into())), FAILED);
+        // The type is found through the context a caller wrapped it in.
+        let wrapped = anyhow::Error::new(mpt::Error::Auth("no".into())).context("copy a -> b");
+        assert_eq!(exit_code(&wrapped), DENIED);
+        // Ctrl-C beats whatever else went wrong.
+        let interrupted = anyhow::Error::new(Interrupted).context("2 of 3 targets unfinished");
+        assert_eq!(exit_code(&interrupted), INTERRUPTED);
+        assert_eq!(exit_code(&anyhow::anyhow!("something else")), FAILED);
     }
 
     #[test]
