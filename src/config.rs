@@ -659,8 +659,10 @@ impl Config {
             }
             self.warnings.push(complaint);
         }
+        // Windows: no mode bits, so the file's place has to do (see
+        // crate::credentials::warn_if_world_readable).
         #[cfg(not(unix))]
-        let _ = path;
+        crate::credentials::warn_if_world_readable(path);
         Ok(())
     }
 
@@ -778,9 +780,11 @@ fn expand_vars(s: &str) -> std::result::Result<String, String> {
     Ok(out)
 }
 
-/// Expand a leading `~/` against the home directory.
+/// Expand a leading `~/` (or `~\` on Windows) against the home directory.
 pub fn expand_tilde(p: &str) -> String {
-    if let Some(rest) = p.strip_prefix("~/")
+    if let Some(rest) = p
+        .strip_prefix("~/")
+        .or_else(|| cfg!(windows).then(|| p.strip_prefix("~\\")).flatten())
         && let Some(home) = std::env::home_dir()
     {
         return home.join(rest).to_string_lossy().into_owned();

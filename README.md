@@ -535,6 +535,33 @@ OpenSSH accepts mpt's signatures and vice versa, and `gpg --verify` accepts
 mpt's OpenPGP signatures. Cargo features `sign-ssh` and `sign-pgp` (both
 default) select the backends.
 
+## Windows
+
+The code is written to build and run on Windows, with three differences that
+are worth knowing:
+
+* **ssh-agent**: `$SSH_AUTH_SOCK` is read as a named-pipe path (Git for Windows
+  sets it that way); without it the OpenSSH agent service
+  (`\\.\pipe\openssh-ssh-agent`) is tried, then PuTTY's Pageant.
+* **Credential commands**: `{ cmd = … }` runs through `cmd /C` instead of
+  `sh -c`.
+* **File permissions**: there are no mode bits to check, so a key, password or
+  configuration file that holds secrets is judged by its place instead — a
+  warning if it lies outside the user's profile directory.
+
+Paths with a drive letter (`C:\data\x.bin`) and UNC paths are recognized as
+local files, and `\` counts as a path separator, so sidecar and `.mpt-part`
+files land next to their file rather than in the working directory.
+
+Building needs no NASM: rustls 0.23 turns on `aws-lc-rs/prebuilt-nasm` itself,
+so `cargo build` works with the MSVC toolchain alone.
+
+**Not verified.** None of this is built here — this machine has no Windows
+target, and the crypto crates cannot be cross-compiled to one from macOS. The
+Windows job of the CI workflow is what will prove it. The test servers under
+`tests/local/` are Unix shell scripts; the unit tests (`cargo test --lib`) run
+without them.
+
 ## Library
 
 ```rust

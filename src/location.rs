@@ -345,6 +345,8 @@ impl Location {
         Ok(loc)
     }
 
+    /// A bare local path: no scheme, no host, and a trailing separator marks
+    /// a directory (on Windows `\` counts as one).
     fn local(path: &str) -> Location {
         Location {
             scheme: Scheme::File,
@@ -354,7 +356,7 @@ impl Location {
             port: None,
             path: path.to_string(),
             options: Vec::new(),
-            dir_hint: path.ends_with('/'),
+            dir_hint: path.ends_with('/') || (cfg!(windows) && path.ends_with('\\')),
             password_from_url: false,
         }
     }
@@ -440,8 +442,11 @@ impl Location {
         if self.scheme.is_mail() {
             return None;
         }
-        let p = self.path.trim_end_matches('/');
-        let name = p.rsplit('/').next().unwrap_or("");
+        let p = trim_end_separators(&self.path);
+        let name = match last_separator(p) {
+            Some(i) => &p[i + 1..],
+            None => p,
+        };
         if name.is_empty() { None } else { Some(name) }
     }
 
@@ -506,8 +511,10 @@ impl Location {
         loc.path = if self.is_dir_target() {
             self.path_joined(&name)?
         } else {
-            match self.path.rfind('/') {
-                Some(idx) => format!("{}/{}", &self.path[..idx], name),
+            // Keep the separator that is already in use, so a Windows path
+            // stays a Windows path.
+            match last_separator(&self.path) {
+                Some(idx) => format!("{}{}{}", &self.path[..idx + 1], name, ""),
                 None => name.to_string(),
             }
         };
@@ -636,6 +643,29 @@ impl fmt::Display for Location {
     }
 }
 
+/// Index of the last path separator: `/` everywhere, and `\` on Windows,
+/// where both are separators and a bare path may use either.
+fn last_separator(path: &str) -> Option<usize> {
+    let slash = path.rfind('/');
+    if cfg!(windows) {
+        let backslash = path.rfind('\\');
+        return match (slash, backslash) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
+    }
+    slash
+}
+
+/// Drop trailing separators, `\` included on Windows.
+fn trim_end_separators(path: &str) -> &str {
+    if cfg!(windows) {
+        path.trim_end_matches(['/', '\\'])
+    } else {
+        path.trim_end_matches('/')
+    }
+}
+
 fn looks_like_url(s: &str) -> bool {
     if s.starts_with("mailto:") {
         return true;
@@ -707,6 +737,37 @@ mod tests {
         let l = Location::parse("relative/dir/").unwrap();
         assert_eq!(l.scheme(), Scheme::File);
         assert!(l.is_dir_target());
+    }
+
+    #[test]
+    fn windows_paths_are_local_files() {
+        // A drive letter is not a scheme: nothing follows the colon but a
+        // separator, never "//".
+        let l = Location::parse("C:\\data\\report.pdf").unwrap();
+        assert_eq!(l.scheme(), Scheme::File);
+        assert_eq!(l.path(), "C:\\data\\report.pdf");
+        // A UNC path likewise.
+        let l = Location::parse("\\\\server\\share\\x.bin").unwrap();
+        assert_eq!(l.scheme(), Scheme::File);
+        assert!(!l.is_dir_target());
+        // Forward slashes work on Windows too, and are unambiguous here.
+        let l = Location::parse("D:/data/").unwrap();
+        assert_eq!(l.scheme(), Scheme::File);
+        assert!(l.is_dir_target());
+        assert_eq!(l.path_joined("x.bin").unwrap(), "D:/data/x.bin");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_separators_are_separators() {
+        let l = Location::parse("C:\\data\\report.pdf").unwrap();
+        assert_eq!(l.filename(), Some("report.pdf"));
+        assert_eq!(
+            l.sibling("report.pdf.sha256").unwrap().path(),
+            "C:\\data\\report.pdf.sha256"
+        );
+        let dir = Location::parse("C:\\data\\").unwrap();
+        assert!(dir.is_dir_target());
     }
 
     #[test]

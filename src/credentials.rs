@@ -151,8 +151,15 @@ fn from_file(path: &str) -> Fetched {
 
 async fn from_cmd(cmd: &str) -> Fetched {
     debug!(%cmd, "running the credential command");
-    let out = tokio::process::Command::new("sh")
-        .arg("-c")
+    // The shell of the platform: `sh -c` reads the command as written
+    // everywhere but Windows, where `cmd /C` is the equivalent.
+    let (shell, flag) = if cfg!(windows) {
+        ("cmd", "/C")
+    } else {
+        ("sh", "-c")
+    };
+    let out = tokio::process::Command::new(shell)
+        .arg(flag)
         .arg(cmd)
         .stdin(std::process::Stdio::null())
         .output()
@@ -285,6 +292,10 @@ pub fn first_line(text: &str) -> String {
 }
 
 /// A secret file that others can read is a secret everyone has.
+///
+/// Windows has no mode bits to look at; the nearest useful check there is
+/// whether the file lies outside the user's own profile, where the
+/// inherited permissions are anybody's guess.
 pub fn warn_if_world_readable(path: &std::path::Path) {
     #[cfg(unix)]
     {
@@ -300,7 +311,25 @@ pub fn warn_if_world_readable(path: &std::path::Path) {
         }
     }
     #[cfg(not(unix))]
-    let _ = path;
+    if outside_home(path) {
+        warn!(
+            "{} holds a secret and lies outside your profile directory; \
+             check who else can read it",
+            path.display()
+        );
+    }
+}
+
+/// Whether `path` is outside the user's home directory (`%USERPROFILE%`).
+#[cfg_attr(unix, allow(dead_code))]
+fn outside_home(path: &std::path::Path) -> bool {
+    let Some(home) = std::env::home_dir() else {
+        return false;
+    };
+    match (std::fs::canonicalize(path), std::fs::canonicalize(&home)) {
+        (Ok(p), Ok(h)) => !p.starts_with(h),
+        _ => !path.starts_with(&home),
+    }
 }
 
 #[cfg(test)]
