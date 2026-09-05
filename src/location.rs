@@ -438,6 +438,29 @@ impl Location {
         }
     }
 
+    /// Location of a file called `name` next to this one: inside the
+    /// directory for directory targets, otherwise in the parent directory.
+    /// Credentials and options are kept. Not available for mail schemes.
+    pub fn sibling(&self, name: &str) -> Result<Location> {
+        if self.scheme.is_mail() {
+            return Err(Error::UnsupportedOperation {
+                scheme: self.scheme.to_string(),
+                op: "address a sibling file",
+            });
+        }
+        let mut loc = self.clone();
+        loc.path = if self.is_dir_target() {
+            self.path_joined(name)
+        } else {
+            match self.path.rfind('/') {
+                Some(idx) => format!("{}/{}", &self.path[..idx], name),
+                None => name.to_string(),
+            }
+        };
+        loc.dir_hint = false;
+        Ok(loc)
+    }
+
     /// First value of a query option.
     pub fn opt(&self, name: &str) -> Option<&str> {
         self.options
@@ -742,6 +765,57 @@ mod tests {
     fn ipv6_host() {
         let l = Location::parse("sftp://u@[::1]:22/x").unwrap();
         assert_eq!(l.host(), Some("::1"));
+    }
+
+    #[test]
+    fn sibling_locations() {
+        let l =
+            Location::parse("sftp://u:p@h:2222/data/in/file.bin?key=/k&known_hosts=off").unwrap();
+        let s = l.sibling("file.bin.sha256").unwrap();
+        assert_eq!(s.path(), "/data/in/file.bin.sha256");
+        assert_eq!(s.password(), Some("p"));
+        assert_eq!(s.opt("key"), Some("/k"));
+        assert!(!s.is_dir_target());
+
+        let d = Location::parse("sftp://u@h/data/in/").unwrap();
+        assert_eq!(d.sibling("x.b3").unwrap().path(), "/data/in/x.b3");
+
+        let s3 = Location::parse("s3://bucket/dir/obj.csv?endpoint=http://m:9000").unwrap();
+        assert_eq!(
+            s3.sibling("obj.csv.b3").unwrap().path(),
+            "bucket/dir/obj.csv.b3"
+        );
+        assert_eq!(
+            Location::parse("s3://bucket/obj")
+                .unwrap()
+                .sibling("obj.b3")
+                .unwrap()
+                .path(),
+            "bucket/obj.b3"
+        );
+
+        assert_eq!(
+            Location::parse("relative.txt")
+                .unwrap()
+                .sibling("relative.txt.b3")
+                .unwrap()
+                .path(),
+            "relative.txt.b3"
+        );
+        assert_eq!(
+            Location::parse("/tmp/a.txt")
+                .unwrap()
+                .sibling("a.txt.b3")
+                .unwrap()
+                .to_string(),
+            "/tmp/a.txt.b3"
+        );
+        assert!(
+            Location::parse("mailto:a@b.c")
+                .unwrap()
+                .sibling("x")
+                .is_err()
+        );
     }
 
     #[test]

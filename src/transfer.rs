@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info, warn};
 
+use crate::hash::{DigestHandle, HashAlgo, hashing, parse_sidecar, sidecar_content};
 use crate::stream::{Counted, MemoryCache, TeeOptions, tee};
 use crate::{Endpoint, Error, Result, SendMeta};
 
@@ -26,6 +27,12 @@ pub struct CopyOptions {
     /// [`CacheMode::Memory`]; a stream cannot be replayed.
     pub retries: u32,
     pub tee: TeeOptions,
+    /// Compute this checksum while streaming and place `<name>.<ext>` next to
+    /// every target (mail targets get it as a second attachment).
+    pub hash: Option<HashAlgo>,
+    /// Read a checksum file next to the source (`<name>.b3|.sha256|.sha512`)
+    /// and verify the transferred content against it.
+    pub check: bool,
 }
 
 impl Default for CopyOptions {
@@ -34,6 +41,31 @@ impl Default for CopyOptions {
             cache: CacheMode::Stream,
             retries: 0,
             tee: TeeOptions::default(),
+            hash: None,
+            check: false,
+        }
+    }
+}
+
+/// Result of `--check`: the expected digest from the source's checksum file
+/// against what was actually transferred.
+#[derive(Debug, Clone)]
+pub struct CheckReport {
+    pub algo: HashAlgo,
+    pub expected: String,
+    pub actual: String,
+}
+
+impl CheckReport {
+    pub fn ok(&self) -> bool {
+        self.expected.eq_ignore_ascii_case(&self.actual)
+    }
+
+    pub fn error(&self) -> Error {
+        Error::ChecksumMismatch {
+            algo: self.algo.label(),
+            expected: self.expected.clone(),
+            actual: self.actual.clone(),
         }
     }
 }
@@ -57,6 +89,8 @@ pub struct TargetReport {
     pub elapsed: Duration,
     pub attempts: u32,
     pub result: Result<()>,
+    /// Location of the checksum file written next to the target, if any.
+    pub sidecar: Option<String>,
 }
 
 /// Outcome of [`copy_many`].
@@ -67,6 +101,10 @@ pub struct FanoutReport {
     pub bytes_read: u64,
     pub elapsed: Duration,
     pub targets: Vec<TargetReport>,
+    /// Digests computed over the source stream (empty unless `hash`/`check` was set).
+    pub digests: Vec<(HashAlgo, String)>,
+    /// Outcome of `check`, if requested.
+    pub checked: Option<CheckReport>,
 }
 
 impl FanoutReport {
@@ -88,6 +126,11 @@ pub async fn copy(src: &dyn Endpoint, dst: &dyn Endpoint) -> Result<CopyReport> 
     let mut report = copy_many(src, &[dst], &CopyOptions::default()).await?;
     let target = report.targets.remove(0);
     target.result?;
+    if let Some(c) = &report.checked
+        && !c.ok()
+    {
+        return Err(c.error());
+    }
     Ok(CopyReport {
         source: report.source,
         target: target.target,
@@ -131,11 +174,28 @@ pub async fn copy_many(
     if let Some(name) = src.location().filename() {
         meta.filename = Some(name.to_string());
     }
-    info!(source = %src.location(), targets = dsts.len(), size = ?size, cache = ?opts.cache, "copy");
+    info!(source = %src.location(), targets = dsts.len(), size = ?size, cache = ?opts.cache, hash = ?opts.hash, check = opts.check, "copy");
+
+    // Checksum file next to the source (for `check`), found before anything is transferred.
+    let expected = if opts.check {
+        Some(find_source_checksum(src).await?)
+    } else {
+        None
+    };
+    let mut algos: Vec<HashAlgo> = opts.hash.into_iter().collect();
+    if let Some((algo, _)) = &expected
+        && !algos.contains(algo)
+    {
+        algos.push(*algo);
+    }
 
     let body = receiver.receive().await?;
     let (body, read_count) = Counted::new(body);
+    let (body, handles) = hashing(body, &algos);
     let body: crate::ByteStream = Box::pin(body);
+    if let Some(algo) = opts.hash {
+        meta.digest = handles.iter().find(|h| h.algo() == algo).cloned();
+    }
 
     let targets = match opts.cache {
         CacheMode::Memory { limit } => {
@@ -163,7 +223,7 @@ pub async fn copy_many(
                             Err(e) => break Err(e),
                         }
                     };
-                    TargetReport { target: dst.location().to_string(), bytes, elapsed: t.elapsed(), attempts, result }
+                    TargetReport { target: dst.location().to_string(), bytes, elapsed: t.elapsed(), attempts, result, sidecar: None }
                 }
             });
             futures::future::join_all(jobs).await
@@ -191,6 +251,7 @@ pub async fn copy_many(
                             elapsed: t.elapsed(),
                             attempts: 1,
                             result,
+                            sidecar: None,
                         }
                     }
                 });
@@ -210,13 +271,144 @@ pub async fn copy_many(
         }
     };
 
+    let mut targets = targets;
+    let digests: Vec<(HashAlgo, String)> = handles
+        .iter()
+        .filter_map(|h| h.get().map(|v| (h.algo(), v)))
+        .collect();
+
+    // Checksum sidecar next to every target that received the file.
+    if let Some(algo) = opts.hash {
+        match digests.iter().find(|(a, _)| *a == algo) {
+            Some((_, hex)) => {
+                for (t, dst) in targets.iter_mut().zip(dsts) {
+                    if t.result.is_err() || dst.location().scheme().is_mail() {
+                        continue;
+                    }
+                    match write_sidecar(*dst, algo, hex, &meta).await {
+                        Ok(path) => t.sidecar = Some(path),
+                        Err(e) => {
+                            t.result = Err(Error::Remote(format!(
+                                "file transferred, but writing the checksum file failed: {e}"
+                            )));
+                        }
+                    }
+                }
+            }
+            None => warn!("source was not read to the end; no checksum files written"),
+        }
+    }
+
+    let checked = expected.map(|(algo, exp)| CheckReport {
+        algo,
+        expected: exp,
+        actual: digests
+            .iter()
+            .find(|(a, _)| *a == algo)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default(),
+    });
+    if let Some(c) = &checked {
+        if c.ok() {
+            info!(algo = %c.algo, "checksum verified");
+        } else {
+            warn!(algo = %c.algo, expected = %c.expected, actual = %c.actual, "CHECKSUM MISMATCH");
+        }
+    }
+
     Ok(FanoutReport {
         source: src.location().to_string(),
         bytes_read: read_count.load(std::sync::atomic::Ordering::Relaxed),
         elapsed: started.elapsed(),
         targets,
+        digests,
+        checked,
     })
 }
+
+/// Effective file name on the target (directory targets take the source name).
+fn target_filename(dst: &dyn Endpoint, meta: &SendMeta) -> String {
+    if dst.location().is_dir_target() {
+        meta.filename_or("payload").to_string()
+    } else {
+        dst.location()
+            .filename()
+            .map(String::from)
+            .unwrap_or_else(|| meta.filename_or("payload").to_string())
+    }
+}
+
+/// Write `<name>.<ext>` next to the transferred file; returns its location.
+async fn write_sidecar(
+    dst: &dyn Endpoint,
+    algo: HashAlgo,
+    hex: &str,
+    meta: &SendMeta,
+) -> Result<String> {
+    let name = target_filename(dst, meta);
+    let sidecar = algo.sidecar_name(&name);
+    let loc = dst.location().sibling(&sidecar)?;
+    let content = sidecar_content(hex, &name);
+    let ep = crate::protocols::open(loc.clone())?;
+    let sidecar_meta = SendMeta::from_filename(&sidecar).with_size(content.len() as u64);
+    ep.sender()?
+        .send(Box::pin(std::io::Cursor::new(content)), &sidecar_meta)
+        .await?;
+    debug!(%loc, "checksum file written");
+    Ok(loc.to_string())
+}
+
+/// Look for `<name>.b3`, `.sha256`, `.sha512` next to the source and parse it.
+async fn find_source_checksum(src: &dyn Endpoint) -> Result<(HashAlgo, String)> {
+    let name = src
+        .location()
+        .filename()
+        .ok_or_else(|| {
+            Error::InvalidUrl(
+                "check: the source has no file name to look up a checksum file for".into(),
+            )
+        })?
+        .to_string();
+    let mut tried = Vec::new();
+    for algo in HashAlgo::ALL {
+        let sidecar = algo.sidecar_name(&name);
+        let loc = src.location().sibling(&sidecar)?;
+        tried.push(loc.to_string());
+        let ep = crate::protocols::open(loc.clone())?;
+        let stream = match ep.receiver()?.receive().await {
+            Ok(s) => s,
+            Err(e) => {
+                debug!(%loc, "no checksum file: {e}");
+                continue;
+            }
+        };
+        let text = match crate::stream::read_to_vec(stream, 8192).await {
+            Ok(v) => String::from_utf8_lossy(&v).into_owned(),
+            Err(e) => {
+                debug!(%loc, "unreadable checksum file: {e}");
+                continue;
+            }
+        };
+        match parse_sidecar(&text) {
+            Some((hex, _)) => {
+                info!(%loc, algo = %algo, "checksum file found");
+                return Ok((algo, hex));
+            }
+            None => {
+                return Err(Error::Remote(format!(
+                    "check: {loc} is not a valid checksum file"
+                )));
+            }
+        }
+    }
+    Err(Error::Remote(format!(
+        "check: no checksum file next to the source (tried {})",
+        tried.join(", ")
+    )))
+}
+
+#[allow(dead_code)]
+fn _assert_handle_is_send(_: DigestHandle) {}
 
 #[cfg(test)]
 mod tests {
@@ -242,6 +434,7 @@ mod tests {
                 chunk_size: 8192,
                 capacity: 2,
             },
+            ..Default::default()
         };
         let report = copy_many(
             src.as_ref(),
@@ -289,6 +482,97 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("exceeds"), "{err}");
         assert!(!dir.path().join("out").exists());
+    }
+
+    async fn hash_sidecar(mode: CacheMode) {
+        let dir = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("payload.bin");
+        let data: Vec<u8> = (0..300_000u32).map(|i| (i % 7) as u8).collect();
+        std::fs::write(&src_path, &data).unwrap();
+        let src = crate::open(src_path.to_str().unwrap()).unwrap();
+        let d1 = crate::open(&format!("{}/a/", dir.path().display())).unwrap();
+        let d2 = crate::open(&format!("{}/b/renamed.bin", dir.path().display())).unwrap();
+        let opts = CopyOptions {
+            cache: mode,
+            hash: Some(HashAlgo::Blake3),
+            ..Default::default()
+        };
+        let report = copy_many(src.as_ref(), &[d1.as_ref(), d2.as_ref()], &opts)
+            .await
+            .unwrap();
+        assert!(report.all_ok(), "{:?}", report.targets);
+        let expected = crate::hash::digest_bytes(HashAlgo::Blake3, &data);
+        assert_eq!(report.digests, vec![(HashAlgo::Blake3, expected.clone())]);
+        let s1 = std::fs::read_to_string(dir.path().join("a/payload.bin.b3")).unwrap();
+        assert_eq!(s1, format!("{expected}  payload.bin\n"));
+        let s2 = std::fs::read_to_string(dir.path().join("b/renamed.bin.b3")).unwrap();
+        assert_eq!(s2, format!("{expected}  renamed.bin\n"));
+        assert!(
+            report.targets[0]
+                .sidecar
+                .as_deref()
+                .unwrap()
+                .ends_with("a/payload.bin.b3")
+        );
+    }
+
+    #[tokio::test]
+    async fn hash_sidecar_stream_mode() {
+        hash_sidecar(CacheMode::Stream).await;
+    }
+
+    #[tokio::test]
+    async fn hash_sidecar_memory_mode() {
+        hash_sidecar(CacheMode::Memory { limit: 1 << 20 }).await;
+    }
+
+    #[tokio::test]
+    async fn check_against_source_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("in.bin");
+        let data = vec![7u8; 50_000];
+        std::fs::write(&src_path, &data).unwrap();
+        let good = crate::hash::digest_bytes(HashAlgo::Sha256, &data);
+        std::fs::write(
+            dir.path().join("in.bin.sha256"),
+            format!("{good}  in.bin\n"),
+        )
+        .unwrap();
+
+        let src = crate::open(src_path.to_str().unwrap()).unwrap();
+        let dst = crate::open(&format!("{}/out/", dir.path().display())).unwrap();
+        let opts = CopyOptions {
+            check: true,
+            ..Default::default()
+        };
+        let report = copy_many(src.as_ref(), &[dst.as_ref()], &opts)
+            .await
+            .unwrap();
+        let c = report.checked.unwrap();
+        assert!(c.ok());
+        assert_eq!(c.algo, HashAlgo::Sha256);
+        assert!(
+            report.targets[0].sidecar.is_none(),
+            "check alone writes no sidecar"
+        );
+
+        // Tampered checksum file → mismatch reported, `copy` turns it into an error.
+        std::fs::write(
+            dir.path().join("in.bin.sha256"),
+            format!("{}  in.bin\n", "0".repeat(64)),
+        )
+        .unwrap();
+        let report = copy_many(src.as_ref(), &[dst.as_ref()], &opts)
+            .await
+            .unwrap();
+        assert!(!report.checked.unwrap().ok());
+
+        // No checksum file at all → explicit error.
+        std::fs::remove_file(dir.path().join("in.bin.sha256")).unwrap();
+        let err = copy_many(src.as_ref(), &[dst.as_ref()], &opts)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no checksum file"), "{err}");
     }
 
     #[tokio::test]

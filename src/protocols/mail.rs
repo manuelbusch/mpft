@@ -203,6 +203,15 @@ impl Sender for MailEndpoint {
         let data = stream::read_to_vec(body, self.max_attachment()).await?;
         let content_type = ContentType::parse(&meta.mime())
             .unwrap_or(ContentType::parse("application/octet-stream").unwrap());
+        // The stream is fully read now, so a digest computed upstream is final.
+        let checksum = meta
+            .digest
+            .as_ref()
+            .and_then(|d| d.get().map(|hex| (d.algo(), hex)));
+        let text = match &checksum {
+            Some((algo, hex)) => format!("{text}\n{}: {hex}\n", algo.label()),
+            None => text,
+        };
 
         let mut msg = Message::builder()
             .from(self.sender_address(server)?)
@@ -220,12 +229,18 @@ impl Sender for MailEndpoint {
         {
             msg = msg.bcc(parse_mailbox(bcc)?);
         }
+        let mut parts = MultiPart::mixed()
+            .singlepart(SinglePart::plain(text))
+            .singlepart(Attachment::new(filename.clone()).body(data, content_type));
+        if let Some((algo, hex)) = &checksum {
+            let sidecar = algo.sidecar_name(&filename);
+            parts = parts.singlepart(Attachment::new(sidecar).body(
+                crate::hash::sidecar_content(hex, &filename),
+                ContentType::TEXT_PLAIN,
+            ));
+        }
         let email = msg
-            .multipart(
-                MultiPart::mixed()
-                    .singlepart(SinglePart::plain(text))
-                    .singlepart(Attachment::new(filename.clone()).body(data, content_type)),
-            )
+            .multipart(parts)
             .map_err(|e| Error::transport("mail", e))?;
 
         let transport = self.transport(&cfg)?;

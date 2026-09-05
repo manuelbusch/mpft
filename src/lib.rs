@@ -7,6 +7,7 @@
 
 pub mod endpoint;
 pub mod error;
+pub mod hash;
 pub mod location;
 pub mod protocols;
 pub mod stream;
@@ -16,6 +17,7 @@ pub mod transfer;
 
 pub use endpoint::{Endpoint, Entry, Receiver, SendMeta, Sender};
 pub use error::{Error, Result};
+pub use hash::{DigestHandle, HashAlgo};
 pub use location::{Location, Scheme};
 pub use stream::{ByteStream, MemoryCache, TeeOptions, tee};
 pub use transfer::{

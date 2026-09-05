@@ -96,6 +96,28 @@ delivered twice. `--chunk` and `--queue` tune the streaming buffer.
 Targets that connect before they read (SCP, SMTP) pause the stream briefly at
 the start until they are ready; this is head-of-line blocking, not a deadlock.
 
+## Checksums
+
+```
+mpt copy --hash sha256 report.pdf sftp://srv/in/ "s3://bucket/reports/" "mailto:boss@example.com"
+mpt copy --check sftp://srv/in/report.pdf ./
+```
+
+`--hash sha256|sha512|blake3` computes the digest **while the data streams**
+(one pass, no re-read, no buffering) and writes `<name>.sha256`, `.sha512` or
+`.b3` next to every target that received the file. The content is one line in
+the format of `sha256sum` / `b3sum` (`<hex>  <name>`), so recipients can run
+`sha256sum -c report.pdf.sha256` or `b3sum -c report.pdf.b3`. Mail targets get
+the checksum file as a second attachment plus a `SHA-256: …` line in the body.
+The checksum file is written through a second connection to the same target
+after the transfer succeeded; a failure there is reported for that target.
+
+`--check` looks for `<name>.b3`, `.sha256` or `.sha512` next to the **source**,
+verifies the transferred content against it and fails (exit code 1) on a
+mismatch or when no checksum file exists. The target file is left in place so
+you can inspect it; the message shows both digests. Both flags work together and
+with several targets.
+
 ## Library
 
 ```rust

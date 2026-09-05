@@ -27,6 +27,14 @@ pub enum Error {
     #[error("remote error: {0}")]
     Remote(String),
 
+    /// The transferred content does not match the expected checksum.
+    #[error("{algo} checksum mismatch: expected {expected}, got {actual}")]
+    ChecksumMismatch {
+        algo: &'static str,
+        expected: String,
+        actual: String,
+    },
+
     /// Local I/O error.
     #[error("I/O error: {0}")]
     Io(std::io::Error),

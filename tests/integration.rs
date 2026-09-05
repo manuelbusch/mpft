@@ -179,6 +179,7 @@ async fn fanout_many(cache: mpt::CacheMode, retries: u32) {
             chunk_size: 32 * 1024,
             capacity: 4,
         },
+        ..Default::default()
     };
     let report = tokio::time::timeout(
         Duration::from_secs(180),
@@ -210,6 +211,86 @@ async fn fanout_many(cache: mpt::CacheMode, retries: u32) {
             .await
             .unwrap();
         assert!(got == payload, "content mismatch at {file_url}");
+    }
+}
+
+/// `--hash`: the sidecar next to every real target must contain the digest of
+/// the source, in `sha256sum` format; `--check` must then accept that sidecar.
+#[tokio::test]
+async fn hash_sidecars_on_real_targets_and_check() {
+    let bases: Vec<String> = ["MPT_IT_SFTP", "MPT_IT_S3", "MPT_IT_WEBDAV", "MPT_IT_FTPS"]
+        .iter()
+        .filter_map(|v| env(v))
+        .collect();
+    if bases.is_empty() {
+        eprintln!("skipping hash test: no MPT_IT_* targets set");
+        return;
+    }
+    mpt::init_crypto();
+    let payload = random_payload(300_000 + 1);
+    let name = format!("hashed_{}.bin", std::process::id());
+    let tmp = tempfile::tempdir().unwrap();
+    let local = tmp.path().join(&name);
+    std::fs::write(&local, &payload).unwrap();
+    let expected = mpt::hash::digest_bytes(mpt::HashAlgo::Sha256, &payload);
+
+    let src = mpt::open(local.to_str().unwrap()).unwrap();
+    let targets: Vec<Box<dyn mpt::Endpoint>> =
+        bases.iter().map(|b| mpt::open(b).unwrap()).collect();
+    let refs: Vec<&dyn mpt::Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
+    let opts = mpt::CopyOptions {
+        hash: Some(mpt::HashAlgo::Sha256),
+        ..Default::default()
+    };
+    let report = tokio::time::timeout(
+        Duration::from_secs(120),
+        mpt::copy_many(src.as_ref(), &refs, &opts),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(report.all_ok(), "{:?}", report.targets);
+    assert_eq!(
+        report.digests,
+        vec![(mpt::HashAlgo::Sha256, expected.clone())]
+    );
+
+    for (t, base) in report.targets.iter().zip(&bases) {
+        let sidecar_url = t.sidecar.as_deref().expect("sidecar written");
+        // Read the sidecar back through the protocol itself.
+        let ep = mpt::open(&dir_url(base, &format!("/{name}.sha256"))).unwrap();
+        let mut stream = ep
+            .receiver()
+            .unwrap()
+            .receive()
+            .await
+            .unwrap_or_else(|e| panic!("{sidecar_url}: {e}"));
+        let mut text = String::new();
+        tokio::io::AsyncReadExt::read_to_string(&mut stream, &mut text)
+            .await
+            .unwrap();
+        assert_eq!(
+            text,
+            format!("{expected}  {name}\n"),
+            "sidecar content at {sidecar_url}"
+        );
+
+        // Now copy the remote file back with --check: the remote sidecar must verify it.
+        let remote_file = mpt::open(&dir_url(base, &format!("/{name}"))).unwrap();
+        let back = mpt::open(&format!("{}/", tmp.path().join("back").display())).unwrap();
+        let check_opts = mpt::CopyOptions {
+            check: true,
+            ..Default::default()
+        };
+        let r = mpt::copy_many(remote_file.as_ref(), &[back.as_ref()], &check_opts)
+            .await
+            .unwrap();
+        let c = r.checked.expect("checked");
+        assert!(c.ok(), "{}: expected {} got {}", base, c.expected, c.actual);
+        assert_eq!(
+            std::fs::read(tmp.path().join("back").join(&name)).unwrap(),
+            payload
+        );
     }
 }
 

@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use anstyle::{AnsiColor, Style};
 use anyhow::Context;
 use clap::{ColorChoice, Parser, Subcommand};
-use mpt::{CacheMode, CopyOptions, Location, Scheme, TeeOptions};
+use mpt::{CacheMode, CopyOptions, HashAlgo, Location, Scheme, TeeOptions};
 
 /// Send and receive files over many protocols, addressed by URL prefix.
 #[derive(Parser)]
@@ -47,6 +47,16 @@ struct Cli {
     /// Chunks buffered per target before the source is paused
     #[arg(long, global = true, default_value_t = 16)]
     queue: usize,
+
+    /// Compute a checksum while copying and write <name>.sha256|.sha512|.b3
+    /// next to every target (sha256sum/b3sum format; mail gets it as attachment)
+    #[arg(long, global = true, value_name = "ALGO")]
+    hash: Option<HashAlgo>,
+
+    /// Verify the content against a checksum file next to the source
+    /// (<name>.b3, .sha256 or .sha512); fails if none exists or it mismatches
+    #[arg(long, global = true)]
+    check: bool,
 
     #[command(subcommand)]
     cmd: Cmd,
@@ -157,6 +167,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             chunk_size: cli.chunk as usize,
             capacity: cli.queue,
         },
+        hash: cli.hash,
+        check: cli.check,
     };
 
     match &cli.cmd {
@@ -266,16 +278,24 @@ async fn do_copy(
             t.bytes,
             report.elapsed
         );
-        return Ok(());
+        if let Some(sc) = &t.sidecar {
+            anstream::eprintln!("{DIM}+ {sc}{DIM:#}");
+        }
+        return print_checksums(&report);
     }
     for t in &report.targets {
         match &t.result {
-            Ok(()) => anstream::eprintln!(
-                "{OK}ok    {OK:#}  {NUM}{:>12}{NUM:#} bytes  {NUM}{:>9.2?}{NUM:#}  {DIM}{}{DIM:#}",
-                t.bytes,
-                t.elapsed,
-                t.target
-            ),
+            Ok(()) => {
+                anstream::eprintln!(
+                    "{OK}ok    {OK:#}  {NUM}{:>12}{NUM:#} bytes  {NUM}{:>9.2?}{NUM:#}  {DIM}{}{DIM:#}",
+                    t.bytes,
+                    t.elapsed,
+                    t.target
+                );
+                if let Some(sc) = &t.sidecar {
+                    anstream::eprintln!("{DIM}        + {sc}{DIM:#}");
+                }
+            }
             Err(e) => anstream::eprintln!(
                 "{FAIL}FAILED{FAIL:#}  {NUM}{:>12}{NUM:#} bytes  {NUM}{:>9.2?}{NUM:#}  {DIM}{}{DIM:#}: {FAIL}{e}{FAIL:#}",
                 t.bytes,
@@ -294,8 +314,30 @@ async fn do_copy(
         report.targets.len(),
         report.elapsed
     );
+    print_checksums(&report)?;
     if failed > 0 {
         anyhow::bail!("{failed} of {} targets failed", report.targets.len());
+    }
+    Ok(())
+}
+
+/// Print computed digests and the `--check` verdict; a mismatch is an error.
+fn print_checksums(report: &mpt::FanoutReport) -> anyhow::Result<()> {
+    for (algo, hex) in &report.digests {
+        anstream::eprintln!("{HEAD}{:<7}{HEAD:#} {NUM}{hex}{NUM:#}", algo.to_string());
+    }
+    if let Some(c) = &report.checked {
+        if c.ok() {
+            anstream::eprintln!("{OK}check ok{OK:#} ({})", c.algo.label());
+        } else {
+            anstream::eprintln!(
+                "{FAIL}CHECK FAILED{FAIL:#} ({}): expected {NUM}{}{NUM:#}, got {NUM}{}{NUM:#}",
+                c.algo.label(),
+                c.expected,
+                c.actual
+            );
+            return Err(c.error().into());
+        }
     }
     Ok(())
 }

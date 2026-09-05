@@ -24,6 +24,9 @@ pub struct SendMeta {
     pub size: Option<u64>,
     /// MIME type if known; otherwise guessed from `filename`.
     pub content_type: Option<String>,
+    /// Checksum of the payload, available once the stream has been read to
+    /// EOF. Senders that cannot place a sidecar file (mail) use it directly.
+    pub digest: Option<crate::DigestHandle>,
 }
 
 impl SendMeta {
