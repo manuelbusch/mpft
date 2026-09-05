@@ -67,6 +67,7 @@ mpt recv <SRC_URL> [LOCAL_PATH]  shorthand for copy into a local path (default .
 mpt ls <URL>                     list a directory
 mpt schemes                      print the table above
   -v / -vv / -vvv   log level    --insecure   disable TLS verification    --password <pw>
+  --color auto|always|never      colored output (auto: only on a terminal, honours NO_COLOR)
 ```
 
 ## Several targets at once

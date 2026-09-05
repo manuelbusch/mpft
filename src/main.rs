@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use anstyle::{AnsiColor, Style};
 use anyhow::Context;
-use clap::{Parser, Subcommand};
+use clap::{ColorChoice, Parser, Subcommand};
 use mpt::{CacheMode, CopyOptions, Location, Scheme, TeeOptions};
 
 /// Send and receive files over many protocols, addressed by URL prefix.
@@ -16,6 +17,10 @@ struct Cli {
     /// Disable TLS certificate verification for all endpoints
     #[arg(long, global = true)]
     insecure: bool,
+
+    /// Colored output: auto (only on a terminal, honours NO_COLOR), always, never
+    #[arg(long, global = true, default_value = "auto", value_name = "WHEN")]
+    color: ColorChoice,
 
     /// Password for the source and target if not given in the URL
     #[arg(long, env = "MPT_PASSWORD", global = true, hide_env_values = true)]
@@ -69,18 +74,43 @@ enum Cmd {
     Schemes,
 }
 
+// Styles used for terminal output. Codes are stripped automatically by
+// `anstream` when the stream is not a terminal (or `--color never`).
+const OK: Style = AnsiColor::Green.on_default().bold();
+const FAIL: Style = AnsiColor::Red.on_default().bold();
+const WARN: Style = AnsiColor::Yellow.on_default().bold();
+const NUM: Style = AnsiColor::Cyan.on_default();
+const DIR: Style = AnsiColor::Blue.on_default().bold();
+const HEAD: Style = Style::new().bold();
+const DIM: Style = Style::new().dimmed();
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
+    init_colors(cli.color);
     init_logging(cli.verbose);
     mpt::init_crypto();
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("error: {e:#}");
+            anstream::eprintln!("{FAIL}error:{FAIL:#} {e:#}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn init_colors(choice: ColorChoice) {
+    let global = match choice {
+        ColorChoice::Auto => anstream::ColorChoice::Auto,
+        ColorChoice::Always => anstream::ColorChoice::Always,
+        ColorChoice::Never => anstream::ColorChoice::Never,
+    };
+    global.write_global();
+}
+
+/// Whether colored output will actually reach stderr (for tracing's ANSI setting).
+fn stderr_is_colored() -> bool {
+    anstream::AutoStream::choice(&std::io::stderr()) != anstream::ColorChoice::Never
 }
 
 fn init_logging(verbosity: u8) {
@@ -95,6 +125,7 @@ fn init_logging(verbosity: u8) {
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
+        .with_ansi(stderr_is_colored())
         .init();
 }
 
@@ -160,23 +191,37 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             for e in entries {
                 let kind = if e.is_dir { "d" } else { "-" };
                 let size = e.size.map(|s| s.to_string()).unwrap_or_else(|| "-".into());
-                println!("{kind} {size:>12}  {}", e.name);
+                let name_style = if e.is_dir { DIR } else { Style::new() };
+                anstream::println!(
+                    "{DIM}{kind}{DIM:#} {NUM}{size:>12}{NUM:#}  {name_style}{}{name_style:#}",
+                    e.name
+                );
             }
             Ok(())
         }
         Cmd::Schemes => {
-            println!(
-                "{:<11} {:<5} {:<5} {:<7} {:<9} options",
-                "prefix", "recv", "send", "port", "feature"
+            anstream::println!(
+                "{HEAD}{:<11} {:<5} {:<5} {:<7} {:<9} options{HEAD:#}",
+                "prefix",
+                "recv",
+                "send",
+                "port",
+                "feature"
             );
             for i in Scheme::ALL {
-                let yn = |b: bool| if b { "yes" } else { "no" };
+                let yn = |b: bool| {
+                    if b {
+                        format!("{OK}{:<5}{OK:#}", "yes")
+                    } else {
+                        format!("{FAIL}{:<5}{FAIL:#}", "no")
+                    }
+                };
                 let port = i
                     .default_port
                     .map(|p| p.to_string())
                     .unwrap_or_else(|| "-".into());
-                println!(
-                    "{:<11} {:<5} {:<5} {:<7} {:<9} {}",
+                anstream::println!(
+                    "{HEAD}{:<11}{HEAD:#} {} {} {:<7} {:<9} {DIM}{}{DIM:#}",
                     i.prefix,
                     yn(i.can_receive),
                     yn(i.can_send),
@@ -184,16 +229,16 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     i.feature,
                     i.options
                 );
-                println!("{:<11} {}", "", i.description);
+                anstream::println!("{:<11} {}", "", i.description);
             }
-            println!(
-                "\nCredentials: user[:password]@ in the URL, else MPT_PASSWORD / MPT_SMTP_PASSWORD."
+            anstream::println!(
+                "\n{HEAD}Credentials:{HEAD:#} user[:password]@ in the URL, else MPT_PASSWORD / MPT_SMTP_PASSWORD."
             );
-            println!(
-                "SSH keys: MPT_SSH_KEY, else ssh-agent (SSH_AUTH_SOCK), else ~/.ssh/id_ed25519, id_rsa."
+            anstream::println!(
+                "{HEAD}SSH keys:{HEAD:#} MPT_SSH_KEY, else ssh-agent (SSH_AUTH_SOCK), else ~/.ssh/id_ed25519, id_rsa."
             );
-            println!(
-                "Mail: MPT_SMTP_URL (for mailto:), MPT_MAIL_FROM.  S3: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_ENDPOINT_URL."
+            anstream::println!(
+                "{HEAD}Mail:{HEAD:#} MPT_SMTP_URL (for mailto:), MPT_MAIL_FROM.  {HEAD}S3:{HEAD:#} AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_ENDPOINT_URL."
             );
             Ok(())
         }
@@ -214,27 +259,35 @@ async fn do_copy(
         if let Err(e) = &t.result {
             anyhow::bail!("copy {} -> {}: {e}", report.source, t.target);
         }
-        eprintln!(
-            "{} -> {}: {} bytes in {:.2?}",
-            report.source, t.target, t.bytes, report.elapsed
+        anstream::eprintln!(
+            "{DIM}{}{DIM:#} -> {DIM}{}{DIM:#}: {NUM}{}{NUM:#} bytes in {NUM}{:.2?}{NUM:#}",
+            report.source,
+            t.target,
+            t.bytes,
+            report.elapsed
         );
         return Ok(());
     }
     for t in &report.targets {
         match &t.result {
-            Ok(()) => eprintln!(
-                "ok      {:>12} bytes  {:>9.2?}  {}",
-                t.bytes, t.elapsed, t.target
+            Ok(()) => anstream::eprintln!(
+                "{OK}ok    {OK:#}  {NUM}{:>12}{NUM:#} bytes  {NUM}{:>9.2?}{NUM:#}  {DIM}{}{DIM:#}",
+                t.bytes,
+                t.elapsed,
+                t.target
             ),
-            Err(e) => eprintln!(
-                "FAILED  {:>12} bytes  {:>9.2?}  {}: {e}",
-                t.bytes, t.elapsed, t.target
+            Err(e) => anstream::eprintln!(
+                "{FAIL}FAILED{FAIL:#}  {NUM}{:>12}{NUM:#} bytes  {NUM}{:>9.2?}{NUM:#}  {DIM}{}{DIM:#}: {FAIL}{e}{FAIL:#}",
+                t.bytes,
+                t.elapsed,
+                t.target
             ),
         }
     }
     let failed = report.failures().count();
-    eprintln!(
-        "{}: {} bytes read, {}/{} targets ok in {:.2?}",
+    let summary = if failed == 0 { OK } else { WARN };
+    anstream::eprintln!(
+        "{DIM}{}{DIM:#}: {NUM}{}{NUM:#} bytes read, {summary}{}/{} targets ok{summary:#} in {NUM}{:.2?}{NUM:#}",
         report.source,
         report.bytes_read,
         report.targets.len() - failed,
