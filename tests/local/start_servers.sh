@@ -69,6 +69,7 @@ export MPT_SMTP_URL="smtp://127.0.0.1:8025/?tls=none"
 export MPT_IT_MAILDIR="$WORK/mail"
 export MPT_IT_SFTP="sftp://$USER@127.0.0.1:2222/$WORK/ssh/data/?key=$WORK/ssh/client_key&known_hosts=off"
 export MPT_IT_SCP="scp://$USER@127.0.0.1:2222/$WORK/ssh/data/?key=$WORK/ssh/client_key&known_hosts=off"
+export MPT_IT_SSH_HOSTKEY="$(ssh-keygen -lf "$WORK/ssh/host_key.pub" | cut -d' ' -f2)"
 ENV
 echo "servers started; logs in $WORK/logs"
 echo "next: source $WORK/env.sh && cargo test --test integration"

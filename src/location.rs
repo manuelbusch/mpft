@@ -57,7 +57,7 @@ impl Scheme {
             can_receive: true,
             can_send: true,
             default_port: Some(22),
-            options: "key=<file>, known_hosts=strict|accept-new|off",
+            options: "key=<file>, known_hosts=strict|accept-new|off, hostkey=SHA256:…",
             feature: "ssh",
         },
         SchemeInfo {
@@ -67,7 +67,7 @@ impl Scheme {
             can_receive: true,
             can_send: true,
             default_port: Some(22),
-            options: "key=<file>, known_hosts=strict|accept-new|off",
+            options: "key=<file>, known_hosts=strict|accept-new|off, hostkey=SHA256:…",
             feature: "ssh",
         },
         SchemeInfo {

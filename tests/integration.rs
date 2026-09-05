@@ -115,6 +115,47 @@ macro_rules! roundtrip_test {
     };
 }
 
+/// A pinned host key is accepted, a wrong one is refused before any transfer.
+#[tokio::test]
+async fn sftp_host_key_pinning() {
+    let (Some(base), Some(fp)) = (env("MPT_IT_SFTP"), env("MPT_IT_SSH_HOSTKEY")) else {
+        eprintln!("skipping: MPT_IT_SFTP / MPT_IT_SSH_HOSTKEY not set");
+        return;
+    };
+    mpt::init_crypto();
+    let pinned = |f: &str| {
+        base.replace(
+            "known_hosts=off",
+            &format!("known_hosts=strict&hostkey={f}"),
+        )
+    };
+
+    let ok = mpt::open(&pinned(&fp)).unwrap();
+    ok.receiver()
+        .unwrap()
+        .list()
+        .await
+        .expect("pinned host key must be accepted");
+
+    let wrong = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let bad = mpt::open(&pinned(wrong)).unwrap();
+    let err = bad
+        .receiver()
+        .unwrap()
+        .list()
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("hostkey= pins"), "{err}");
+    assert!(
+        err.contains(&fp),
+        "error should name the real fingerprint: {err}"
+    );
+
+    // A malformed fingerprint is rejected while parsing, not on connect.
+    assert!(mpt::open(&pinned("nonsense")).is_err());
+}
+
 roundtrip_test!(sftp_roundtrip, "MPT_IT_SFTP", 3 * 1024 * 1024 + 17, true);
 roundtrip_test!(scp_roundtrip, "MPT_IT_SCP", 2 * 1024 * 1024 + 5, false);
 roundtrip_test!(ftp_roundtrip, "MPT_IT_FTP", 1024 * 1024 + 3, true);

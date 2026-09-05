@@ -23,7 +23,7 @@ The crate is a library (`mpt`) with a thin CLI binary of the same name.
 | Prefix | Protocol | Receive | Send | Port | Options |
 |---|---|---|---|---|---|
 | `file:///abs/path` or a bare path | local file system | ✓ | ✓ | – | – |
-| `sftp://user@host/path` | SFTP over SSH | ✓ | ✓ | 22 | `key=<file>`, `passphrase=`, `known_hosts=strict\|accept-new\|off`, `timeout=<s>` |
+| `sftp://user@host/path` | SFTP over SSH | ✓ | ✓ | 22 | `key=<file>`, `passphrase=`, `known_hosts=strict\|accept-new\|off`, `hostkey=SHA256:…`, `timeout=<s>` |
 | `scp://user@host/path` | SCP over SSH | ✓ | ✓ | 22 | as sftp (no `ls`) |
 | `ftp://user@host/path` | FTP without TLS | ✓ | ✓ | 21 | `passive=`, `nat=` |
 | `ftps://user@host/path` | FTP with TLS, explicit `AUTH TLS` by default | ✓ | ✓ | 21 / 990 | `tls=explicit\|implicit`, `insecure=`, `passive=`, `nat=` |
@@ -52,7 +52,8 @@ Priority: URL > environment > default. Passwords are masked in all log output.
 | `MPT_PASSWORD` | password for sftp/scp/ftp/ftps/http/webdav when not in the URL (`--password` on the CLI) |
 | `MPT_SSH_KEY`, `MPT_SSH_KEY_PASSPHRASE` | SSH private key. Without it: ssh-agent (`SSH_AUTH_SOCK`), then `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`, then password |
 | `MPT_SSH_USER` | SSH user when not in the URL (default `$USER`) |
-| `MPT_SSH_KNOWN_HOSTS` | default host-key policy (`accept-new` if unset) |
+| `MPT_SSH_KNOWN_HOSTS` | default host-key policy (`strict` if unset) |
+| `MPT_SSH_HOSTKEY` | expected host-key fingerprints, comma-separated (`?hostkey=` per URL) |
 | `MPT_SMTP_URL`, `MPT_SMTP_PASSWORD` | SMTP server for `mailto:` targets, e.g. `smtp://user@mail.example.com:587?tls=starttls` |
 | `MPT_MAIL_FROM` | sender address (also `?from=`, or the SMTP user if it is an address) |
 | `MPT_MAIL_MAX_ATTACHMENT` | attachment size limit in bytes (default 25 MiB; mail is buffered in memory) |
@@ -116,6 +117,30 @@ verifies the transferred content against it and fails (exit code 1) on a
 mismatch or when no checksum file exists. The target file is left in place so
 you can inspect it; the message shows both digests. Both flags work together and
 with several targets.
+
+## Host keys
+
+`sftp://` and `scp://` check the server's host key against `~/.ssh/known_hosts`
+before anything is transferred. The policy is `strict` by default: an unknown
+host, a changed key or an unreadable `known_hosts` file aborts the connection,
+and the error names the fingerprint the server offered.
+
+```
+mpt ls sftp://srv/in/
+error: host key of srv:22 is not in known_hosts: SHA256:f29GJDwDP5he…
+       Verify it, then add it with `ssh-keyscan -p 22 srv >> ~/.ssh/known_hosts`,
+       or connect with ?hostkey=SHA256:f29GJDwDP5he… or ?known_hosts=accept-new
+```
+
+| Setting | Meaning |
+|---|---|
+| `?known_hosts=strict` (default) | only keys already in `known_hosts` are accepted |
+| `?known_hosts=accept-new` | trust on first use: a new key is added to `known_hosts` and reported on stderr; a *changed* key is still refused |
+| `?known_hosts=off` | no verification at all — only for throwaway test servers |
+| `?hostkey=SHA256:…` | pin the expected key; `known_hosts` is not consulted. Repeat the option for several keys |
+
+Pinning is the right choice for scripts and CI, where no `known_hosts` file is
+maintained. `+` in a fingerprint may be written as `%2B` or left as is.
 
 ## Signatures
 
