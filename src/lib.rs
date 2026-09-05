@@ -10,6 +10,7 @@ pub mod error;
 pub mod hash;
 pub mod location;
 pub mod protocols;
+pub mod sign;
 pub mod stream;
 #[cfg(feature = "ftp")]
 pub mod tls;
@@ -19,6 +20,7 @@ pub use endpoint::{Endpoint, Entry, Receiver, SendMeta, Sender};
 pub use error::{Error, Result};
 pub use hash::{DigestHandle, HashAlgo};
 pub use location::{Location, Scheme};
+pub use sign::{SignFormat, SignSpec, Signer, Verifier, VerifySpec};
 pub use stream::{ByteStream, MemoryCache, TeeOptions, tee};
 pub use transfer::{
     CacheMode, CopyOptions, CopyReport, FanoutReport, TargetReport, copy, copy_many,

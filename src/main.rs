@@ -4,6 +4,7 @@ use std::process::ExitCode;
 use anstyle::{AnsiColor, Style};
 use anyhow::Context;
 use clap::{ColorChoice, Parser, Subcommand};
+use mpt::sign::{SignSpec, VerifySpec};
 use mpt::{CacheMode, CopyOptions, HashAlgo, Location, Scheme, TeeOptions};
 
 /// Send and receive files over many protocols, addressed by URL prefix.
@@ -57,6 +58,27 @@ struct Cli {
     /// (<name>.b3, .sha256 or .sha512); fails if none exists or it mismatches
     #[arg(long, global = true)]
     check: bool,
+
+    /// Sign the checksum file: `ssh` (ssh-agent or default key), `ssh:<key>`
+    /// or `pgp:<secret-key.asc>`; passphrase via MPT_SIGN_KEY_PASSPHRASE.
+    /// Implies --hash sha256 unless --hash is given.
+    #[arg(long, global = true, value_name = "SPEC")]
+    sign: Option<SignSpec>,
+
+    /// With --check: require an OpenSSH signature (<name>.<ext>.sig) made by
+    /// a key in this allowed_signers file. Implies --check.
+    #[arg(
+        long,
+        global = true,
+        value_name = "FILE",
+        conflicts_with = "verify_keyring"
+    )]
+    verify_signers: Option<PathBuf>,
+
+    /// With --check: require an OpenPGP signature (<name>.<ext>.asc) made by
+    /// a key in this armored keyring file. Implies --check.
+    #[arg(long, global = true, value_name = "FILE")]
+    verify_keyring: Option<PathBuf>,
 
     #[command(subcommand)]
     cmd: Cmd,
@@ -167,9 +189,25 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             chunk_size: cli.chunk as usize,
             capacity: cli.queue,
         },
-        hash: cli.hash,
-        check: cli.check,
+        hash: cli.hash.or(cli.sign.as_ref().map(|_| HashAlgo::Sha256)),
+        check: cli.check || cli.verify_signers.is_some() || cli.verify_keyring.is_some(),
+        sign: match &cli.sign {
+            Some(spec) => Some(mpt::sign::load_signer(spec).await?),
+            None => None,
+        },
+        verify: match (&cli.verify_signers, &cli.verify_keyring) {
+            (Some(p), _) => Some(mpt::sign::load_verifier(&VerifySpec::SshAllowedSigners(
+                p.clone(),
+            ))?),
+            (_, Some(p)) => Some(mpt::sign::load_verifier(&VerifySpec::PgpKeyring(
+                p.clone(),
+            ))?),
+            _ => None,
+        },
     };
+    if let Some(s) = &opts.sign {
+        tracing::info!(signer = %s.identity(), "signing checksum files");
+    }
 
     match &cli.cmd {
         Cmd::Copy { src, dst } => {
@@ -281,7 +319,10 @@ async fn do_copy(
         if let Some(sc) = &t.sidecar {
             anstream::eprintln!("{DIM}+ {sc}{DIM:#}");
         }
-        return print_checksums(&report);
+        if let Some(sg) = &t.signature {
+            anstream::eprintln!("{DIM}+ {sg}{DIM:#}");
+        }
+        return print_checksums(&report, opts);
     }
     for t in &report.targets {
         match &t.result {
@@ -294,6 +335,9 @@ async fn do_copy(
                 );
                 if let Some(sc) = &t.sidecar {
                     anstream::eprintln!("{DIM}        + {sc}{DIM:#}");
+                }
+                if let Some(sg) = &t.signature {
+                    anstream::eprintln!("{DIM}        + {sg}{DIM:#}");
                 }
             }
             Err(e) => anstream::eprintln!(
@@ -314,7 +358,7 @@ async fn do_copy(
         report.targets.len(),
         report.elapsed
     );
-    print_checksums(&report)?;
+    print_checksums(&report, opts)?;
     if failed > 0 {
         anyhow::bail!("{failed} of {} targets failed", report.targets.len());
     }
@@ -322,11 +366,26 @@ async fn do_copy(
 }
 
 /// Print computed digests and the `--check` verdict; a mismatch is an error.
-fn print_checksums(report: &mpt::FanoutReport) -> anyhow::Result<()> {
+fn print_checksums(report: &mpt::FanoutReport, opts: &CopyOptions) -> anyhow::Result<()> {
     for (algo, hex) in &report.digests {
         anstream::eprintln!("{HEAD}{:<7}{HEAD:#} {NUM}{hex}{NUM:#}", algo.to_string());
     }
+    if let Some(s) = &opts.sign
+        && report
+            .targets
+            .iter()
+            .any(|t| t.signature.is_some() || t.result.is_ok())
+    {
+        anstream::eprintln!(
+            "{HEAD}signed {HEAD:#} {DIM}{} ({}){DIM:#}",
+            s.identity(),
+            s.format().label()
+        );
+    }
     if let Some(c) = &report.checked {
+        if let Some(who) = &c.signer {
+            anstream::eprintln!("{OK}signature ok{OK:#} {DIM}{who}{DIM:#}");
+        }
         if c.ok() {
             anstream::eprintln!("{OK}check ok{OK:#} ({})", c.algo.label());
         } else {

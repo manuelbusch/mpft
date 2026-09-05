@@ -68,6 +68,7 @@ mpt ls <URL>                     list a directory
 mpt schemes                      print the table above
   -v / -vv / -vvv   log level    --insecure   disable TLS verification    --password <pw>
   --color auto|always|never      colored output (auto: only on a terminal, honours NO_COLOR)
+  --hash <ALGO>  --check        checksums (see below)     --sign <SPEC>  --verify-signers/--verify-keyring <FILE>
 ```
 
 ## Several targets at once
@@ -117,6 +118,42 @@ verifies the transferred content against it and fails (exit code 1) on a
 mismatch or when no checksum file exists. The target file is left in place so
 you can inspect it; the message shows both digests. Both flags work together and
 with several targets.
+
+## Signatures
+
+```
+mpt copy --sign ssh:~/.ssh/id_ed25519 report.pdf sftp://srv/in/
+mpt copy --sign pgp:release-key.asc --hash blake3 report.pdf "s3://bucket/releases/"
+mpt copy --verify-signers allowed_signers sftp://srv/in/report.pdf ./
+mpt copy --verify-keyring release-pub.asc "s3://bucket/releases/report.pdf" ./
+```
+
+A checksum alone protects against transfer errors, not against someone who can
+replace both the file and its checksum file on the target. `--sign` adds a
+detached signature over the checksum file (`report.pdf.sha256.sig` or `.asc`),
+written last, so it doubles as the "transfer complete" marker. `--sign` implies
+`--hash sha256` unless `--hash` is given. Mail targets get the signature as a
+third attachment.
+
+| Backend | `--sign` | Signature file | Receiver verifies with |
+|---|---|---|---|
+| OpenSSH | `ssh` (ssh-agent, then `MPT_SSH_KEY`, then `~/.ssh/id_*`) or `ssh:<key>` | `<name>.sha256.sig` (SSHSIG, namespace `file`) | `ssh-keygen -Y verify -f allowed_signers -I <principal> -n file -s report.pdf.sha256.sig < report.pdf.sha256` |
+| OpenPGP | `pgp:<secret-key.asc>` (`gpg --export-secret-keys --armor`) | `<name>.sha256.asc` | `gpg --verify report.pdf.sha256.asc report.pdf.sha256` |
+
+Encrypted key files take their passphrase from `MPT_SIGN_KEY_PASSPHRASE`;
+`MPT_SIGN_KEY_FINGERPRINT` selects a specific ssh-agent identity.
+
+On the receiving side `--verify-signers <allowed_signers>` (OpenSSH) or
+`--verify-keyring <pubkeys.asc>` (OpenPGP) imply `--check`, require the
+signature next to the source's checksum file and reject the transfer **before
+any data is copied** when the signature is missing, invalid or made by a key
+that is not trusted. The signer's identity is printed on success.
+
+Both backends are verified against the reference tools in the test-suite:
+OpenSSH accepts mpt's signatures and vice versa, and `gpg --verify` accepts
+mpt's OpenPGP signatures. A signature proves origin and integrity, not
+freshness: an old, validly signed file can be re-delivered. Cargo features
+`sign-ssh` and `sign-pgp` (both default) select the backends.
 
 ## Library
 

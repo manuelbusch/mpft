@@ -14,7 +14,7 @@ pub struct Entry {
 }
 
 /// Metadata that accompanies a payload on [`Sender::send`].
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct SendMeta {
     /// File name of the payload (used when the target is a directory, for
     /// mail attachments and for Content-Disposition).
@@ -27,6 +27,21 @@ pub struct SendMeta {
     /// Checksum of the payload, available once the stream has been read to
     /// EOF. Senders that cannot place a sidecar file (mail) use it directly.
     pub digest: Option<crate::DigestHandle>,
+    /// Signer for the checksum file; senders that cannot place a sibling
+    /// file (mail) attach the signature themselves.
+    pub signer: Option<std::sync::Arc<dyn crate::sign::Signer>>,
+}
+
+impl std::fmt::Debug for SendMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SendMeta")
+            .field("filename", &self.filename)
+            .field("size", &self.size)
+            .field("content_type", &self.content_type)
+            .field("digest", &self.digest)
+            .field("signer", &self.signer.as_ref().map(|s| s.identity()))
+            .finish()
+    }
 }
 
 impl SendMeta {

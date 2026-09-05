@@ -294,8 +294,113 @@ async fn hash_sidecars_on_real_targets_and_check() {
     }
 }
 
-/// Sends an attachment via `mailto:` and, if `MPT_IT_MAILDIR` points at the
-/// receiving maildir, verifies that a new message containing the file arrived.
+/// `--sign ssh:<key>` on real targets: the signature next to the checksum file
+/// must verify with the allowed_signers file, both through mpt and ssh-keygen.
+#[tokio::test]
+async fn signed_sidecars_on_real_targets() {
+    let bases: Vec<String> = ["MPT_IT_SFTP", "MPT_IT_S3", "MPT_IT_WEBDAV"]
+        .iter()
+        .filter_map(|v| env(v))
+        .collect();
+    if bases.is_empty() {
+        eprintln!("skipping signing test: no MPT_IT_* targets set");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let key = tmp.path().join("id_ed25519");
+    let ok = std::process::Command::new("ssh-keygen")
+        .args([
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            "it@example.com",
+            "-f",
+        ])
+        .arg(&key)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        eprintln!("skipping signing test: ssh-keygen not available");
+        return;
+    }
+    let signers = tmp.path().join("allowed_signers");
+    std::fs::write(
+        &signers,
+        format!(
+            "it@example.com {}",
+            std::fs::read_to_string(tmp.path().join("id_ed25519.pub")).unwrap()
+        ),
+    )
+    .unwrap();
+    mpt::init_crypto();
+
+    let name = format!("signed_{}.bin", std::process::id());
+    let payload = random_payload(123_457);
+    let local = tmp.path().join(&name);
+    std::fs::write(&local, &payload).unwrap();
+    let src = mpt::open(local.to_str().unwrap()).unwrap();
+    let targets: Vec<Box<dyn mpt::Endpoint>> =
+        bases.iter().map(|b| mpt::open(b).unwrap()).collect();
+    let refs: Vec<&dyn mpt::Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
+    let signer =
+        mpt::sign::load_signer(&mpt::SignSpec::parse(&format!("ssh:{}", key.display())).unwrap())
+            .await
+            .unwrap();
+    let opts = mpt::CopyOptions {
+        hash: Some(mpt::HashAlgo::Blake3),
+        sign: Some(signer),
+        ..Default::default()
+    };
+    let report = tokio::time::timeout(
+        Duration::from_secs(120),
+        mpt::copy_many(src.as_ref(), &refs, &opts),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(report.all_ok(), "{:?}", report.targets);
+
+    let verifier =
+        mpt::sign::load_verifier(&mpt::VerifySpec::SshAllowedSigners(signers.clone())).unwrap();
+    for (t, base) in report.targets.iter().zip(&bases) {
+        assert!(
+            t.signature
+                .as_deref()
+                .unwrap()
+                .contains(&format!("{name}.b3.sig")),
+            "{:?}",
+            t.signature
+        );
+        // Fetch the remote file with check + verify.
+        let remote = mpt::open(&dir_url(base, &format!("/{name}"))).unwrap();
+        let back = mpt::open(&format!("{}/", tmp.path().join("back").display())).unwrap();
+        let opts = mpt::CopyOptions {
+            check: true,
+            verify: Some(verifier.clone()),
+            ..Default::default()
+        };
+        let r = mpt::copy_many(remote.as_ref(), &[back.as_ref()], &opts)
+            .await
+            .unwrap();
+        let c = r.checked.unwrap();
+        assert!(
+            c.ok() && c.signer.as_deref().unwrap().starts_with("it@example.com"),
+            "{base}: {c:?}"
+        );
+        assert_eq!(
+            std::fs::read(tmp.path().join("back").join(&name)).unwrap(),
+            payload
+        );
+    }
+}
+
+/// Sends an attachment via `mailto:` with `--hash` and (when ssh-keygen is
+/// available) `--sign`. If `MPT_IT_MAILDIR` points at the receiving maildir,
+/// the message must carry the file, the checksum file and the signature.
 #[tokio::test]
 async fn mailto_send() {
     let Some(target) = env("MPT_IT_MAILTO") else {
@@ -313,12 +418,45 @@ async fn mailto_send() {
         ep.as_receiver().is_none(),
         "mail endpoints must not receive"
     );
-    let meta = SendMeta::from_filename(&name).with_size(payload.len() as u64);
-    ep.sender()
-        .unwrap()
-        .send(Box::pin(std::io::Cursor::new(payload)), &meta)
+
+    let tmp = tempfile::tempdir().unwrap();
+    let local = tmp.path().join(&name);
+    std::fs::write(&local, &payload).unwrap();
+    let src = mpt::open(local.to_str().unwrap()).unwrap();
+
+    let key = tmp.path().join("id_ed25519");
+    let signer = if std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+        .arg(&key)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+    {
+        Some(
+            mpt::sign::load_signer(
+                &mpt::SignSpec::parse(&format!("ssh:{}", key.display())).unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+    } else {
+        None
+    };
+    let signed = signer.is_some();
+    let opts = mpt::CopyOptions {
+        hash: Some(mpt::HashAlgo::Blake3),
+        sign: signer,
+        ..Default::default()
+    };
+    let report = mpt::copy_many(src.as_ref(), &[ep.as_ref()], &opts)
         .await
-        .expect("send mail");
+        .expect("copy_many");
+    assert!(report.all_ok(), "{:?}", report.targets);
+    assert!(
+        report.targets[0].sidecar.is_none(),
+        "mail gets the checksum inline, not as a sidecar"
+    );
+    let expected = mpt::hash::digest_bytes(mpt::HashAlgo::Blake3, &payload);
 
     if let Some(dir) = maildir {
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -327,13 +465,27 @@ async fn mailto_send() {
             count_before + 1,
             "expected one new message in {dir}"
         );
-        let found = walk(&dir).into_iter().any(|p| {
-            std::fs::read_to_string(&p)
-                .map(|s| s.contains(&name))
-                .unwrap_or(false)
-        });
-        assert!(found, "no message mentions attachment {name}");
+        let msg = walk(&dir)
+            .into_iter()
+            .filter_map(|p| std::fs::read_to_string(&p).ok())
+            .find(|s| s.contains(&name))
+            .expect("no message mentions the attachment");
+        assert!(
+            msg.contains(&format!("filename=\"{name}.b3\"")),
+            "checksum attachment missing:\n{msg}"
+        );
+        assert!(
+            msg.contains(&format!("BLAKE3: {expected}")),
+            "digest line missing in body:\n{msg}"
+        );
+        if signed {
+            assert!(
+                msg.contains(&format!("filename=\"{name}.b3.sig\"")),
+                "signature attachment missing:\n{msg}"
+            );
+        }
     }
+    let _ = SendMeta::from_filename("unused");
 }
 
 fn walk(dir: &str) -> Vec<std::path::PathBuf> {

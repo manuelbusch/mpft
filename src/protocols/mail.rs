@@ -234,10 +234,17 @@ impl Sender for MailEndpoint {
             .singlepart(Attachment::new(filename.clone()).body(data, content_type));
         if let Some((algo, hex)) = &checksum {
             let sidecar = algo.sidecar_name(&filename);
-            parts = parts.singlepart(Attachment::new(sidecar).body(
-                crate::hash::sidecar_content(hex, &filename),
-                ContentType::TEXT_PLAIN,
-            ));
+            let content = crate::hash::sidecar_content(hex, &filename);
+            parts = parts.singlepart(
+                Attachment::new(sidecar.clone()).body(content.clone(), ContentType::TEXT_PLAIN),
+            );
+            // Detached signature over the checksum file as a third attachment.
+            if let Some(signer) = &meta.signer {
+                let sig = signer.sign(content.as_bytes()).await?;
+                let sig_name = signer.format().signature_name(&sidecar);
+                parts =
+                    parts.singlepart(Attachment::new(sig_name).body(sig, ContentType::TEXT_PLAIN));
+            }
         }
         let email = msg
             .multipart(parts)

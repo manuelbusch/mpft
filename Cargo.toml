@@ -15,13 +15,15 @@ path = "src/main.rs"
 
 [features]
 default = ["all"]
-all = ["ssh", "ftp", "http", "webdav", "s3", "mail"]
+all = ["ssh", "ftp", "http", "webdav", "s3", "mail", "sign-ssh", "sign-pgp"]
 ssh = ["dep:russh", "dep:russh-sftp", "dep:dirs"]
 ftp = ["dep:suppaftp", "dep:tokio-rustls", "dep:rustls-platform-verifier"]
 http = ["dep:reqwest"]
 webdav = ["http", "dep:reqwest_dav"]
 s3 = ["dep:object_store"]
 mail = ["dep:lettre"]
+sign-ssh = ["dep:ssh-key", "dep:dirs"]
+sign-pgp = ["dep:pgp", "dep:rand"]
 
 [dependencies]
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "fs", "io-util", "net", "sync", "time"] }
@@ -37,6 +39,7 @@ bytes = "1"
 sha2 = "0.10"
 blake3 = "1"
 hex = "0.4"
+signature = "3"
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
 
 # CLI
@@ -62,6 +65,11 @@ reqwest_dav = { version = "0.3", optional = true, default-features = false, feat
 
 # s3
 object_store = { version = "0.14", optional = true, features = ["aws"] }
+
+# signing
+ssh-key = { version = "0.7.0-rc.11", optional = true, default-features = false, features = ["std", "alloc", "ed25519", "rsa", "ecdsa", "p256", "p384", "rand_core", "encryption"] }
+pgp = { version = "0.20", optional = true }
+rand = { version = "0.8", optional = true }
 
 # mail
 lettre = { version = "0.11", optional = true, default-features = false, features = ["smtp-transport", "builder", "hostname", "pool", "tokio1", "tokio1-rustls", "aws-lc-rs", "rustls-platform-verifier"] }

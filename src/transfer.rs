@@ -4,7 +4,10 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info, warn};
 
+use std::sync::Arc;
+
 use crate::hash::{DigestHandle, HashAlgo, hashing, parse_sidecar, sidecar_content};
+use crate::sign::{Signer, Verifier};
 use crate::stream::{Counted, MemoryCache, TeeOptions, tee};
 use crate::{Endpoint, Error, Result, SendMeta};
 
@@ -20,7 +23,7 @@ pub enum CacheMode {
 }
 
 /// Options for [`copy_many`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone)]
 pub struct CopyOptions {
     pub cache: CacheMode,
     /// Additional attempts per target after a failure. Only valid with
@@ -33,6 +36,25 @@ pub struct CopyOptions {
     /// Read a checksum file next to the source (`<name>.b3|.sha256|.sha512`)
     /// and verify the transferred content against it.
     pub check: bool,
+    /// Sign the checksum file (requires `hash`); writes `<sidecar>.sig|.asc`.
+    pub sign: Option<Arc<dyn Signer>>,
+    /// With `check`: require a valid signature over the source's checksum
+    /// file from one of the trusted keys.
+    pub verify: Option<Arc<dyn Verifier>>,
+}
+
+impl std::fmt::Debug for CopyOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CopyOptions")
+            .field("cache", &self.cache)
+            .field("retries", &self.retries)
+            .field("tee", &self.tee)
+            .field("hash", &self.hash)
+            .field("check", &self.check)
+            .field("sign", &self.sign.as_ref().map(|s| s.identity()))
+            .field("verify", &self.verify.as_ref().map(|v| v.format()))
+            .finish()
+    }
 }
 
 impl Default for CopyOptions {
@@ -43,6 +65,8 @@ impl Default for CopyOptions {
             tee: TeeOptions::default(),
             hash: None,
             check: false,
+            sign: None,
+            verify: None,
         }
     }
 }
@@ -54,6 +78,9 @@ pub struct CheckReport {
     pub algo: HashAlgo,
     pub expected: String,
     pub actual: String,
+    /// Identity of the trusted key that signed the source's checksum file
+    /// (only with `verify`).
+    pub signer: Option<String>,
 }
 
 impl CheckReport {
@@ -91,6 +118,8 @@ pub struct TargetReport {
     pub result: Result<()>,
     /// Location of the checksum file written next to the target, if any.
     pub sidecar: Option<String>,
+    /// Location of the detached signature written next to the checksum file, if any.
+    pub signature: Option<String>,
 }
 
 /// Outcome of [`copy_many`].
@@ -153,6 +182,18 @@ pub async fn copy_many(
     if dsts.is_empty() {
         return Err(Error::InvalidUrl("no target given".into()));
     }
+    if opts.sign.is_some() && opts.hash.is_none() {
+        return Err(Error::invalid_option(
+            "sign",
+            "signing needs a checksum (set hash)",
+        ));
+    }
+    if opts.verify.is_some() && !opts.check {
+        return Err(Error::invalid_option(
+            "verify",
+            "signature verification needs check",
+        ));
+    }
     if opts.retries > 0 && opts.cache == CacheMode::Stream {
         return Err(Error::invalid_option(
             "retries",
@@ -178,12 +219,12 @@ pub async fn copy_many(
 
     // Checksum file next to the source (for `check`), found before anything is transferred.
     let expected = if opts.check {
-        Some(find_source_checksum(src).await?)
+        Some(find_source_checksum(src, opts.verify.as_deref()).await?)
     } else {
         None
     };
     let mut algos: Vec<HashAlgo> = opts.hash.into_iter().collect();
-    if let Some((algo, _)) = &expected
+    if let Some((algo, _, _)) = &expected
         && !algos.contains(algo)
     {
         algos.push(*algo);
@@ -196,6 +237,7 @@ pub async fn copy_many(
     if let Some(algo) = opts.hash {
         meta.digest = handles.iter().find(|h| h.algo() == algo).cloned();
     }
+    meta.signer = opts.sign.clone();
 
     let targets = match opts.cache {
         CacheMode::Memory { limit } => {
@@ -223,7 +265,7 @@ pub async fn copy_many(
                             Err(e) => break Err(e),
                         }
                     };
-                    TargetReport { target: dst.location().to_string(), bytes, elapsed: t.elapsed(), attempts, result, sidecar: None }
+                    TargetReport { target: dst.location().to_string(), bytes, elapsed: t.elapsed(), attempts, result, sidecar: None, signature: None }
                 }
             });
             futures::future::join_all(jobs).await
@@ -252,6 +294,7 @@ pub async fn copy_many(
                             attempts: 1,
                             result,
                             sidecar: None,
+                            signature: None,
                         }
                     }
                 });
@@ -285,8 +328,11 @@ pub async fn copy_many(
                     if t.result.is_err() || dst.location().scheme().is_mail() {
                         continue;
                     }
-                    match write_sidecar(*dst, algo, hex, &meta).await {
-                        Ok(path) => t.sidecar = Some(path),
+                    match write_sidecar(*dst, algo, hex, &meta, opts.sign.as_deref()).await {
+                        Ok((path, sig)) => {
+                            t.sidecar = Some(path);
+                            t.signature = sig;
+                        }
                         Err(e) => {
                             t.result = Err(Error::Remote(format!(
                                 "file transferred, but writing the checksum file failed: {e}"
@@ -299,7 +345,7 @@ pub async fn copy_many(
         }
     }
 
-    let checked = expected.map(|(algo, exp)| CheckReport {
+    let checked = expected.map(|(algo, exp, signer)| CheckReport {
         algo,
         expected: exp,
         actual: digests
@@ -307,6 +353,7 @@ pub async fn copy_many(
             .find(|(a, _)| *a == algo)
             .map(|(_, v)| v.clone())
             .unwrap_or_default(),
+        signer,
     });
     if let Some(c) = &checked {
         if c.ok() {
@@ -338,13 +385,15 @@ fn target_filename(dst: &dyn Endpoint, meta: &SendMeta) -> String {
     }
 }
 
-/// Write `<name>.<ext>` next to the transferred file; returns its location.
+/// Write `<name>.<ext>` next to the transferred file (and `<name>.<ext>.sig|.asc`
+/// when a signer is given); returns their locations.
 async fn write_sidecar(
     dst: &dyn Endpoint,
     algo: HashAlgo,
     hex: &str,
     meta: &SendMeta,
-) -> Result<String> {
+    signer: Option<&dyn Signer>,
+) -> Result<(String, Option<String>)> {
     let name = target_filename(dst, meta);
     let sidecar = algo.sidecar_name(&name);
     let loc = dst.location().sibling(&sidecar)?;
@@ -352,14 +401,44 @@ async fn write_sidecar(
     let ep = crate::protocols::open(loc.clone())?;
     let sidecar_meta = SendMeta::from_filename(&sidecar).with_size(content.len() as u64);
     ep.sender()?
-        .send(Box::pin(std::io::Cursor::new(content)), &sidecar_meta)
+        .send(
+            Box::pin(std::io::Cursor::new(content.clone())),
+            &sidecar_meta,
+        )
         .await?;
     debug!(%loc, "checksum file written");
-    Ok(loc.to_string())
+
+    let mut signature = None;
+    if let Some(signer) = signer {
+        let sig = signer.sign(content.as_bytes()).await?;
+        let sig_name = signer.format().signature_name(&sidecar);
+        let sig_loc = dst.location().sibling(&sig_name)?;
+        let ep = crate::protocols::open(sig_loc.clone())?;
+        let sig_meta = SendMeta::from_filename(&sig_name).with_size(sig.len() as u64);
+        ep.sender()?
+            .send(Box::pin(std::io::Cursor::new(sig)), &sig_meta)
+            .await?;
+        debug!(%sig_loc, "signature written");
+        signature = Some(sig_loc.to_string());
+    }
+    Ok((loc.to_string(), signature))
+}
+
+/// Read a small sibling file of the source (checksum file, signature).
+async fn read_sibling(src: &dyn Endpoint, name: &str, limit: u64) -> Result<Vec<u8>> {
+    let loc = src.location().sibling(name)?;
+    let ep = crate::protocols::open(loc)?;
+    let stream = ep.receiver()?.receive().await?;
+    crate::stream::read_to_vec(stream, limit).await
 }
 
 /// Look for `<name>.b3`, `.sha256`, `.sha512` next to the source and parse it.
-async fn find_source_checksum(src: &dyn Endpoint) -> Result<(HashAlgo, String)> {
+/// With a verifier, the matching `.sig`/`.asc` must exist and be valid; the
+/// signer's identity is returned as the third element.
+async fn find_source_checksum(
+    src: &dyn Endpoint,
+    verifier: Option<&dyn Verifier>,
+) -> Result<(HashAlgo, String, Option<String>)> {
     let name = src
         .location()
         .filename()
@@ -389,17 +468,26 @@ async fn find_source_checksum(src: &dyn Endpoint) -> Result<(HashAlgo, String)> 
                 continue;
             }
         };
-        match parse_sidecar(&text) {
-            Some((hex, _)) => {
-                info!(%loc, algo = %algo, "checksum file found");
-                return Ok((algo, hex));
-            }
-            None => {
-                return Err(Error::Remote(format!(
-                    "check: {loc} is not a valid checksum file"
-                )));
-            }
+        let Some((hex, _)) = parse_sidecar(&text) else {
+            return Err(Error::Remote(format!(
+                "check: {loc} is not a valid checksum file"
+            )));
+        };
+        info!(%loc, algo = %algo, "checksum file found");
+        let mut signer = None;
+        if let Some(v) = verifier {
+            let sig_name = v.format().signature_name(&sidecar);
+            let sig = read_sibling(src, &sig_name, 64 * 1024).await.map_err(|e| {
+                Error::Auth(format!(
+                    "check: no {} signature {sig_name} next to the source: {e}",
+                    v.format().label()
+                ))
+            })?;
+            let who = v.verify(text.as_bytes(), &sig)?;
+            info!(%who, "checksum file signature verified");
+            signer = Some(who);
         }
+        return Ok((algo, hex, signer));
     }
     Err(Error::Remote(format!(
         "check: no checksum file next to the source (tried {})",
@@ -573,6 +661,147 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("no checksum file"), "{err}");
+    }
+
+    #[cfg(feature = "sign-ssh")]
+    #[tokio::test]
+    async fn sign_sidecar_and_verify_on_check() {
+        use crate::sign::{SignFormat, SignSpec, VerifySpec};
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("id_ed25519");
+        let ok = std::process::Command::new("ssh-keygen")
+            .args([
+                "-q",
+                "-t",
+                "ed25519",
+                "-N",
+                "",
+                "-C",
+                "ci@example.com",
+                "-f",
+            ])
+            .arg(&key)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            eprintln!("skipping: ssh-keygen not available");
+            return;
+        }
+        let signers = dir.path().join("allowed_signers");
+        std::fs::write(
+            &signers,
+            format!(
+                "ci@example.com {}",
+                std::fs::read_to_string(dir.path().join("id_ed25519.pub")).unwrap()
+            ),
+        )
+        .unwrap();
+
+        let src_path = dir.path().join("data.bin");
+        std::fs::write(&src_path, vec![3u8; 10_000]).unwrap();
+        let src = crate::open(src_path.to_str().unwrap()).unwrap();
+        let dst = crate::open(&format!("{}/out/", dir.path().display())).unwrap();
+        let signer = crate::sign::load_signer(&SignSpec {
+            format: SignFormat::Ssh,
+            key: Some(key),
+            passphrase: None,
+        })
+        .await
+        .unwrap();
+        let opts = CopyOptions {
+            hash: Some(HashAlgo::Sha256),
+            sign: Some(signer),
+            ..Default::default()
+        };
+        let report = copy_many(src.as_ref(), &[dst.as_ref()], &opts)
+            .await
+            .unwrap();
+        assert!(report.all_ok(), "{:?}", report.targets);
+        let sig_path = dir.path().join("out/data.bin.sha256.sig");
+        assert!(sig_path.exists());
+        assert!(
+            report.targets[0]
+                .signature
+                .as_deref()
+                .unwrap()
+                .ends_with("data.bin.sha256.sig")
+        );
+
+        // Copy back with check + verify: signature must be accepted.
+        let verifier = crate::sign::load_verifier(&VerifySpec::SshAllowedSigners(signers)).unwrap();
+        let out_file = crate::open(dir.path().join("out/data.bin").to_str().unwrap()).unwrap();
+        let back = crate::open(&format!("{}/back/", dir.path().display())).unwrap();
+        let opts = CopyOptions {
+            check: true,
+            verify: Some(verifier.clone()),
+            ..Default::default()
+        };
+        let report = copy_many(out_file.as_ref(), &[back.as_ref()], &opts)
+            .await
+            .unwrap();
+        let c = report.checked.unwrap();
+        assert!(c.ok());
+        assert!(c.signer.as_deref().unwrap().starts_with("ci@example.com"));
+
+        // Tampered checksum file → signature invalid → error before any transfer.
+        let sidecar = dir.path().join("out/data.bin.sha256");
+        let mut text = std::fs::read_to_string(&sidecar).unwrap();
+        text.replace_range(0..1, "0");
+        std::fs::write(&sidecar, text).unwrap();
+        let err = copy_many(out_file.as_ref(), &[back.as_ref()], &opts)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Auth(_)), "{err}");
+        assert!(!dir.path().join("back2").exists());
+
+        // Missing signature → error.
+        std::fs::remove_file(&sig_path).unwrap();
+        let err = copy_many(out_file.as_ref(), &[back.as_ref()], &opts)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no OpenSSH signature"), "{err}");
+
+        // sign without hash is rejected up front.
+        let bad = CopyOptions {
+            sign: Some(dummy_signer()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            copy_many(src.as_ref(), &[dst.as_ref()], &bad)
+                .await
+                .unwrap_err(),
+            Error::InvalidOption { .. }
+        ));
+        // verify without check likewise.
+        let bad = CopyOptions {
+            verify: Some(verifier),
+            ..Default::default()
+        };
+        assert!(matches!(
+            copy_many(src.as_ref(), &[dst.as_ref()], &bad)
+                .await
+                .unwrap_err(),
+            Error::InvalidOption { .. }
+        ));
+    }
+
+    #[cfg(feature = "sign-ssh")]
+    fn dummy_signer() -> Arc<dyn Signer> {
+        struct Dummy;
+        #[async_trait::async_trait]
+        impl Signer for Dummy {
+            fn format(&self) -> crate::sign::SignFormat {
+                crate::sign::SignFormat::Ssh
+            }
+            fn identity(&self) -> String {
+                "dummy".into()
+            }
+            async fn sign(&self, _: &[u8]) -> Result<Vec<u8>> {
+                Ok(Vec::new())
+            }
+        }
+        Arc::new(Dummy)
     }
 
     #[tokio::test]
