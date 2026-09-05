@@ -74,6 +74,7 @@ mpt config check                 read the configuration file and print what it s
   --color auto|always|never      colored output (auto: only on a terminal, honours NO_COLOR)
   --password-file <PATH>  --password-stdin   read the password without putting it in argv
   --refuse-plaintext-auth        make unencrypted credentials an error instead of a warning
+  --json                         print the result as JSON on stdout (see below)
   --timeout <SECONDS>            inactivity timeout, 30 by default, 0 disables it
   --no-atomic                    write straight to the target name (see below)
   --hash <ALGO>  --check        checksums (see below)     --sign <SPEC>  --verify-signers/--verify-keyring <FILE>
@@ -115,6 +116,7 @@ atomic      = true            # finish through <name>.mpt-part
 hash        = "sha256"
 color       = "auto"          # auto | always | never
 log         = "warn"          # level, or RUST_LOG syntax; -v and RUST_LOG win
+json        = false           # print the result as JSON on stdout
 
 [policy]                      # rules for every endpoint of the process
 known_hosts           = "strict"   # default for sftp/scp: strict|accept-new|off
@@ -255,6 +257,31 @@ Targets that connect before they read (SCP, SMTP) pause the stream briefly at
 the start until they are ready; this is head-of-line blocking, not a deadlock.
 A target that stops accepting data altogether is dropped from the fan-out after
 `--timeout` and reports a timeout, so it cannot hold up the others.
+
+## Machine-readable output
+
+`--json` writes the outcome to **stdout** as JSON while the human-readable
+lines stay on stderr, so a script reads one and a person the other:
+
+```
+$ mpt --json cp report.pdf sftp://srv/in/ ftp://old/in/ 2>/dev/null | jq '.targets[] | select(.ok | not)'
+{
+  "target": "ftp://old/in/",
+  "bytes": 0,
+  "elapsed_ms": 5,
+  "attempts": 1,
+  "ok": false,
+  "error": "authentication failed: wrong password",
+  "cancelled": false,
+  "sidecar": null,
+  "signature": null
+}
+```
+
+The object has `source`, `bytes_read`, `elapsed_ms`, `ok` (every target
+succeeded and `--check` agreed), `targets`, `digests` (algorithm → hex) and
+`check` (`algo`, `ok`, `expected`, `actual`, `signer`). `mpt --json ls <url>`
+prints the listing the same way, with `modified` in RFC 3339.
 
 ## Timeouts
 

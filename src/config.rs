@@ -87,6 +87,8 @@ pub struct Defaults {
     pub atomic: Option<bool>,
     /// Log level, either a bare level or `RUST_LOG` syntax.
     pub log: Option<String>,
+    /// Print the report as JSON on standard output.
+    pub json: Option<bool>,
 }
 
 /// `[policy]` — rules that hold for every endpoint of the process.
@@ -484,6 +486,7 @@ impl Config {
             defaults.timeout,
             defaults.atomic,
             defaults.log,
+            defaults.json,
             policy.known_hosts,
             policy.refuse_plaintext_auth,
             policy.refuse_insecure_tls,

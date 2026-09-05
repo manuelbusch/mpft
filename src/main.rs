@@ -83,6 +83,11 @@ struct Cli {
     #[arg(long, global = true, value_name = "SECONDS")]
     timeout: Option<u64>,
 
+    /// Print the result as JSON on stdout; the human-readable lines stay on
+    /// stderr, so a script can read one and a person the other
+    #[arg(long, global = true)]
+    json: bool,
+
     /// Write straight to the target name instead of uploading to
     /// <name>.mpt-part and renaming it into place when the transfer is done
     #[arg(long, global = true)]
@@ -207,6 +212,7 @@ struct Settings {
     timeout: u64,
     atomic: bool,
     hash: Option<HashAlgo>,
+    json: bool,
 }
 
 impl Settings {
@@ -240,6 +246,7 @@ impl Settings {
             timeout: cli.timeout.or(d.timeout).unwrap_or(30),
             // --no-atomic and `atomic = false` both switch it off.
             atomic: !cli.no_atomic && d.atomic.unwrap_or(true),
+            json: cli.json || d.json.unwrap_or(false),
             hash: match &d.hash {
                 _ if cli.hash.is_some() => cli.hash,
                 Some(v) => {
@@ -484,7 +491,7 @@ async fn run(cli: Cli, settings: Settings) -> anyhow::Result<()> {
                 .iter()
                 .map(|d| open(d))
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            do_copy(open(src)?, targets, &opts).await
+            do_copy(open(src)?, targets, &opts, settings.json).await
         }
         Cmd::Ls { url } => {
             let ep = open(url)?;
@@ -493,6 +500,21 @@ async fn run(cli: Cli, settings: Settings) -> anyhow::Result<()> {
                 .list()
                 .await
                 .with_context(|| format!("listing {}", ep.location()))?;
+            if settings.json {
+                let rows: Vec<serde_json::Value> = entries
+                    .iter()
+                    .map(|e| {
+                        serde_json::json!({
+                            "name": e.name,
+                            "size": e.size,
+                            "is_dir": e.is_dir,
+                            "modified": e.modified.map(mpt::sign::format_time),
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+                return Ok(());
+            }
             for e in entries {
                 let kind = if e.is_dir { "d" } else { "-" };
                 let size = e.size.map(|s| s.to_string()).unwrap_or_else(|| "-".into());
@@ -586,11 +608,15 @@ async fn do_copy(
     src: Box<dyn mpt::Endpoint>,
     targets: Vec<Box<dyn mpt::Endpoint>>,
     opts: &CopyOptions,
+    json: bool,
 ) -> anyhow::Result<()> {
     let refs: Vec<&dyn mpt::Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
     let report = mpt::copy_many(src.as_ref(), &refs, opts)
         .await
         .with_context(|| format!("copy {}", src.location()))?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report_json(&report))?);
+    }
     let cancelled = report
         .targets
         .iter()
@@ -663,6 +689,51 @@ async fn do_copy(
         anyhow::bail!("{failed} of {} targets failed", report.targets.len());
     }
     Ok(())
+}
+
+/// The whole outcome as JSON, for scripts: what was read, what each target
+/// did, the digests and the `--check` verdict.
+fn report_json(report: &mpt::FanoutReport) -> serde_json::Value {
+    let targets: Vec<serde_json::Value> = report
+        .targets
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "target": t.target,
+                "bytes": t.bytes,
+                "elapsed_ms": t.elapsed.as_millis() as u64,
+                "attempts": t.attempts,
+                "ok": t.result.is_ok(),
+                "error": t.result.as_ref().err().map(|e| e.to_string()),
+                "cancelled": matches!(t.result, Err(mpt::Error::Cancelled)),
+                "sidecar": t.sidecar,
+                "signature": t.signature,
+            })
+        })
+        .collect();
+    let digests: serde_json::Map<String, serde_json::Value> = report
+        .digests
+        .iter()
+        .map(|(algo, hex)| (algo.name().to_string(), hex.as_str().into()))
+        .collect();
+    let check = report.checked.as_ref().map(|c| {
+        serde_json::json!({
+            "algo": c.algo.name(),
+            "ok": c.ok(),
+            "expected": c.expected,
+            "actual": c.actual,
+            "signer": c.signer,
+        })
+    });
+    serde_json::json!({
+        "source": report.source,
+        "bytes_read": report.bytes_read,
+        "elapsed_ms": report.elapsed.as_millis() as u64,
+        "ok": report.all_ok() && report.checked.as_ref().is_none_or(|c| c.ok()),
+        "targets": targets,
+        "digests": digests,
+        "check": check,
+    })
 }
 
 /// Print computed digests and the `--check` verdict; a mismatch is an error.
@@ -894,6 +965,53 @@ mod tests {
         let s = Settings::resolve(&cli(&["--no-atomic", "--hash", "sha512"]), &config("")).unwrap();
         assert!(!s.atomic);
         assert_eq!(s.hash, Some(HashAlgo::Sha512));
+    }
+
+    #[test]
+    fn the_json_report_says_what_happened() {
+        let report = mpt::FanoutReport {
+            source: "a.txt".into(),
+            bytes_read: 8,
+            elapsed: std::time::Duration::from_millis(1200),
+            targets: vec![
+                mpt::TargetReport {
+                    target: "sftp://h/in/".into(),
+                    bytes: 8,
+                    elapsed: std::time::Duration::from_millis(30),
+                    attempts: 1,
+                    result: Ok(()),
+                    sidecar: Some("sftp://h/in/a.txt.sha256".into()),
+                    signature: None,
+                },
+                mpt::TargetReport {
+                    target: "ftp://h/in/".into(),
+                    bytes: 0,
+                    elapsed: std::time::Duration::from_millis(5),
+                    attempts: 3,
+                    result: Err(mpt::Error::Auth("wrong password".into())),
+                    sidecar: None,
+                    signature: None,
+                },
+            ],
+            digests: vec![(HashAlgo::Sha256, "abc".into())],
+            checked: None,
+        };
+        let j = report_json(&report);
+        assert_eq!(j["ok"], false, "one target failed");
+        assert_eq!(j["bytes_read"], 8);
+        assert_eq!(j["elapsed_ms"], 1200);
+        assert_eq!(j["digests"]["sha256"], "abc");
+        assert_eq!(j["targets"][0]["ok"], true);
+        assert_eq!(j["targets"][0]["sidecar"], "sftp://h/in/a.txt.sha256");
+        assert_eq!(j["targets"][1]["ok"], false);
+        assert_eq!(j["targets"][1]["attempts"], 3);
+        assert!(
+            j["targets"][1]["error"]
+                .as_str()
+                .unwrap()
+                .contains("wrong password")
+        );
+        assert_eq!(j["check"], serde_json::Value::Null);
     }
 
     #[test]
