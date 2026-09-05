@@ -31,11 +31,11 @@ pub use transfer::{
 
 /// Parse a URL (or bare local path) and open the matching protocol endpoint.
 ///
-/// No network connection is made here; connections are established lazily by
-/// the individual operations.
+/// `mpt://<profile>/<path>` is resolved against the configuration file that
+/// [`config::install`] published. No network connection is made here;
+/// connections are established lazily by the individual operations.
 pub fn open(url: &str) -> Result<Box<dyn Endpoint>> {
-    let loc = Location::parse(url)?;
-    protocols::open(loc)
+    protocols::open(config::locate(url)?)
 }
 
 /// Install the process-wide rustls crypto provider (aws-lc-rs).

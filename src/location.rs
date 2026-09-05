@@ -423,6 +423,12 @@ impl Location {
         self.options.push((key.into(), value.into()));
     }
 
+    /// Drop every value of `key`. Used when a more specific source of options
+    /// (a profile, a URL reference) replaces what the location came with.
+    pub fn remove_option(&mut self, key: &str) {
+        self.options.retain(|(k, _)| k != key);
+    }
+
     /// True when the path denotes a directory target (`.../`), meaning the
     /// source file name should be appended when sending.
     pub fn is_dir_target(&self) -> bool {
@@ -457,6 +463,32 @@ impl Location {
             (true, Some(name)) => self.path_joined(name),
             _ => Ok(self.path.clone()),
         }
+    }
+
+    /// Append a relative path to a directory location: `a/b/c.pdf`, one safe
+    /// component at a time, so nothing can climb out of the directory. A
+    /// trailing `/` marks the result as a directory target again.
+    pub fn join(&self, rel: &str) -> Result<Location> {
+        if self.scheme.is_mail() {
+            return Err(Error::UnsupportedOperation {
+                scheme: self.scheme.to_string(),
+                op: "have a path appended",
+            });
+        }
+        let mut loc = self.clone();
+        for part in rel.split('/').filter(|p| !p.is_empty()) {
+            let name = safe_name(part)?;
+            loc.path = if loc.path.ends_with('/') {
+                format!("{}{}", loc.path, name)
+            } else {
+                format!("{}/{}", loc.path, name)
+            };
+        }
+        loc.dir_hint = rel.ends_with('/');
+        if loc.dir_hint && !loc.path.ends_with('/') {
+            loc.path.push('/');
+        }
+        Ok(loc)
     }
 
     /// Location of a file called `name` next to this one: inside the

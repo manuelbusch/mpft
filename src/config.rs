@@ -22,13 +22,14 @@
 //! variable of that name (an error if it is unset), and paths may start with
 //! `~/`.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 
 use serde::Deserialize;
 use tracing::debug;
 
-use crate::{Error, Result};
+use crate::{Error, Location, Result};
 
 /// The whole configuration file.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -48,6 +49,9 @@ pub struct Config {
     pub mail: MailSection,
     #[serde(default)]
     pub s3: S3Section,
+    /// Named targets, addressed as `mpt://<name>/<path>`.
+    #[serde(default)]
+    pub profiles: BTreeMap<String, Profile>,
     /// Which files it was read from; empty for the built-in defaults.
     #[serde(skip)]
     pub sources: Vec<PathBuf>,
@@ -142,7 +146,126 @@ pub struct S3Section {
     pub path_style: Option<bool>,
 }
 
+/// `[profiles.<name>]` — a named target.
+///
+/// Besides the reserved keys below, every entry becomes a URL option of the
+/// resolved location, so a profile can carry anything the scheme understands
+/// (`key`, `known_hosts`, `hostkey`, `timeout`, `tls`, `subject`, …).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Profile {
+    /// The endpoint this profile stands for.
+    pub url: String,
+    /// Sign checksum files written to this target (`--sign` syntax).
+    pub sign: Option<String>,
+    /// Checksum algorithm for this target.
+    pub hash: Option<String>,
+    /// Finish through a `.mpt-part` file.
+    pub atomic: Option<bool>,
+    #[serde(flatten)]
+    options: BTreeMap<String, toml::Value>,
+}
+
+impl Profile {
+    /// The free-form entries as URL options, in the file's order. A value may
+    /// be a list, which repeats the option (`hostkey`, `header`).
+    pub fn options(&self) -> Result<Vec<(String, String)>> {
+        let mut out = Vec::new();
+        for (k, v) in &self.options {
+            match v {
+                toml::Value::Array(items) => {
+                    for item in items {
+                        out.push((k.clone(), scalar(k, item)?));
+                    }
+                }
+                other => out.push((k.clone(), scalar(k, other)?)),
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Put `pairs` on the location, replacing every value the location already
+/// had for those keys. Repeated keys (`hostkey`, `header`) keep all their new
+/// values.
+fn override_options(loc: &mut Location, pairs: Vec<(String, String)>) {
+    for (k, _) in &pairs {
+        loc.remove_option(k);
+    }
+    for (k, v) in pairs {
+        loc.set_option(k, v);
+    }
+}
+
+/// A profile option must be something that can stand in a URL.
+fn scalar(key: &str, v: &toml::Value) -> Result<String> {
+    Ok(match v {
+        toml::Value::String(s) => s.clone(),
+        toml::Value::Integer(i) => i.to_string(),
+        toml::Value::Float(f) => f.to_string(),
+        toml::Value::Boolean(b) => b.to_string(),
+        other => {
+            return Err(Error::Config(format!(
+                "profile option '{key}' must be a string, number or boolean, not {}",
+                other.type_str()
+            )));
+        }
+    })
+}
+
+/// The prefix that addresses a profile instead of a protocol.
+pub const PROFILE_PREFIX: &str = "mpt://";
+
 impl Config {
+    /// Turn `mpt://<profile>/<path>?<options>` into the location the profile
+    /// stands for. `Ok(None)` for every other URL.
+    ///
+    /// The path is appended to the profile's own path, and options of the
+    /// reference replace those of the profile.
+    pub fn resolve(&self, url: &str) -> Result<Option<Location>> {
+        let Some(rest) = url.trim().strip_prefix(PROFILE_PREFIX) else {
+            return Ok(None);
+        };
+        let (head, query) = match rest.split_once('?') {
+            Some((h, q)) => (h, Some(q)),
+            None => (rest, None),
+        };
+        let (name, path) = match head.split_once('/') {
+            Some((n, p)) => (n, p),
+            None => (head, ""),
+        };
+        let profile = self.profiles.get(name).ok_or_else(|| {
+            let known: Vec<&str> = self.profiles.keys().map(String::as_str).collect();
+            Error::Config(match known.is_empty() {
+                true => format!("no profile '{name}' (the configuration defines none)"),
+                false => format!("no profile '{name}' (known: {})", known.join(", ")),
+            })
+        })?;
+        if profile.url.trim().starts_with(PROFILE_PREFIX) {
+            return Err(Error::Config(format!(
+                "profile '{name}' points at another profile ({}); profiles do not chain",
+                profile.url
+            )));
+        }
+        let mut loc = Location::parse(&profile.url)
+            .map_err(|e| Error::Config(format!("profile '{name}': {e}")))?;
+        if !path.is_empty() {
+            loc = loc
+                .join(path)
+                .map_err(|e| Error::Config(format!("mpt://{name}/{path}: {e}")))?;
+        }
+        override_options(&mut loc, profile.options()?);
+        if let Some(q) = query {
+            override_options(
+                &mut loc,
+                url::form_urlencoded::parse(q.as_bytes())
+                    .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                    .collect(),
+            );
+        }
+        debug!(%name, %loc, "profile resolved");
+        Ok(Some(loc))
+    }
+
     /// Read the configuration, following the search order of the module docs.
     pub fn load(explicit: Option<&Path>) -> Result<Config> {
         let mut cfg = match Config::user_file(explicit)? {
@@ -211,6 +334,7 @@ impl Config {
             cfg.ssh = SshSection::default();
             cfg.mail = MailSection::default();
             cfg.s3 = S3Section::default();
+            cfg.profiles.clear();
         }
         Ok(Some(cfg))
     }
@@ -318,6 +442,9 @@ impl Config {
             s3.region,
             s3.path_style,
         );
+        if !other.profiles.is_empty() {
+            self.profiles.append(&mut other.profiles);
+        }
         if !other.ssh.hostkey.is_empty() {
             self.ssh.hostkey = std::mem::take(&mut other.ssh.hostkey);
         }
@@ -345,19 +472,46 @@ impl Config {
     }
 }
 
-static GLOBAL: OnceLock<Config> = OnceLock::new();
+/// The installed configuration, leaked on purpose: it is read from every
+/// protocol for the rest of the process, and a reference costs nothing.
+static GLOBAL: RwLock<Option<&'static Config>> = RwLock::new(None);
 
 /// The configuration this process runs with. Empty unless [`install`] was
 /// called, so the library keeps working without a configuration file.
 pub fn global() -> &'static Config {
-    GLOBAL.get_or_init(Config::default)
+    if let Ok(g) = GLOBAL.read()
+        && let Some(cfg) = *g
+    {
+        return cfg;
+    }
+    static EMPTY: OnceLock<Config> = OnceLock::new();
+    EMPTY.get_or_init(Config::default)
+}
+
+/// Parse a URL, resolving `mpt://<profile>/…` against the loaded
+/// configuration first.
+pub fn locate(url: &str) -> Result<Location> {
+    match global().resolve(url)? {
+        Some(loc) => Ok(loc),
+        None => Location::parse(url),
+    }
+}
+
+/// The profile a URL refers to, if it refers to one at all.
+pub fn profile_of(url: &str) -> Option<&'static Profile> {
+    let rest = url.trim().strip_prefix(PROFILE_PREFIX)?;
+    let name = rest.split(['/', '?']).next()?;
+    global().profiles.get(name)
 }
 
 /// Publish the loaded configuration for the rest of the process, and install
-/// its `[policy]` section. Only the first call has an effect.
+/// its `[policy]` section.
 pub fn install(cfg: Config) {
     crate::policy::set_policy(cfg.policy());
-    let _ = GLOBAL.set(cfg);
+    let cfg: &'static Config = Box::leak(Box::new(cfg));
+    if let Ok(mut g) = GLOBAL.write() {
+        *g = Some(cfg);
+    }
 }
 
 /// Replace `${VAR}` in every string of the tree.
@@ -518,6 +672,102 @@ mod tests {
     fn hostkey_takes_a_list_too() {
         let cfg = Config::parse("[ssh]\nhostkey = [\"SHA256:a\", \"SHA256:b\"]\n").unwrap();
         assert_eq!(cfg.ssh.hostkey.len(), 2);
+    }
+
+    fn with_profiles() -> Config {
+        Config::parse(
+            r#"
+            [profiles.prod]
+            url = "sftp://deploy@srv.example.com/data/?timeout=10"
+            key = "/k/prod"
+            timeout = 60
+            hostkey = ["SHA256:a", "SHA256:b"]
+            sign = "ssh:/k/prod"
+            hash = "blake3"
+
+            [profiles.boss]
+            url = "mailto:boss@example.com"
+            subject = "Report"
+            "#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_profile_becomes_a_location() {
+        let cfg = with_profiles();
+        let loc = cfg.resolve("mpt://prod/incoming/x.pdf").unwrap().unwrap();
+        assert_eq!(loc.scheme(), crate::Scheme::Sftp);
+        assert_eq!(loc.path(), "/data/incoming/x.pdf");
+        assert_eq!(loc.username(), Some("deploy"));
+        assert_eq!(loc.opt("key"), Some("/k/prod"));
+        assert_eq!(
+            loc.opt("timeout"),
+            Some("60"),
+            "the profile replaces what its own URL says"
+        );
+        assert_eq!(
+            loc.opts("hostkey").collect::<Vec<_>>(),
+            ["SHA256:a", "SHA256:b"]
+        );
+
+        // Without a path the profile URL stands as it is, directory and all.
+        let loc = cfg.resolve("mpt://prod").unwrap().unwrap();
+        assert_eq!(loc.path(), "/data/");
+        assert!(loc.is_dir_target());
+        let loc = cfg.resolve("mpt://prod/reports/").unwrap().unwrap();
+        assert_eq!(loc.path(), "/data/reports/");
+        assert!(
+            loc.is_dir_target(),
+            "a trailing slash still means a directory"
+        );
+    }
+
+    #[test]
+    fn the_reference_overrides_profile_options() {
+        let loc = with_profiles()
+            .resolve("mpt://prod/in/?timeout=120&insecure=true")
+            .unwrap()
+            .unwrap();
+        assert_eq!(loc.opt("timeout"), Some("120"));
+        assert_eq!(loc.opt("insecure"), Some("true"));
+        assert_eq!(loc.opt("key"), Some("/k/prod"), "the rest is untouched");
+    }
+
+    #[test]
+    fn a_profile_can_be_a_mail_target() {
+        let loc = with_profiles().resolve("mpt://boss").unwrap().unwrap();
+        assert_eq!(loc.recipients(), vec!["boss@example.com"]);
+        assert_eq!(loc.opt("subject"), Some("Report"));
+    }
+
+    #[test]
+    fn unusable_references_are_rejected() {
+        let cfg = with_profiles();
+        let err = cfg.resolve("mpt://staging/x").unwrap_err().to_string();
+        assert!(err.contains("boss, prod"), "{err}");
+        // Nothing may climb out of the profile's directory.
+        let err = cfg.resolve("mpt://prod/../../etc/passwd").unwrap_err();
+        assert!(err.to_string().contains("unsafe"), "{err}");
+        // Mail has no path to append to.
+        assert!(cfg.resolve("mpt://boss/x").is_err());
+        // A plain URL is not a profile reference.
+        assert!(cfg.resolve("sftp://h/x").unwrap().is_none());
+    }
+
+    #[test]
+    fn profiles_do_not_chain() {
+        let cfg =
+            Config::parse("[profiles.a]\nurl = \"mpt://b/\"\n[profiles.b]\nurl = \"sftp://h/\"\n")
+                .unwrap();
+        let err = cfg.resolve("mpt://a/x").unwrap_err().to_string();
+        assert!(err.contains("do not chain"), "{err}");
+    }
+
+    #[test]
+    fn a_profile_needs_a_url() {
+        let err = Config::parse("[profiles.x]\nkey = \"/k\"\n").unwrap_err();
+        assert!(err.contains("url"), "{err}");
     }
 
     #[test]

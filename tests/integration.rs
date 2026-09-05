@@ -621,3 +621,30 @@ fn location_direction_rules() {
         assert!(l.scheme().can_receive() && l.scheme().can_send(), "{u}");
     }
 }
+
+/// A `[profiles.…]` entry stands in for the URL, and `mpt://<name>/<path>`
+/// resolves to it — including the options the profile carries.
+#[tokio::test]
+async fn profile_urls_resolve_against_the_configuration() {
+    let Some(base) = env("MPT_IT_SFTP") else {
+        eprintln!("skipping: MPT_IT_SFTP not set");
+        return;
+    };
+    // The only test that installs a configuration; it defines nothing but
+    // this profile, so the others are unaffected.
+    let cfg = mpt::Config::parse(&format!("[profiles.it-sftp]\nurl = \"{base}\"\n")).unwrap();
+    mpt::config::install(cfg);
+
+    let loc = mpt::config::locate("mpt://it-sftp/sub/x.bin").unwrap();
+    assert_eq!(loc.scheme(), mpt::Scheme::Sftp);
+    assert!(loc.path().ends_with("/sub/x.bin"), "{}", loc.path());
+    assert!(loc.opt("key").is_some(), "the profile keeps its options");
+
+    let file = format!("profile_{}.bin", std::process::id());
+    tokio::time::timeout(
+        Duration::from_secs(120),
+        roundtrip("mpt://it-sftp/", &file, 8192, true),
+    )
+    .await
+    .expect("timeout");
+}

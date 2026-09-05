@@ -66,6 +66,7 @@ Priority: URL > environment > default. Passwords are masked in all log output.
 mpt cp <SRC_URL> <DST_URL>...    copy from one endpoint to one or more targets
 mpt ls <URL>                     list a directory
 mpt schemes                      print the table above
+mpt profiles                     list the named targets from the configuration
 mpt config check                 read the configuration file and print what it sets
   -v / -vv / -vvv   log level    --insecure   disable TLS verification    --password <pw>
   --config <PATH>                configuration file (see below)
@@ -144,6 +145,40 @@ endpoint   = "https://minio.example.com"
 region     = "eu-central-1"
 path_style = true
 ```
+
+### Named targets
+
+A profile gives a recurring endpoint a name, and `mpt://<name>/<path>` stands
+for it anywhere a URL is expected:
+
+```toml
+[profiles.prod]
+url         = "sftp://deploy@srv.example.com/data/"
+key         = "~/.ssh/prod_ed25519"      # every other key becomes a URL option
+known_hosts = "strict"
+hostkey     = "SHA256:f29GJDwDP5hekqa22VhNdaNPBM+q6AzG3FvQaBCJnmg"
+timeout     = 60
+sign        = "ssh:~/.ssh/prod_ed25519"  # always sign when sending there
+hash        = "blake3"
+
+[profiles.boss]
+url     = "mailto:boss@example.com"
+subject = "Report"
+```
+
+```
+mpt cp report.pdf mpt://prod/incoming/          # → sftp://…/data/incoming/
+mpt cp report.pdf "mpt://prod/in/?timeout=120"  # the reference overrides the profile
+mpt ls mpt://prod                               # the profile URL as it stands
+mpt profiles                                    # what is defined, passwords masked
+```
+
+`url` is required; `sign`, `hash` and `atomic` set the transfer options for
+that target (a flag on the command line still wins); everything else becomes a
+URL option, so a profile can carry whatever its scheme understands. The path of
+the reference is appended to the profile's own path and cannot climb out of it
+(`mpt://prod/../etc` is refused). Profiles do not chain, and `./mpt.toml` may
+not define any.
 
 Every string may contain `${VAR}`, which is replaced by that environment
 variable (an error if it is unset), and paths may start with `~/`. Unknown keys

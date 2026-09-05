@@ -6,7 +6,7 @@ use anstyle::{AnsiColor, Style};
 use anyhow::Context;
 use clap::{ColorChoice, Parser, Subcommand};
 use mpt::sign::{SignSpec, VerifySpec};
-use mpt::{CacheMode, CopyOptions, HashAlgo, Location, Scheme, TeeOptions};
+use mpt::{CacheMode, CopyOptions, HashAlgo, Scheme, TeeOptions};
 
 /// Send and receive files over many protocols, addressed by URL prefix.
 #[derive(Parser)]
@@ -137,11 +137,26 @@ enum Cmd {
     Ls { url: String },
     /// Show supported URL schemes and their options
     Schemes,
+    /// List the profiles the configuration defines
+    Profiles,
     /// Inspect the configuration file
     Config {
         #[command(subcommand)]
         action: ConfigCmd,
     },
+}
+
+impl Cmd {
+    /// The endpoint URLs this command works on.
+    fn urls(&self) -> Vec<&str> {
+        match self {
+            Cmd::Cp { src, dst } => std::iter::once(src.as_str())
+                .chain(dst.iter().map(String::as_str))
+                .collect(),
+            Cmd::Ls { url } => vec![url.as_str()],
+            _ => Vec::new(),
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -356,6 +371,25 @@ async fn run(cli: Cli, settings: Settings) -> anyhow::Result<()> {
         );
     }
     let password = read_password(&cli)?;
+    // A profile can ask for signing and a checksum of its own; the flags win.
+    let profiles: Vec<&mpt::config::Profile> = cli
+        .cmd
+        .urls()
+        .iter()
+        .filter_map(|u| mpt::config::profile_of(u))
+        .collect();
+    let mut settings = settings;
+    if cli.hash.is_none()
+        && let Some(h) = profiles.iter().find_map(|p| p.hash.as_deref())
+    {
+        settings.hash = Some(HashAlgo::parse(h).with_context(|| "profile hash")?);
+    }
+    // A profile may switch atomic finishing off, but cannot switch it back on
+    // against --no-atomic.
+    if profiles.iter().any(|p| p.atomic == Some(false)) {
+        settings.atomic = false;
+    }
+    let settings = settings;
     let timeout = (settings.timeout > 0).then(|| Duration::from_secs(settings.timeout));
     // Ctrl-C stops the transfer, removes partial files and leaves the rest alone.
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -369,7 +403,7 @@ async fn run(cli: Cli, settings: Settings) -> anyhow::Result<()> {
         });
     }
     let open = |url: &str| -> anyhow::Result<Box<dyn mpt::Endpoint>> {
-        let mut loc = Location::parse(url)?;
+        let mut loc = mpt::config::locate(url)?;
         if cli.insecure {
             loc.set_option("insecure", "true");
         }
@@ -390,7 +424,12 @@ async fn run(cli: Cli, settings: Settings) -> anyhow::Result<()> {
         Ok(mpt::protocols::open(loc)?)
     };
 
-    let sign = match &cli.sign {
+    let sign = match cli.sign.as_deref().or_else(|| {
+        profiles
+            .iter()
+            .find_map(|p| p.sign.as_deref())
+            .inspect(|spec| tracing::info!(%spec, "signing, as the profile asks"))
+    }) {
         Some(spec) => Some(sign_spec(spec)?),
         None => None,
     };
@@ -457,6 +496,10 @@ async fn run(cli: Cli, settings: Settings) -> anyhow::Result<()> {
                     e.name
                 );
             }
+            Ok(())
+        }
+        Cmd::Profiles => {
+            show_profiles(mpt::config::global());
             Ok(())
         }
         Cmd::Config { action } => {
@@ -675,6 +718,35 @@ fn verify_spec(cli: &Cli) -> anyhow::Result<Option<VerifySpec>> {
     )
 }
 
+/// `mpt profiles`: the named targets and what they resolve to.
+fn show_profiles(cfg: &mpt::Config) {
+    if cfg.profiles.is_empty() {
+        anstream::println!(
+            "{DIM}no profiles; add [profiles.<name>] with url = \"…\" to the configuration{DIM:#}"
+        );
+        return;
+    }
+    for (name, profile) in &cfg.profiles {
+        // Resolving masks the password and shows the options as they will be used.
+        let resolved = match cfg.resolve(&format!("{}{name}", mpt::config::PROFILE_PREFIX)) {
+            Ok(Some(loc)) => loc.masked(),
+            Ok(None) | Err(_) => profile.url.clone(),
+        };
+        anstream::println!("{HEAD}mpt://{name}{HEAD:#}  {DIM}{resolved}{DIM:#}");
+        for (what, v) in [
+            ("sign", profile.sign.as_deref()),
+            ("hash", profile.hash.as_deref()),
+        ] {
+            if let Some(v) = v {
+                anstream::println!("    {what:<6} {NUM}{v}{NUM:#}");
+            }
+        }
+        if let Some(a) = profile.atomic {
+            anstream::println!("    {:<6} {NUM}{a}{NUM:#}", "atomic");
+        }
+    }
+}
+
 /// `mpt config check`: where the configuration came from and what it sets.
 /// Reaching this point already means it parsed and every key is known.
 fn show_config(cfg: &mpt::Config) {
@@ -738,6 +810,12 @@ fn show_config(cfg: &mpt::Config) {
     let width = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
     for (k, v) in &rows {
         anstream::println!("{HEAD}{k:<width$}{HEAD:#}  {NUM}{v}{NUM:#}");
+    }
+    if !cfg.profiles.is_empty() {
+        rows.push((
+            "[profiles]".into(),
+            cfg.profiles.keys().cloned().collect::<Vec<_>>().join(", "),
+        ));
     }
     if rows.is_empty() {
         anstream::println!("{DIM}nothing set; built-in defaults are in use{DIM:#}");
