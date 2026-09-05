@@ -120,6 +120,18 @@ const DIR: Style = AnsiColor::Blue.on_default().bold();
 const HEAD: Style = Style::new().bold();
 const DIM: Style = Style::new().dimmed();
 
+/// Marks a run that was stopped with Ctrl-C, so `main` can exit with 130.
+#[derive(Debug)]
+struct Interrupted;
+
+impl std::fmt::Display for Interrupted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("interrupted")
+    }
+}
+
+impl std::error::Error for Interrupted {}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -130,7 +142,12 @@ async fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             anstream::eprintln!("{FAIL}error:{FAIL:#} {e:#}");
-            ExitCode::FAILURE
+            // 130 is the conventional "terminated by Ctrl-C".
+            if e.chain().any(|c| c.is::<Interrupted>()) {
+                ExitCode::from(130)
+            } else {
+                ExitCode::FAILURE
+            }
         }
     }
 }
@@ -167,6 +184,17 @@ fn init_logging(verbosity: u8) {
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     let timeout = (cli.timeout > 0).then(|| Duration::from_secs(cli.timeout));
+    // Ctrl-C stops the transfer, removes partial files and leaves the rest alone.
+    let cancel = tokio_util::sync::CancellationToken::new();
+    {
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                anstream::eprintln!("{WARN}interrupted{WARN:#}, stopping and cleaning up…");
+                cancel.cancel();
+            }
+        });
+    }
     let open = |url: &str| -> anyhow::Result<Box<dyn mpt::Endpoint>> {
         let mut loc = Location::parse(url)?;
         if cli.insecure {
@@ -200,6 +228,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             send_timeout: timeout,
         },
         atomic: !cli.no_atomic,
+        cancel: Some(cancel.clone()),
         hash: cli.hash.or(cli.sign.as_ref().map(|_| HashAlgo::Sha256)),
         check: cli.check || cli.verify_signers.is_some() || cli.verify_keyring.is_some(),
         sign: match &cli.sign {
@@ -301,9 +330,16 @@ async fn do_copy(
     let report = mpt::copy_many(src.as_ref(), &refs, opts)
         .await
         .with_context(|| format!("copy {}", src.location()))?;
+    let cancelled = report
+        .targets
+        .iter()
+        .any(|t| matches!(t.result, Err(mpt::Error::Cancelled)));
     if report.targets.len() == 1 {
         let t = &report.targets[0];
         if let Err(e) = &t.result {
+            if cancelled {
+                return Err(anyhow::Error::new(Interrupted));
+            }
             anyhow::bail!("copy {} -> {}: {e}", report.source, t.target);
         }
         anstream::eprintln!(
@@ -356,6 +392,12 @@ async fn do_copy(
         report.elapsed
     );
     print_checksums(&report, opts)?;
+    if cancelled {
+        return Err(anyhow::Error::new(Interrupted).context(format!(
+            "{failed} of {} targets unfinished",
+            report.targets.len()
+        )));
+    }
     if failed > 0 {
         anyhow::bail!("{failed} of {} targets failed", report.targets.len());
     }

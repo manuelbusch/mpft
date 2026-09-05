@@ -2,6 +2,7 @@
 
 use std::time::{Duration, Instant};
 
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use std::sync::Arc;
@@ -45,6 +46,9 @@ pub struct CopyOptions {
     /// that the final name never denotes an incomplete file. Ignored by
     /// targets that cannot rename (http, s3, mail). Default `true`.
     pub atomic: bool,
+    /// Stops the transfer when it fires: running sends are dropped, partial
+    /// files are removed and every unfinished target reports [`Error::Cancelled`].
+    pub cancel: Option<CancellationToken>,
 }
 
 impl std::fmt::Debug for CopyOptions {
@@ -72,6 +76,7 @@ impl Default for CopyOptions {
             sign: None,
             verify: None,
             atomic: true,
+            cancel: None,
         }
     }
 }
@@ -294,10 +299,15 @@ pub async fn copy_many(
                     let result = loop {
                         attempts += 1;
                         let (reader, count) = Counted::new(cache.reader());
-                        let r = job.sender.send(Box::pin(reader), &job.meta).await;
+                        let r = cancellable(
+                            opts.cancel.as_ref(),
+                            job.sender.send(Box::pin(reader), &job.meta),
+                        )
+                        .await;
                         bytes = count.load(std::sync::atomic::Ordering::Relaxed);
                         match r {
                             Ok(()) => break Ok(()),
+                            Err(Error::Cancelled) => break Err(Error::Cancelled),
                             Err(e) if attempts <= opts.retries => {
                                 warn!(target = %job.dst.location(), attempt = attempts, "send failed, retrying: {e}");
                                 tokio::time::sleep(Duration::from_secs(attempts as u64)).await;
@@ -321,7 +331,11 @@ pub async fn copy_many(
             let running = jobs.iter().zip(readers).map(|(job, reader)| async move {
                 let t = Instant::now();
                 let (reader, count) = Counted::new(reader);
-                let result = job.sender.send(Box::pin(reader), &job.meta).await;
+                let result = cancellable(
+                    opts.cancel.as_ref(),
+                    job.sender.send(Box::pin(reader), &job.meta),
+                )
+                .await;
                 let result = finalize(job, result).await;
                 TargetReport {
                     target: job.dst.location().to_string(),
@@ -406,6 +420,24 @@ pub async fn copy_many(
         digests,
         checked,
     })
+}
+
+/// Run `fut`, but give up as soon as `cancel` fires. The future is dropped,
+/// which closes whatever connection it was using.
+async fn cancellable<F: std::future::Future<Output = Result<()>>>(
+    cancel: Option<&CancellationToken>,
+    fut: F,
+) -> Result<()> {
+    match cancel {
+        None => fut.await,
+        Some(token) => {
+            tokio::select! {
+                biased;
+                () = token.cancelled() => Err(Error::Cancelled),
+                r = fut => r,
+            }
+        }
+    }
 }
 
 /// Suffix of the temporary file an atomic transfer writes to.
@@ -759,6 +791,77 @@ mod tests {
         assert!(
             left.len() < 4096 + 1,
             "the leftover file holds at most what was transferred"
+        );
+    }
+
+    /// A source that keeps trickling bytes, so a transfer can be interrupted.
+    struct SlowSource {
+        loc: crate::Location,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::Receiver for SlowSource {
+        async fn receive(&self) -> Result<crate::ByteStream> {
+            let s = futures::stream::unfold(0usize, |i| async move {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                Some((
+                    Ok::<_, std::io::Error>(bytes::Bytes::from_static(&[7u8; 1024])),
+                    i + 1,
+                ))
+            });
+            Ok(Box::pin(tokio_util::io::StreamReader::new(s)))
+        }
+        async fn list(&self) -> Result<Vec<crate::Entry>> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl Endpoint for SlowSource {
+        fn location(&self) -> &crate::Location {
+            &self.loc
+        }
+        fn as_receiver(&self) -> Option<&dyn crate::Receiver> {
+            Some(self)
+        }
+        fn as_sender(&self) -> Option<&dyn crate::Sender> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_removes_the_partial_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = SlowSource {
+            loc: crate::Location::parse("/nowhere/src.bin").unwrap(),
+        };
+        let dst = crate::open(&format!("{}/out/", dir.path().display())).unwrap();
+        let cancel = CancellationToken::new();
+        let opts = CopyOptions {
+            cancel: Some(cancel.clone()),
+            ..Default::default()
+        };
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            cancel.cancel();
+        });
+
+        let report = tokio::time::timeout(
+            Duration::from_secs(10),
+            copy_many(&src, &[dst.as_ref()], &opts),
+        )
+        .await
+        .expect("cancellation must end the copy")
+        .unwrap();
+
+        assert!(
+            matches!(report.targets[0].result, Err(Error::Cancelled)),
+            "{:?}",
+            report.targets[0].result
+        );
+        assert!(!dir.path().join("out/src.bin").exists());
+        assert!(
+            !dir.path().join("out/src.bin.mpt-part").exists(),
+            "the partial file must be cleaned up"
         );
     }
 

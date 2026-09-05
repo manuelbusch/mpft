@@ -72,6 +72,9 @@ mpt schemes                      print the table above
   --hash <ALGO>  --check        checksums (see below)     --sign <SPEC>  --verify-signers/--verify-keyring <FILE>
 ```
 
+Ctrl-C stops a running copy: open connections are dropped, partial files are
+removed, every unfinished target reports `cancelled`, and the exit code is 130.
+
 ## Several targets at once
 
 `cp` accepts any number of targets. The source is read **once** and

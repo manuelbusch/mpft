@@ -39,6 +39,10 @@ pub enum Error {
     #[error("I/O error: {0}")]
     Io(std::io::Error),
 
+    /// The operation was stopped on request (Ctrl-C, cancellation token).
+    #[error("cancelled")]
+    Cancelled,
+
     /// Wrapped protocol-library error.
     ///
     /// The source is part of the message (not exposed via `source()`), so

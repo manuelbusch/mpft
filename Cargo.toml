@@ -26,8 +26,8 @@ sign-ssh = ["dep:ssh-key", "dep:dirs"]
 sign-pgp = ["dep:pgp", "dep:rand"]
 
 [dependencies]
-tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "fs", "io-util", "net", "sync", "time"] }
-tokio-util = { version = "0.7", features = ["io"] }
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "fs", "io-util", "net", "signal", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }  # sync::CancellationToken needs no feature
 futures = "0.3"
 async-trait = "0.1"
 url = "2.5"
