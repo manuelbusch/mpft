@@ -166,6 +166,8 @@ pub struct S3Section {
     pub path_style: Option<bool>,
     pub access_key_id: Option<Secret>,
     pub secret_access_key: Option<Secret>,
+    /// AWS profile to take credentials from (feature `s3-aws-auth`).
+    pub profile: Option<String>,
 }
 
 /// The secrets of the sections above, fetched from their providers.
@@ -429,12 +431,14 @@ impl Config {
             path_style,
             access_key_id,
             secret_access_key,
+            profile,
         } = &self.s3;
         if endpoint.is_some()
             || region.is_some()
             || path_style.is_some()
             || access_key_id.is_some()
             || secret_access_key.is_some()
+            || profile.is_some()
         {
             out.push("s3");
         }
@@ -506,6 +510,7 @@ impl Config {
             s3.endpoint,
             s3.region,
             s3.path_style,
+            s3.profile,
         );
         if !other.profiles.is_empty() {
             self.profiles.append(&mut other.profiles);

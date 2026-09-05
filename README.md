@@ -29,7 +29,7 @@ The crate is a library (`mpt`) with a thin CLI binary of the same name.
 | `ftps://user@host/path` | FTP with TLS, explicit `AUTH TLS` by default | ✓ | ✓ | 21 / 990 | `tls=explicit\|implicit`, `insecure=`, `passive=`, `nat=` |
 | `http://`, `https://` | HTTP GET / PUT | ✓ | ✓ | 80 / 443 | `method=put\|post\|patch`, `header=Name:Value` (repeatable), `insecure=`, `timeout=` |
 | `webdav://`, `webdavs://` | WebDAV over HTTP(S) | ✓ | ✓ | 80 / 443 | `insecure=`, `timeout=` |
-| `s3://bucket/key` | S3-compatible object storage | ✓ | ✓ | – | `endpoint=<url>`, `region=`, `path_style=`, `insecure=` |
+| `s3://bucket/key` | S3-compatible object storage | ✓ | ✓ | – | `endpoint=<url>`, `region=`, `path_style=`, `insecure=`, `profile=`, `aws_chain=` |
 | `mailto:a@x.de,b@y.de` | e-mail attachment, server from `MPT_SMTP_URL` | ✗ | ✓ | – | `subject=`, `body=`, `cc=`, `bcc=`, `from=`, `filename=` |
 | `smtp://user@mail.host:587/a@x.de` | e-mail attachment, server in the URL | ✗ | ✓ | 587 | as mailto, plus `tls=starttls\|implicit\|none`, `insecure=` |
 
@@ -165,6 +165,7 @@ max_attachment = "25M"
 endpoint   = "https://minio.example.com"
 region     = "eu-central-1"
 path_style = true
+profile    = "prod"           # AWS credential chain (feature "s3-aws-auth")
 ```
 
 ### Credentials
@@ -271,6 +272,26 @@ Targets that connect before they read (SCP, SMTP) pause the stream briefly at
 the start until they are ready; this is head-of-line blocking, not a deadlock.
 A target that stops accepting data altogether is dropped from the fan-out after
 `--timeout` and reports a timeout, so it cannot hold up the others.
+
+## Single sign-on
+
+Long-lived keys in a file are what SSO replaces. Where a protocol has an
+answer, mpt uses it:
+
+**S3** — with the `s3-aws-auth` feature, credentials come from the AWS chain
+instead of from the URL: the SSO cache that `aws sso login` fills, the profiles
+in `~/.aws/config`, AssumeRole, web identity and the instance metadata service.
+
+```
+cargo build --features s3-aws-auth
+mpt cp report.pdf "s3://bucket/reports/?profile=prod"       # or [s3] profile = "prod"
+mpt cp report.pdf "s3://bucket/reports/?aws_chain=true"     # the chain without a named profile
+```
+
+It is used only when a profile is named (`?profile=`, `[s3] profile`,
+`$AWS_PROFILE`) or `?aws_chain=true` asks for it, so nothing reaches for the
+instance metadata service unbidden. Explicit keys — `user:pass@` in the URL or
+`[s3] access_key_id` — always win.
 
 ## Machine-readable output
 

@@ -648,3 +648,56 @@ async fn profile_urls_resolve_against_the_configuration() {
     .await
     .expect("timeout");
 }
+
+/// With the `s3-aws-auth` feature, credentials come from the AWS chain — here
+/// from a profile file, the same path `aws sso login` fills in.
+#[cfg(feature = "s3-aws-auth")]
+#[tokio::test]
+async fn s3_credentials_come_from_an_aws_profile() {
+    let Some(base) = env("MPT_IT_S3") else {
+        eprintln!("skipping: MPT_IT_S3 not set");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let creds = dir.path().join("credentials");
+    std::fs::write(
+        &creds,
+        "[it]\naws_access_key_id = testkey\naws_secret_access_key = testsecret\n",
+    )
+    .unwrap();
+    let conf = dir.path().join("config");
+    std::fs::write(&conf, "[profile it]\nregion = us-east-1\n").unwrap();
+    let payload = dir.path().join("profile-auth.bin");
+    std::fs::write(&payload, b"from the aws chain").unwrap();
+
+    let name = format!("aws_profile_{}.bin", std::process::id());
+    let target = dir_url(&base, &format!("/{name}"));
+    let sep = if target.contains('?') { "&" } else { "?" };
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .args(["cp", payload.to_str().unwrap()])
+        .arg(format!("{target}{sep}profile=it"))
+        // Only the profile files may provide credentials.
+        .env_remove("AWS_ACCESS_KEY_ID")
+        .env_remove("AWS_SECRET_ACCESS_KEY")
+        .env_remove("AWS_SESSION_TOKEN")
+        .env_remove("AWS_PROFILE")
+        .env("AWS_CONFIG_FILE", &conf)
+        .env("AWS_SHARED_CREDENTIALS_FILE", &creds)
+        .output()
+        .expect("running mpt");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Read it back the ordinary way.
+    mpt::init_crypto();
+    let got = mpt::open(&target).unwrap();
+    let mut stream = got.receiver().unwrap().receive().await.expect("download");
+    let mut buf = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut buf)
+        .await
+        .unwrap();
+    assert_eq!(buf, b"from the aws chain");
+}

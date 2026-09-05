@@ -99,6 +99,8 @@ impl S3Endpoint {
             b = b
                 .with_access_key_id(id.expose_secret())
                 .with_secret_access_key(key.expose_secret());
+        } else if let Some(profile) = aws_profile(&loc, cfg)? {
+            b = attach_chain(b, profile, loc.opt("region").map(String::from));
         }
         let store = b.build().map_err(|e| Error::transport("s3", e))?;
         Ok(S3Endpoint {
@@ -115,6 +117,123 @@ impl S3Endpoint {
             _ => self.key.clone(),
         };
         Ok(ObjPath::from(key))
+    }
+}
+
+/// Which AWS profile to take credentials from, if the chain should be used
+/// at all: `?profile=`, `[s3] profile`, `$AWS_PROFILE`, or `?aws_chain=true`
+/// for the chain without a named profile.
+fn aws_profile(loc: &Location, cfg: &crate::Config) -> Result<Option<Option<String>>> {
+    let named = loc
+        .opt("profile")
+        .map(String::from)
+        .or_else(|| cfg.s3.profile.clone())
+        .or_else(|| std::env::var("AWS_PROFILE").ok())
+        .filter(|p| !p.is_empty());
+    if named.is_some() {
+        return Ok(Some(named));
+    }
+    Ok(loc.opt_bool("aws_chain")?.unwrap_or(false).then_some(None))
+}
+
+#[cfg(feature = "s3-aws-auth")]
+fn attach_chain(
+    b: AmazonS3Builder,
+    profile: Option<String>,
+    region: Option<String>,
+) -> AmazonS3Builder {
+    b.with_credentials(std::sync::Arc::new(chain::Chain::new(profile, region)))
+}
+
+/// Without the feature the profile is only a hint that something is missing.
+#[cfg(not(feature = "s3-aws-auth"))]
+fn attach_chain(
+    b: AmazonS3Builder,
+    profile: Option<String>,
+    _region: Option<String>,
+) -> AmazonS3Builder {
+    tracing::warn!(
+        "AWS profile {} is ignored: compiled without the 's3-aws-auth' feature, \
+         so only AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY and user:pass@ work",
+        profile.as_deref().unwrap_or("(default)")
+    );
+    b
+}
+
+/// Credentials from the AWS chain instead of from the URL: the SSO cache
+/// (`aws sso login`), `~/.aws/config` profiles, AssumeRole, web identity and
+/// the instance metadata service. Only compiled with the `s3-aws-auth`
+/// feature, and only used when a profile is named or `?aws_chain=true` asks
+/// for it, so nothing reaches for the network unbidden.
+#[cfg(feature = "s3-aws-auth")]
+mod chain {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider};
+    use object_store::CredentialProvider;
+    use object_store::aws::AwsCredential;
+    use tokio::sync::OnceCell;
+    use tracing::debug;
+
+    #[derive(Debug)]
+    pub struct Chain {
+        profile: Option<String>,
+        region: Option<String>,
+        /// Loaded on first use: reading the SSO cache and the profile files
+        /// is async, while the endpoint is built synchronously.
+        loaded: OnceCell<SharedCredentialsProvider>,
+    }
+
+    impl Chain {
+        pub fn new(profile: Option<String>, region: Option<String>) -> Self {
+            Chain {
+                profile,
+                region,
+                loaded: OnceCell::new(),
+            }
+        }
+
+        async fn provider(&self) -> &SharedCredentialsProvider {
+            self.loaded
+                .get_or_init(|| async {
+                    debug!(profile = ?self.profile, "loading the AWS credential chain");
+                    let mut b = aws_config::defaults(aws_config::BehaviorVersion::latest());
+                    if let Some(p) = &self.profile {
+                        b = b.profile_name(p);
+                    }
+                    if let Some(r) = &self.region {
+                        b = b.region(aws_config::Region::new(r.clone()));
+                    }
+                    b.load()
+                        .await
+                        .credentials_provider()
+                        .expect("the default chain always provides one")
+                })
+                .await
+        }
+    }
+
+    #[async_trait]
+    impl CredentialProvider for Chain {
+        type Credential = AwsCredential;
+
+        async fn get_credential(&self) -> object_store::Result<Arc<AwsCredential>> {
+            let creds = self
+                .provider()
+                .await
+                .provide_credentials()
+                .await
+                .map_err(|e| object_store::Error::Generic {
+                    store: "S3",
+                    source: Box::new(e),
+                })?;
+            Ok(Arc::new(AwsCredential {
+                key_id: creds.access_key_id().to_string(),
+                secret_key: creds.secret_access_key().to_string(),
+                token: creds.session_token().map(String::from),
+            }))
+        }
     }
 }
 
