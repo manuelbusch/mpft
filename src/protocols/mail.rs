@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 use lettre::message::header::ContentType;
 use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
-use lettre::transport::smtp::authentication::Credentials;
+use lettre::transport::smtp::authentication::{Credentials, Mechanism};
 use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use tracing::{debug, info};
@@ -37,6 +37,29 @@ struct SmtpConfig {
     server: Location,
     tls: SmtpTls,
     insecure: bool,
+    /// Which SASL mechanisms to offer; `None` leaves lettre's choice alone.
+    auth: Option<Vec<Mechanism>>,
+}
+
+/// `?auth=` — which SASL mechanism to log in with. `xoauth2` is what
+/// Microsoft 365 and Google want now that they have switched basic
+/// authentication off: the "password" is then an access token.
+fn auth_mechanisms(value: Option<&str>) -> Result<Option<Vec<Mechanism>>> {
+    let Some(v) = value else {
+        return Ok(None);
+    };
+    Ok(Some(match v.trim().to_ascii_lowercase().as_str() {
+        "" | "auto" | "default" => return Ok(None),
+        "xoauth2" | "oauth2" | "oauth" => vec![Mechanism::Xoauth2],
+        "plain" => vec![Mechanism::Plain],
+        "login" => vec![Mechanism::Login],
+        other => {
+            return Err(Error::invalid_option(
+                "auth",
+                format!("expected xoauth2|plain|login|auto, got '{other}'"),
+            ));
+        }
+    }))
 }
 
 impl MailEndpoint {
@@ -105,10 +128,17 @@ impl MailEndpoint {
             .opt_bool("insecure")?
             .or(server.opt_bool("insecure")?)
             .unwrap_or(false);
+        let auth = auth_mechanisms(
+            self.loc
+                .opt("auth")
+                .or_else(|| server.opt("auth"))
+                .or_else(|| crate::config::global().mail.auth.as_deref()),
+        )?;
         Ok(SmtpConfig {
             server,
             tls,
             insecure,
+            auth,
         })
     }
 
@@ -150,8 +180,14 @@ impl MailEndpoint {
             .port(port)
             .tls(tls);
         if let Some(user) = cfg.server.username() {
-            let pw = cfg.server.password().unwrap_or("").to_string();
-            b = b.credentials(Credentials::new(user.to_string(), pw));
+            // For XOAUTH2 the "password" is the access token; lettre wraps it
+            // in the user=…\x01auth=Bearer …\x01\x01 string itself.
+            let secret = cfg.server.password().unwrap_or("").to_string();
+            b = b.credentials(Credentials::new(user.to_string(), secret));
+        }
+        if let Some(mechanisms) = &cfg.auth {
+            debug!(?mechanisms, "smtp authentication");
+            b = b.authentication(mechanisms.clone());
         }
         Ok(b.build())
     }
@@ -289,5 +325,42 @@ impl Sender for MailEndpoint {
         })?;
         info!(code = %resp.code(), "mail accepted by server");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_login_mechanism_can_be_chosen() {
+        assert_eq!(auth_mechanisms(None).unwrap(), None);
+        assert_eq!(auth_mechanisms(Some("auto")).unwrap(), None);
+        assert_eq!(
+            auth_mechanisms(Some("XOAUTH2")).unwrap(),
+            Some(vec![Mechanism::Xoauth2])
+        );
+        assert_eq!(
+            auth_mechanisms(Some("login")).unwrap(),
+            Some(vec![Mechanism::Login])
+        );
+        let err = auth_mechanisms(Some("ntlm")).unwrap_err().to_string();
+        assert!(err.contains("xoauth2"), "{err}");
+    }
+
+    #[test]
+    fn the_url_chooses_before_the_server_and_the_configuration() {
+        let ep = MailEndpoint::new(
+            Location::parse("smtp://user@mail.example.com:587/a@b.c?auth=xoauth2").unwrap(),
+        )
+        .unwrap();
+        let cfg = ep.smtp_config().unwrap();
+        assert_eq!(cfg.auth, Some(vec![Mechanism::Xoauth2]));
+
+        // Nothing said: lettre picks what the server offers.
+        let ep =
+            MailEndpoint::new(Location::parse("smtp://user@mail.example.com:587/a@b.c").unwrap())
+                .unwrap();
+        assert_eq!(ep.smtp_config().unwrap().auth, None);
     }
 }

@@ -150,8 +150,10 @@ pub struct SshSection {
 pub struct MailSection {
     /// SMTP server for `mailto:` targets, e.g. `smtp://user@host:587?tls=starttls`.
     pub smtp: Option<String>,
-    /// Password for the SMTP server.
+    /// Password for the SMTP server, or the access token with `auth = "xoauth2"`.
     pub password: Option<Secret>,
+    /// SASL mechanism: `xoauth2`, `plain`, `login` or `auto`.
+    pub auth: Option<String>,
     pub from: Option<String>,
     /// Attachment size limit with a unit, e.g. `25M`.
     pub max_attachment: Option<String>,
@@ -419,10 +421,16 @@ impl Config {
         let MailSection {
             smtp,
             password,
+            auth,
             from,
             max_attachment,
         } = &self.mail;
-        if smtp.is_some() || password.is_some() || from.is_some() || max_attachment.is_some() {
+        if smtp.is_some()
+            || password.is_some()
+            || auth.is_some()
+            || from.is_some()
+            || max_attachment.is_some()
+        {
             out.push("mail");
         }
         let S3Section {
@@ -505,6 +513,7 @@ impl Config {
             ssh.key,
             ssh.known_hosts_file,
             mail.smtp,
+            mail.auth,
             mail.from,
             mail.max_attachment,
             s3.endpoint,

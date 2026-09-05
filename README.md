@@ -31,7 +31,7 @@ The crate is a library (`mpt`) with a thin CLI binary of the same name.
 | `webdav://`, `webdavs://` | WebDAV over HTTP(S) | ✓ | ✓ | 80 / 443 | `insecure=`, `timeout=` |
 | `s3://bucket/key` | S3-compatible object storage | ✓ | ✓ | – | `endpoint=<url>`, `region=`, `path_style=`, `insecure=`, `profile=`, `aws_chain=` |
 | `mailto:a@x.de,b@y.de` | e-mail attachment, server from `MPT_SMTP_URL` | ✗ | ✓ | – | `subject=`, `body=`, `cc=`, `bcc=`, `from=`, `filename=` |
-| `smtp://user@mail.host:587/a@x.de` | e-mail attachment, server in the URL | ✗ | ✓ | 587 | as mailto, plus `tls=starttls\|implicit\|none`, `insecure=` |
+| `smtp://user@mail.host:587/a@x.de` | e-mail attachment, server in the URL | ✗ | ✓ | 587 | as mailto, plus `tls=starttls\|implicit\|none`, `auth=xoauth2\|plain\|login`, `insecure=` |
 
 Rules:
 
@@ -158,6 +158,7 @@ hostkey          = ["SHA256:…"]    # pinned host keys, one string or a list
 [mail]                        # defaults for mailto: and smtp://
 smtp           = "smtp://user@mail.example.com:587?tls=starttls"
 password       = { env = "MPT_SMTP_PASSWORD" }   # see "Credentials" below
+auth           = "auto"       # or xoauth2 | plain | login
 from           = "reports@example.com"
 max_attachment = "25M"
 
@@ -292,6 +293,22 @@ It is used only when a profile is named (`?profile=`, `[s3] profile`,
 `$AWS_PROFILE`) or `?aws_chain=true` asks for it, so nothing reaches for the
 instance metadata service unbidden. Explicit keys — `user:pass@` in the URL or
 `[s3] access_key_id` — always win.
+
+**SMTP** — `?auth=xoauth2` logs in with an OAuth2 access token instead of a
+password, which is what Microsoft 365 and Google want now that they have
+switched basic authentication off. The token takes the place of the password,
+so a credential provider fetches it:
+
+```toml
+[mail]
+smtp     = "smtp://reports@example.com@smtp.office365.com:587?tls=starttls"
+auth     = "xoauth2"
+password = { cmd = "az account get-access-token --resource https://outlook.office365.com --query accessToken -o tsv" }
+```
+
+Anything that prints a token works the same way (`gcloud auth print-access-token`,
+a script around a client-credentials flow), and the token is fetched once per
+run, when the mail is about to be sent.
 
 ## Machine-readable output
 
