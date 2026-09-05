@@ -74,6 +74,13 @@ impl Receiver for FileEndpoint {
     }
 }
 
+impl FileEndpoint {
+    /// Absolute path of a file called `name` next to this location.
+    fn sibling_path(&self, name: &str) -> Result<PathBuf> {
+        Ok(PathBuf::from(self.loc.sibling(name)?.path().to_string()))
+    }
+}
+
 #[async_trait]
 impl Sender for FileEndpoint {
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()> {
@@ -87,6 +94,18 @@ impl Sender for FileEndpoint {
         stream::pipe(body, &mut f).await?;
         f.sync_all().await?;
         Ok(())
+    }
+
+    fn supports_rename(&self) -> bool {
+        true
+    }
+
+    async fn rename(&self, from: &str, to: &str) -> Result<()> {
+        Ok(fs::rename(self.sibling_path(from)?, self.sibling_path(to)?).await?)
+    }
+
+    async fn remove(&self, name: &str) -> Result<()> {
+        Ok(fs::remove_file(self.sibling_path(name)?).await?)
     }
 }
 

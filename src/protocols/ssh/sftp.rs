@@ -139,4 +139,28 @@ impl Sender for SftpEndpoint {
         Ok(())
     }
 
+    fn supports_rename(&self) -> bool {
+        true
+    }
+
+    async fn rename(&self, from: &str, to: &str) -> Result<()> {
+        let (handle, sftp) = self.session().await?;
+        let from = strip_home(self.loc.sibling(from)?.path());
+        let to = strip_home(self.loc.sibling(to)?.path());
+        // Plain SFTP rename refuses an existing target; replace it first.
+        let _ = sftp.remove_file(to.clone()).await;
+        let res = sftp.rename(from, to).await.map_err(sftp_err);
+        let _ = sftp.close().await;
+        super::disconnect(&handle).await;
+        res
+    }
+
+    async fn remove(&self, name: &str) -> Result<()> {
+        let (handle, sftp) = self.session().await?;
+        let path = strip_home(self.loc.sibling(name)?.path());
+        let res = sftp.remove_file(path).await.map_err(sftp_err);
+        let _ = sftp.close().await;
+        super::disconnect(&handle).await;
+        res
+    }
 }

@@ -68,6 +68,7 @@ mpt schemes                      print the table above
   -v / -vv / -vvv   log level    --insecure   disable TLS verification    --password <pw>
   --color auto|always|never      colored output (auto: only on a terminal, honours NO_COLOR)
   --timeout <SECONDS>            inactivity timeout, 30 by default, 0 disables it
+  --no-atomic                    write straight to the target name (see below)
   --hash <ALGO>  --check        checksums (see below)     --sign <SPEC>  --verify-signers/--verify-keyring <FILE>
 ```
 
@@ -107,6 +108,31 @@ resets it, so arbitrarily large files are fine on a slow but steady line. It
 applies to connecting and logging in, to every data stream, to the FTP control
 channel, and to a fan-out target that stops draining its queue. `?timeout=` in
 a URL overrides the flag for that endpoint.
+
+## Atomic transfers
+
+A target file appears under its final name only once it is complete: the
+payload goes to `<name>.mpt-part` first and is renamed into place afterwards.
+An aborted transfer therefore leaves nothing that a pickup job could mistake
+for a finished file, and the partial file is removed. Checksum and signature
+files are written after the rename, so they remain the "transfer complete"
+marker.
+
+| Protocol | Rename | Mechanism |
+|---|---|---|
+| file | ✓ | `rename(2)` |
+| sftp | ✓ | SFTP `RENAME` (an existing target is removed first) |
+| scp | ✓ | `mv -f` over the same SSH connection |
+| ftp, ftps | ✓ | `RNFR`/`RNTO` |
+| webdav | ✓ | `MOVE` |
+| http | – | HTTP cannot rename; the PUT goes straight to the target |
+| s3 | – | not needed: an object appears only when its upload is complete |
+| mail | – | atomic by nature |
+
+`--no-atomic` writes straight to the target name, for pickup processes that
+would trip over the extra file. Two transfers writing the same target file at
+the same time still conflict, and the second rename now reports it instead of
+interleaving silently.
 
 ## Checksums
 

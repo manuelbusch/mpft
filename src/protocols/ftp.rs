@@ -395,4 +395,28 @@ impl Sender for FtpEndpoint {
         Ok(())
     }
 
+    fn supports_rename(&self) -> bool {
+        true
+    }
+
+    async fn rename(&self, from: &str, to: &str) -> Result<()> {
+        let from = self.loc.sibling(from)?.path().to_string();
+        let to = self.loc.sibling(to)?.path().to_string();
+        let mut ftp = self.connect().await?;
+        // RNTO fails on most servers when the target exists; clear it first.
+        let _ = self.ctl("DELE", ftp.rm(to.as_str())).await;
+        let res = self
+            .ctl("RNFR/RNTO", ftp.rename(from.as_str(), to.as_str()))
+            .await;
+        let _ = tokio::time::timeout(self.timeout, ftp.quit()).await;
+        res
+    }
+
+    async fn remove(&self, name: &str) -> Result<()> {
+        let path = self.loc.sibling(name)?.path().to_string();
+        let mut ftp = self.connect().await?;
+        let res = self.ctl("DELE", ftp.rm(path.as_str())).await;
+        let _ = tokio::time::timeout(self.timeout, ftp.quit()).await;
+        res
+    }
 }

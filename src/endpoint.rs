@@ -104,6 +104,31 @@ pub trait Receiver: Send + Sync {
 pub trait Sender: Send + Sync {
     /// Write the payload to the endpoint's path (or deliver it, for mail).
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()>;
+
+    /// Whether the target can rename a file, which is what makes an atomic
+    /// finish possible: upload to `<name>.mpt-part`, then rename into place.
+    fn supports_rename(&self) -> bool {
+        false
+    }
+
+    /// Rename `from` to `to`. Both are plain file names in the directory of
+    /// this endpoint's location (see [`Location::sibling`]).
+    async fn rename(&self, from: &str, to: &str) -> Result<()> {
+        let _ = (from, to);
+        Err(crate::Error::UnsupportedOperation {
+            scheme: String::new(),
+            op: "rename",
+        })
+    }
+
+    /// Delete the file `name` in the directory of this endpoint's location.
+    async fn remove(&self, name: &str) -> Result<()> {
+        let _ = name;
+        Err(crate::Error::UnsupportedOperation {
+            scheme: String::new(),
+            op: "remove",
+        })
+    }
 }
 
 /// A parsed, ready-to-use endpoint. Direction support is optional per protocol.

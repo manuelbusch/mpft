@@ -130,4 +130,20 @@ impl Sender for WebDavEndpoint {
         self.client.put(&target, body).await.map_err(dav_err)
     }
 
+    fn supports_rename(&self) -> bool {
+        true
+    }
+
+    async fn rename(&self, from: &str, to: &str) -> Result<()> {
+        let from = self.loc.sibling(from)?.path().to_string();
+        let to = self.loc.sibling(to)?.path().to_string();
+        debug!(%from, %to, "webdav MOVE");
+        self.client.mv(&from, &to).await.map_err(dav_err)
+    }
+
+    async fn remove(&self, name: &str) -> Result<()> {
+        let path = self.loc.sibling(name)?.path().to_string();
+        debug!(%path, "webdav DELETE");
+        self.client.delete(&path).await.map_err(dav_err)
+    }
 }

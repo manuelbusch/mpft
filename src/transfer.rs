@@ -41,6 +41,10 @@ pub struct CopyOptions {
     /// With `check`: require a valid signature over the source's checksum
     /// file from one of the trusted keys.
     pub verify: Option<Arc<dyn Verifier>>,
+    /// Upload to `<name>.mpt-part` and rename it into place afterwards, so
+    /// that the final name never denotes an incomplete file. Ignored by
+    /// targets that cannot rename (http, s3, mail). Default `true`.
+    pub atomic: bool,
 }
 
 impl std::fmt::Debug for CopyOptions {
@@ -67,6 +71,7 @@ impl Default for CopyOptions {
             check: false,
             sign: None,
             verify: None,
+            atomic: true,
         }
     }
 }
@@ -239,14 +244,49 @@ pub async fn copy_many(
     }
     meta.signer = opts.sign.clone();
 
+    // Atomic finish: upload to `<name>.mpt-part` and rename it into place, so
+    // a partial file never appears under the final name.
+    let plans: Vec<Option<PartPlan>> = dsts
+        .iter()
+        .zip(&senders)
+        .map(|(dst, sender)| part_plan(*dst, *sender, &meta, opts.atomic))
+        .collect::<Result<Vec<_>>>()?;
+    let jobs: Vec<Job> = dsts
+        .iter()
+        .zip(&senders)
+        .zip(&plans)
+        .map(|((dst, sender), plan)| {
+            Ok(Job {
+                dst: *dst,
+                sender: match plan {
+                    Some(p) => p.ep.sender()?,
+                    None => *sender,
+                },
+                meta: match plan {
+                    Some(p) => {
+                        let mut m = meta.clone();
+                        m.set_filename(&p.part)?;
+                        m
+                    }
+                    None => meta.clone(),
+                },
+                plan: plan.as_ref(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
     let targets = match opts.cache {
         CacheMode::Memory { limit } => {
             let cache = MemoryCache::from_stream(body, limit).await?;
             meta.size = Some(cache.len());
+            // The exact size is only known once everything is buffered.
+            let mut jobs = jobs;
+            for job in &mut jobs {
+                job.meta.size = Some(cache.len());
+            }
             debug!(bytes = cache.len(), "payload cached in memory");
-            let jobs = dsts.iter().zip(&senders).map(|(dst, sender)| {
+            let running = jobs.iter().map(|job| {
                 let cache = &cache;
-                let meta = &meta;
                 async move {
                     let t = Instant::now();
                     let mut attempts = 0;
@@ -254,21 +294,22 @@ pub async fn copy_many(
                     let result = loop {
                         attempts += 1;
                         let (reader, count) = Counted::new(cache.reader());
-                        let r = sender.send(Box::pin(reader), meta).await;
+                        let r = job.sender.send(Box::pin(reader), &job.meta).await;
                         bytes = count.load(std::sync::atomic::Ordering::Relaxed);
                         match r {
                             Ok(()) => break Ok(()),
                             Err(e) if attempts <= opts.retries => {
-                                warn!(target = %dst.location(), attempt = attempts, "send failed, retrying: {e}");
+                                warn!(target = %job.dst.location(), attempt = attempts, "send failed, retrying: {e}");
                                 tokio::time::sleep(Duration::from_secs(attempts as u64)).await;
                             }
                             Err(e) => break Err(e),
                         }
                     };
-                    TargetReport { target: dst.location().to_string(), bytes, elapsed: t.elapsed(), attempts, result, sidecar: None, signature: None }
+                    let result = finalize(job, result).await;
+                    TargetReport { target: job.dst.location().to_string(), bytes, elapsed: t.elapsed(), attempts, result, sidecar: None, signature: None }
                 }
             });
-            futures::future::join_all(jobs).await
+            futures::future::join_all(running).await
         }
         CacheMode::Stream => {
             let (readers, driver) = if dsts.len() == 1 {
@@ -277,28 +318,22 @@ pub async fn copy_many(
                 let (readers, driver) = tee(body, dsts.len(), opts.tee);
                 (readers, Some(driver))
             };
-            let jobs = dsts
-                .iter()
-                .zip(&senders)
-                .zip(readers)
-                .map(|((dst, sender), reader)| {
-                    let meta = &meta;
-                    async move {
-                        let t = Instant::now();
-                        let (reader, count) = Counted::new(reader);
-                        let result = sender.send(Box::pin(reader), meta).await;
-                        TargetReport {
-                            target: dst.location().to_string(),
-                            bytes: count.load(std::sync::atomic::Ordering::Relaxed),
-                            elapsed: t.elapsed(),
-                            attempts: 1,
-                            result,
-                            sidecar: None,
-                            signature: None,
-                        }
-                    }
-                });
-            let targets = futures::future::join_all(jobs).await;
+            let running = jobs.iter().zip(readers).map(|(job, reader)| async move {
+                let t = Instant::now();
+                let (reader, count) = Counted::new(reader);
+                let result = job.sender.send(Box::pin(reader), &job.meta).await;
+                let result = finalize(job, result).await;
+                TargetReport {
+                    target: job.dst.location().to_string(),
+                    bytes: count.load(std::sync::atomic::Ordering::Relaxed),
+                    elapsed: t.elapsed(),
+                    attempts: 1,
+                    result,
+                    sidecar: None,
+                    signature: None,
+                }
+            });
+            let targets = futures::future::join_all(running).await;
             if let Some(driver) = driver {
                 match driver.await {
                     Ok(Ok(())) => {}
@@ -371,6 +406,76 @@ pub async fn copy_many(
         digests,
         checked,
     })
+}
+
+/// Suffix of the temporary file an atomic transfer writes to.
+pub const PART_SUFFIX: &str = ".mpt-part";
+
+/// What one target needs: where the bytes go, and how to finish.
+struct Job<'a> {
+    dst: &'a dyn Endpoint,
+    sender: &'a dyn crate::Sender,
+    meta: SendMeta,
+    plan: Option<&'a PartPlan>,
+}
+
+/// The temporary file of an atomic transfer.
+struct PartPlan {
+    ep: Box<dyn Endpoint>,
+    part: String,
+    final_name: String,
+}
+
+/// Decide whether this target gets a `.mpt-part` file, and open an endpoint
+/// for it. Targets that cannot rename (http, s3, mail) send directly.
+fn part_plan(
+    dst: &dyn Endpoint,
+    sender: &dyn crate::Sender,
+    meta: &SendMeta,
+    atomic: bool,
+) -> Result<Option<PartPlan>> {
+    if !atomic || !sender.supports_rename() || dst.location().scheme().is_mail() {
+        return Ok(None);
+    }
+    let final_name = target_filename(dst, meta);
+    let part = format!("{final_name}{PART_SUFFIX}");
+    let loc = dst.location().sibling(&part)?;
+    debug!(%loc, "uploading to a temporary file");
+    Ok(Some(PartPlan {
+        ep: crate::protocols::open(loc)?,
+        part,
+        final_name,
+    }))
+}
+
+/// Move the `.mpt-part` file into place, or clean it up after a failure.
+async fn finalize(job: &Job<'_>, result: Result<()>) -> Result<()> {
+    let Some(plan) = job.plan else {
+        return result;
+    };
+    let sender = job.dst.sender()?;
+    match result {
+        Ok(()) => match sender.rename(&plan.part, &plan.final_name).await {
+            Ok(()) => {
+                debug!(part = %plan.part, name = %plan.final_name, "renamed into place");
+                Ok(())
+            }
+            Err(e) => {
+                let _ = sender.remove(&plan.part).await;
+                Err(Error::Remote(format!(
+                    "upload finished, but renaming {} to {} failed: {e} \
+                     (is another transfer writing the same file?)",
+                    plan.part, plan.final_name
+                )))
+            }
+        },
+        Err(e) => {
+            if let Err(cleanup) = sender.remove(&plan.part).await {
+                warn!(part = %plan.part, "could not remove the partial file: {cleanup}");
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Effective file name on the target (directory targets take the source name).
@@ -553,6 +658,108 @@ mod tests {
     #[tokio::test]
     async fn fanout_memory_mode_isolates_failures() {
         fanout_local(CacheMode::Memory { limit: 1 << 20 }).await;
+    }
+
+    /// A source that yields `good` bytes and then fails, to model a transfer
+    /// that dies halfway through.
+    struct FailingSource {
+        loc: crate::Location,
+        good: usize,
+    }
+
+    struct FailingReader {
+        left: usize,
+    }
+
+    impl tokio::io::AsyncRead for FailingReader {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if self.left == 0 {
+                return std::task::Poll::Ready(Err(std::io::Error::other("source died")));
+            }
+            let n = self.left.min(buf.remaining());
+            buf.put_slice(&vec![b'x'; n]);
+            self.left -= n;
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::Receiver for FailingSource {
+        async fn receive(&self) -> Result<crate::ByteStream> {
+            Ok(Box::pin(FailingReader { left: self.good }))
+        }
+        async fn list(&self) -> Result<Vec<crate::Entry>> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl Endpoint for FailingSource {
+        fn location(&self) -> &crate::Location {
+            &self.loc
+        }
+        fn as_receiver(&self) -> Option<&dyn crate::Receiver> {
+            Some(self)
+        }
+        fn as_sender(&self) -> Option<&dyn crate::Sender> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn atomic_transfer_leaves_no_part_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("src.bin");
+        std::fs::write(&src_path, vec![7u8; 1000]).unwrap();
+        let src = crate::open(src_path.to_str().unwrap()).unwrap();
+        let dst = crate::open(&format!("{}/out/", dir.path().display())).unwrap();
+
+        let report = copy_many(src.as_ref(), &[dst.as_ref()], &CopyOptions::default())
+            .await
+            .unwrap();
+        assert!(report.all_ok());
+        assert_eq!(
+            std::fs::read(dir.path().join("out/src.bin")).unwrap().len(),
+            1000
+        );
+        assert!(!dir.path().join("out/src.bin.mpt-part").exists());
+    }
+
+    #[tokio::test]
+    async fn a_broken_transfer_leaves_nothing_under_the_final_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = FailingSource {
+            loc: crate::Location::parse("/nowhere/src.bin").unwrap(),
+            good: 4096,
+        };
+        let dst = crate::open(&format!("{}/out/", dir.path().display())).unwrap();
+
+        let report = copy_many(&src, &[dst.as_ref()], &CopyOptions::default())
+            .await
+            .unwrap();
+        assert!(report.targets[0].result.is_err());
+        assert!(
+            !dir.path().join("out/src.bin").exists(),
+            "an incomplete file must not appear under the final name"
+        );
+        assert!(!dir.path().join("out/src.bin.mpt-part").exists());
+
+        // Without the atomic finish an incomplete file stays behind under the
+        // final name — which is exactly what the .mpt-part detour avoids.
+        let opts = CopyOptions {
+            atomic: false,
+            ..Default::default()
+        };
+        let report = copy_many(&src, &[dst.as_ref()], &opts).await.unwrap();
+        assert!(report.targets[0].result.is_err());
+        let left = std::fs::read(dir.path().join("out/src.bin")).unwrap();
+        assert!(
+            left.len() < 4096 + 1,
+            "the leftover file holds at most what was transferred"
+        );
     }
 
     #[tokio::test]

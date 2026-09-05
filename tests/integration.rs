@@ -256,6 +256,57 @@ async fn fanout_many(cache: mpt::CacheMode, retries: u32) {
     }
 }
 
+/// After a copy the target directory holds the finished file and no leftover
+/// `.mpt-part`; every protocol that can rename goes through that detour.
+#[tokio::test]
+async fn atomic_finish_leaves_no_part_files() {
+    let bases: Vec<String> = ["MPT_IT_SFTP", "MPT_IT_WEBDAV", "MPT_IT_FTPS"]
+        .iter()
+        .filter_map(|k| env(k))
+        .collect();
+    if bases.is_empty() {
+        eprintln!("skipping: no targets configured");
+        return;
+    }
+    mpt::init_crypto();
+    let name = format!("atomic_{}.bin", std::process::id());
+    let payload = random_payload(200_000);
+    let dir = tempfile::tempdir().unwrap();
+    let src_path = dir.path().join(&name);
+    std::fs::write(&src_path, &payload).unwrap();
+    let src = mpt::open(src_path.to_str().unwrap()).unwrap();
+
+    let targets: Vec<Box<dyn mpt::Endpoint>> =
+        bases.iter().map(|b| mpt::open(b).unwrap()).collect();
+    let refs: Vec<&dyn mpt::Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
+    let report = mpt::copy_many(src.as_ref(), &refs, &mpt::CopyOptions::default())
+        .await
+        .expect("copy_many");
+    assert!(report.all_ok(), "{:?}", report.targets);
+
+    for base in &bases {
+        let listing = mpt::open(base)
+            .unwrap()
+            .receiver()
+            .unwrap()
+            .list()
+            .await
+            .expect("list");
+        let names: Vec<&str> = listing.iter().map(|e| e.name.as_str()).collect();
+        assert!(
+            names.contains(&name.as_str()),
+            "{base}: {name} is missing from {names:?}"
+        );
+        // Only our own leftovers: other tests may be mid-transfer in the same
+        // directory, and their .mpt-part files are legitimate right now.
+        let part = format!("{name}.mpt-part");
+        assert!(
+            !names.contains(&part.as_str()),
+            "{base}: a partial file was left behind: {part}"
+        );
+    }
+}
+
 /// `--hash`: the sidecar next to every real target must contain the digest of
 /// the source, in `sha256sum` format; `--check` must then accept that sidecar.
 #[tokio::test]

@@ -56,7 +56,7 @@ sleep 2
 # create the S3 bucket
 curl -s -X PUT http://127.0.0.1:9000/testbucket > /dev/null
 
-mkdir -p ssh/data
+mkdir -p ssh/data ssh/scp
 cat > env.sh <<ENV
 export AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_REGION=us-east-1
 export MPT_IT_FTP="ftp://ftpuser:ftppass@127.0.0.1:2121/"
@@ -68,7 +68,9 @@ export MPT_IT_MAILTO="mailto:dest@example.com?from=sender@example.com"
 export MPT_SMTP_URL="smtp://127.0.0.1:8025/?tls=none"
 export MPT_IT_MAILDIR="$WORK/mail"
 export MPT_IT_SFTP="sftp://$USER@127.0.0.1:2222/$WORK/ssh/data/?key=$WORK/ssh/client_key&known_hosts=off"
-export MPT_IT_SCP="scp://$USER@127.0.0.1:2222/$WORK/ssh/data/?key=$WORK/ssh/client_key&known_hosts=off"
+# A directory of its own: sftp and scp targets in one fan-out would otherwise
+# write the same file (including the same .mpt-part) at the same time.
+export MPT_IT_SCP="scp://$USER@127.0.0.1:2222/$WORK/ssh/scp/?key=$WORK/ssh/client_key&known_hosts=off"
 export MPT_IT_SSH_HOSTKEY="$(ssh-keygen -lf "$WORK/ssh/host_key.pub" | cut -d' ' -f2)"
 ENV
 echo "servers started; logs in $WORK/logs"

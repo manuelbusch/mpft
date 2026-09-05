@@ -55,6 +55,58 @@ impl ScpEndpoint {
             .unwrap_or_else(|| p.to_string())
     }
 
+    /// Remote path of a file called `name` next to this location.
+    fn sibling_path(&self, name: &str) -> Result<String> {
+        let p = self.loc.sibling(name)?;
+        Ok(p.path()
+            .strip_prefix("/~/")
+            .map(String::from)
+            .unwrap_or_else(|| p.path().to_string()))
+    }
+
+    /// Run a command on the server and turn a non-zero exit status into an
+    /// error, with whatever the command wrote as the message.
+    async fn run(&self, command: &str) -> Result<()> {
+        let handle = self.cfg.connect().await?;
+        let mut channel = handle.channel_open_session().await.map_err(ssh_err)?;
+        debug!(%command, "ssh exec");
+        channel.exec(true, command).await.map_err(ssh_err)?;
+        let mut status = None;
+        let mut output = Vec::new();
+        let collect = async {
+            while let Some(msg) = channel.wait().await {
+                match msg {
+                    russh::ChannelMsg::Data { data }
+                    | russh::ChannelMsg::ExtendedData { data, .. } => {
+                        output.extend_from_slice(&data)
+                    }
+                    russh::ChannelMsg::ExitStatus { exit_status } => status = Some(exit_status),
+                    _ => {}
+                }
+            }
+        };
+        let timed_out = tokio::time::timeout(self.cfg.timeout, collect)
+            .await
+            .is_err();
+        super::disconnect(&handle).await;
+        if timed_out {
+            return Err(Error::Remote(format!(
+                "ssh: `{command}` did not finish within {:?}",
+                self.cfg.timeout
+            )));
+        }
+        match status {
+            Some(0) => Ok(()),
+            None => {
+                debug!(%command, "server reported no exit status; assuming success");
+                Ok(())
+            }
+            Some(code) => Err(Error::Remote(format!(
+                "ssh: `{command}` failed (exit {code}) {}",
+                String::from_utf8_lossy(&output).trim()
+            ))),
+        }
+    }
 }
 
 impl Endpoint for ScpEndpoint {
@@ -263,4 +315,24 @@ impl Sender for ScpEndpoint {
         Ok(())
     }
 
+    /// SCP itself cannot rename, but the SSH session it runs on can.
+    fn supports_rename(&self) -> bool {
+        true
+    }
+
+    async fn rename(&self, from: &str, to: &str) -> Result<()> {
+        let from = self.sibling_path(from)?;
+        let to = self.sibling_path(to)?;
+        self.run(&format!(
+            "mv -f {} {}",
+            shell_quote(&from),
+            shell_quote(&to)
+        ))
+        .await
+    }
+
+    async fn remove(&self, name: &str) -> Result<()> {
+        let path = self.sibling_path(name)?;
+        self.run(&format!("rm -f {}", shell_quote(&path))).await
+    }
 }

@@ -55,6 +55,11 @@ struct Cli {
     #[arg(long, global = true, default_value_t = 30, value_name = "SECONDS")]
     timeout: u64,
 
+    /// Write straight to the target name instead of uploading to
+    /// <name>.mpt-part and renaming it into place when the transfer is done
+    #[arg(long, global = true)]
+    no_atomic: bool,
+
     /// Compute a checksum while copying and write <name>.sha256|.sha512|.b3
     /// next to every target (sha256sum/b3sum format; mail gets it as attachment)
     #[arg(long, global = true, value_name = "ALGO")]
@@ -194,6 +199,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             capacity: cli.queue,
             send_timeout: timeout,
         },
+        atomic: !cli.no_atomic,
         hash: cli.hash.or(cli.sign.as_ref().map(|_| HashAlgo::Sha256)),
         check: cli.check || cli.verify_signers.is_some() || cli.verify_keyring.is_some(),
         sign: match &cli.sign {
