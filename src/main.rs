@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use anstyle::{AnsiColor, Style};
 use anyhow::Context;
@@ -48,6 +49,11 @@ struct Cli {
     /// Chunks buffered per target before the source is paused
     #[arg(long, global = true, default_value_t = 16)]
     queue: usize,
+
+    /// Inactivity timeout in seconds for every connection and stream, and for
+    /// a target that stops accepting data. 0 disables it. Per URL: ?timeout=
+    #[arg(long, global = true, default_value_t = 30, value_name = "SECONDS")]
+    timeout: u64,
 
     /// Compute a checksum while copying and write <name>.sha256|.sha512|.b3
     /// next to every target (sha256sum/b3sum format; mail gets it as attachment)
@@ -155,10 +161,15 @@ fn init_logging(verbosity: u8) {
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
+    let timeout = (cli.timeout > 0).then(|| Duration::from_secs(cli.timeout));
     let open = |url: &str| -> anyhow::Result<Box<dyn mpt::Endpoint>> {
         let mut loc = Location::parse(url)?;
         if cli.insecure {
             loc.set_option("insecure", "true");
+        }
+        // --timeout is the default; ?timeout= in the URL wins.
+        if loc.opt("timeout").is_none() {
+            loc.set_option("timeout", cli.timeout.to_string());
         }
         if let Some(pw) = &cli.password
             && loc.password().is_none()
@@ -181,6 +192,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         tee: TeeOptions {
             chunk_size: cli.chunk as usize,
             capacity: cli.queue,
+            send_timeout: timeout,
         },
         hash: cli.hash.or(cli.sign.as_ref().map(|_| HashAlgo::Sha256)),
         check: cli.check || cli.verify_signers.is_some() || cli.verify_keyring.is_some(),

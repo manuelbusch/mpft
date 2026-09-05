@@ -50,15 +50,7 @@ impl FtpEndpoint {
                 }
             },
         };
-        let timeout = loc
-            .opt("timeout")
-            .map(|t| {
-                t.parse::<u64>()
-                    .map_err(|e| Error::invalid_option("timeout", e))
-            })
-            .transpose()?
-            .map(std::time::Duration::from_secs)
-            .unwrap_or(std::time::Duration::from_secs(30));
+        let timeout = loc.timeout_or(std::time::Duration::from_secs(30))?;
         Ok(FtpEndpoint {
             timeout,
             insecure: loc.opt_bool("insecure")?.unwrap_or(false),
@@ -402,4 +394,5 @@ impl Sender for FtpEndpoint {
         let _ = ftp.quit().await;
         Ok(())
     }
+
 }

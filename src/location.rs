@@ -464,6 +464,24 @@ impl Location {
         Ok(loc)
     }
 
+    /// Inactivity timeout for network operations: `?timeout=<seconds>`,
+    /// 30 seconds by default. `0` disables it.
+    pub fn timeout(&self) -> Result<Option<std::time::Duration>> {
+        let secs = match self.opt("timeout") {
+            Some(v) => v
+                .parse::<u64>()
+                .map_err(|e| Error::invalid_option("timeout", e))?,
+            None => 30,
+        };
+        Ok((secs > 0).then(|| std::time::Duration::from_secs(secs)))
+    }
+
+    /// Like [`Self::timeout`], but with a value for "no timeout" too, for
+    /// places that need a deadline no matter what (connecting, for instance).
+    pub fn timeout_or(&self, fallback: std::time::Duration) -> Result<std::time::Duration> {
+        Ok(self.timeout()?.unwrap_or(fallback))
+    }
+
     /// First value of a query option.
     pub fn opt(&self, name: &str) -> Option<&str> {
         self.options
@@ -840,6 +858,30 @@ mod tests {
                 .unwrap()
                 .sibling("x")
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn timeouts() {
+        let d = |u: &str| Location::parse(u).unwrap().timeout().unwrap();
+        assert_eq!(d("sftp://h/x"), Some(std::time::Duration::from_secs(30)));
+        assert_eq!(
+            d("sftp://h/x?timeout=5"),
+            Some(std::time::Duration::from_secs(5))
+        );
+        assert_eq!(d("sftp://h/x?timeout=0"), None);
+        assert!(
+            Location::parse("sftp://h/x?timeout=soon")
+                .unwrap()
+                .timeout()
+                .is_err()
+        );
+        assert_eq!(
+            Location::parse("sftp://h/x?timeout=0")
+                .unwrap()
+                .timeout_or(std::time::Duration::from_secs(9))
+                .unwrap(),
+            std::time::Duration::from_secs(9)
         );
     }
 

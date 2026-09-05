@@ -83,20 +83,17 @@ impl HttpEndpoint {
 pub(crate) fn build_client(loc: &Location) -> Result<Client> {
     crate::init_crypto();
     let insecure = loc.opt_bool("insecure")?.unwrap_or(false);
-    let timeout = loc
-        .opt("timeout")
-        .map(|t| {
-            t.parse::<u64>()
-                .map_err(|e| Error::invalid_option("timeout", e))
-        })
-        .transpose()?
-        .unwrap_or(30);
-    Client::builder()
+    let timeout = loc.timeout_or(Duration::from_secs(30))?;
+    let mut b = Client::builder()
         .danger_accept_invalid_certs(insecure)
-        .connect_timeout(Duration::from_secs(timeout))
-        .user_agent(concat!("mpt/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| Error::transport("http", e))
+        .connect_timeout(timeout)
+        .user_agent(concat!("mpt/", env!("CARGO_PKG_VERSION")));
+    if let Some(idle) = loc.timeout()? {
+        // Per-read deadline for responses, plus TCP keepalive so a peer that
+        // silently disappears mid-upload is noticed as well.
+        b = b.read_timeout(idle).tcp_keepalive(idle);
+    }
+    b.build().map_err(|e| Error::transport("http", e))
 }
 
 /// `scheme://host[:port]` for the location, mapping the location scheme onto
@@ -163,7 +160,10 @@ impl Receiver for HttpEndpoint {
             .error_for_status()
             .map_err(http_err)?;
         let reader = StreamReader::new(resp.bytes_stream().map_err(std::io::Error::other));
-        Ok(stream::boxed(reader))
+        Ok(stream::boxed(stream::Idle::maybe(
+            reader,
+            self.loc.timeout()?,
+        )))
     }
 
     async fn list(&self) -> Result<Vec<Entry>> {

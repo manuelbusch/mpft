@@ -60,7 +60,10 @@ pub struct SshConfig {
     /// Expected host-key fingerprints (`SHA256:…`). Non-empty means the
     /// `known_hosts` file is not consulted at all.
     pub pinned_host_keys: Vec<String>,
+    /// Deadline for connecting and authenticating.
     pub timeout: Duration,
+    /// Inactivity limit for the data streams; `None` disables it.
+    pub idle: Option<Duration>,
 }
 
 impl SshConfig {
@@ -102,15 +105,10 @@ impl SshConfig {
                 pinned.push(normalize_fingerprint(part)?);
             }
         }
-        let timeout = loc
-            .opt("timeout")
-            .map(|t| {
-                t.parse::<u64>()
-                    .map_err(|e| Error::invalid_option("timeout", e))
-            })
-            .transpose()?
-            .map(Duration::from_secs)
-            .unwrap_or(Duration::from_secs(30));
+        let timeout = loc.timeout_or(Duration::from_secs(30))?;
+        // `?timeout=0` means "no inactivity limit" for the data streams; the
+        // connect phase still needs a deadline.
+        let idle = loc.timeout()?;
         Ok(SshConfig {
             host,
             port: loc.port_or_default(),
@@ -121,6 +119,7 @@ impl SshConfig {
             known_hosts,
             pinned_host_keys: pinned,
             timeout,
+            idle,
         })
     }
 

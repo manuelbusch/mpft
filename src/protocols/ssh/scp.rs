@@ -35,12 +35,17 @@ impl ScpEndpoint {
         Ok(ScpEndpoint { loc, cfg })
     }
 
-    async fn exec(&self, command: &str) -> Result<(Handle<ClientHandler>, ChannelStream<Msg>)> {
+    /// Open an exec channel. The stream carries an inactivity deadline, so a
+    /// server that stops talking mid-transfer fails instead of hanging.
+    async fn exec(&self, command: &str) -> Result<(Handle<ClientHandler>, ScpStream)> {
         let handle = self.cfg.connect().await?;
         let channel = handle.channel_open_session().await.map_err(ssh_err)?;
         debug!(%command, "scp exec");
         channel.exec(false, command).await.map_err(ssh_err)?;
-        Ok((handle, channel.into_stream()))
+        Ok((
+            handle,
+            stream::Idle::maybe(channel.into_stream(), self.cfg.idle),
+        ))
     }
 
     fn remote_path(&self) -> String {
@@ -49,6 +54,7 @@ impl ScpEndpoint {
             .map(String::from)
             .unwrap_or_else(|| p.to_string())
     }
+
 }
 
 impl Endpoint for ScpEndpoint {
@@ -167,9 +173,12 @@ impl Receiver for ScpEndpoint {
     }
 }
 
+/// An SCP exec channel with an inactivity deadline.
+type ScpStream = stream::Idle<ChannelStream<Msg>>;
+
 /// Reads exactly the announced number of bytes, then sends the final ACK.
 struct ScpReader {
-    stream: ChannelStream<Msg>,
+    stream: ScpStream,
     remaining: u64,
     acked: bool,
     _handle: Handle<ClientHandler>,
@@ -253,4 +262,5 @@ impl Sender for ScpEndpoint {
         super::disconnect(&handle).await;
         Ok(())
     }
+
 }

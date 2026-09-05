@@ -69,6 +69,7 @@ impl Receiver for SftpEndpoint {
     async fn receive(&self) -> Result<ByteStream> {
         let (handle, sftp) = self.session().await?;
         let file = sftp.open(self.remote_path()).await.map_err(sftp_err)?;
+        let file = stream::Idle::maybe(file, self.cfg.idle);
         Ok(stream::boxed(stream::Guarded::new(file, (sftp, handle))))
     }
 
@@ -122,13 +123,14 @@ impl Sender for SftpEndpoint {
             target = format!("{}/{}", target.trim_end_matches('/'), name);
         }
         debug!(%target, "sftp upload");
-        let mut file = sftp
+        let file = sftp
             .open_with_flags(
                 target.clone(),
                 OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
             )
             .await
             .map_err(sftp_err)?;
+        let mut file = stream::Idle::maybe(file, self.cfg.idle);
         let result = stream::pipe(body, &mut file).await;
         file.shutdown().await?;
         result?;
@@ -136,4 +138,5 @@ impl Sender for SftpEndpoint {
         super::disconnect(&handle).await;
         Ok(())
     }
+
 }

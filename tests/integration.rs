@@ -219,6 +219,7 @@ async fn fanout_many(cache: mpt::CacheMode, retries: u32) {
         tee: mpt::TeeOptions {
             chunk_size: 32 * 1024,
             capacity: 4,
+            ..Default::default()
         },
         ..Default::default()
     };

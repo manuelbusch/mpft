@@ -121,6 +121,9 @@ impl<R: AsyncRead + Unpin> AsyncRead for Counted<R> {
 // Fan-out: one source stream, many readers, constant memory, no disk.
 // ---------------------------------------------------------------------------
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -132,6 +135,10 @@ pub struct TeeOptions {
     pub chunk_size: usize,
     /// Chunks buffered per reader before the source is paused. Default 16.
     pub capacity: usize,
+    /// How long a reader may leave its queue full before it is dropped from
+    /// the fan-out. `None` waits forever, which lets one stalled target hold
+    /// up all the others. Default 30 seconds.
+    pub send_timeout: Option<std::time::Duration>,
 }
 
 impl Default for TeeOptions {
@@ -139,6 +146,7 @@ impl Default for TeeOptions {
         TeeOptions {
             chunk_size: 64 * 1024,
             capacity: 16,
+            send_timeout: Some(std::time::Duration::from_secs(30)),
         }
     }
 }
@@ -152,6 +160,10 @@ impl Default for TeeOptions {
 /// slowest reader dictates the pace (backpressure). A reader that is dropped
 /// early is silently removed; the others keep receiving. A read error on the
 /// source is delivered to every remaining reader and returned by the driver.
+///
+/// A reader whose queue stays full for `opts.send_timeout` is dropped from the
+/// fan-out and sees a `TimedOut` error, so one stalled target cannot stop the
+/// remaining ones.
 pub fn tee(
     mut body: ByteStream,
     n: usize,
@@ -159,12 +171,39 @@ pub fn tee(
 ) -> (Vec<ByteStream>, JoinHandle<std::io::Result<()>>) {
     let capacity = opts.capacity.max(1);
     let chunk_size = opts.chunk_size.max(1024);
-    let mut senders: Vec<mpsc::Sender<std::io::Result<Bytes>>> = Vec::with_capacity(n);
+    let send_timeout = opts.send_timeout;
+    let mut senders: Vec<(mpsc::Sender<std::io::Result<Bytes>>, Arc<AtomicBool>)> =
+        Vec::with_capacity(n);
     let mut readers: Vec<ByteStream> = Vec::with_capacity(n);
     for _ in 0..n {
         let (tx, mut rx) = mpsc::channel::<std::io::Result<Bytes>>(capacity);
-        senders.push(tx);
-        let stream = futures::stream::poll_fn(move |cx| rx.poll_recv(cx));
+        // Set when the driver gives up on this reader, so that closing the
+        // channel reports an error instead of a clean end of stream.
+        let stalled = Arc::new(AtomicBool::new(false));
+        senders.push((tx, Arc::clone(&stalled)));
+        let mut ended = false;
+        let stream = futures::stream::poll_fn(move |cx| {
+            if ended {
+                return std::task::Poll::Ready(None);
+            }
+            match rx.poll_recv(cx) {
+                std::task::Poll::Ready(None) => {
+                    ended = true;
+                    std::task::Poll::Ready(if stalled.load(Ordering::Relaxed) {
+                        Some(Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            format!(
+                                "target did not accept data for {:?}",
+                                send_timeout.unwrap_or_default()
+                            ),
+                        )))
+                    } else {
+                        None
+                    })
+                }
+                other => other,
+            }
+        });
         readers.push(Box::pin(tokio_util::io::StreamReader::new(stream)));
     }
 
@@ -176,7 +215,7 @@ pub fn tee(
                 Ok(n) => n,
                 Err(e) => {
                     // io::Error is not Clone: rebuild it for every reader.
-                    for tx in &senders {
+                    for (tx, _) in &senders {
                         let _ = tx
                             .send(Err(std::io::Error::new(e.kind(), e.to_string())))
                             .await;
@@ -189,10 +228,24 @@ pub fn tee(
             }
             let chunk = buf.split().freeze();
             let mut alive = Vec::with_capacity(senders.len());
-            for tx in senders.drain(..) {
-                // A closed receiver means that target gave up; drop it, keep the rest.
-                if tx.send(Ok(chunk.clone())).await.is_ok() {
-                    alive.push(tx);
+            for (tx, stalled) in senders.drain(..) {
+                let sent = match send_timeout {
+                    // A target that will not take a chunk within the timeout is
+                    // dropped, so it cannot hold up the others.
+                    Some(t) => match tx.send_timeout(Ok(chunk.clone()), t).await {
+                        Ok(()) => true,
+                        Err(mpsc::error::SendTimeoutError::Timeout(_)) => {
+                            tracing::warn!("tee: dropping a target that stalled for {t:?}");
+                            stalled.store(true, Ordering::Relaxed);
+                            false
+                        }
+                        Err(mpsc::error::SendTimeoutError::Closed(_)) => false,
+                    },
+                    // A closed receiver means that target gave up; drop it, keep the rest.
+                    None => tx.send(Ok(chunk.clone())).await.is_ok(),
+                };
+                if sent {
+                    alive.push((tx, stalled));
                 }
             }
             senders = alive;
@@ -258,6 +311,7 @@ mod tests {
             TeeOptions {
                 chunk_size: 4096,
                 capacity: 2,
+                ..Default::default()
             },
         );
         let mut tasks = Vec::new();
@@ -276,6 +330,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tee_drops_a_reader_that_stops_accepting_data() {
+        let data = payload(300_000);
+        let (mut readers, driver) = tee(
+            boxed(std::io::Cursor::new(data.clone())),
+            2,
+            TeeOptions {
+                chunk_size: 1024,
+                capacity: 1,
+                send_timeout: Some(std::time::Duration::from_millis(150)),
+            },
+        );
+        let mut stalled = readers.pop().unwrap();
+        let mut healthy = readers.pop().unwrap();
+
+        // The healthy reader finishes even though the other never reads a byte.
+        let mut got = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            healthy.read_to_end(&mut got),
+        )
+        .await
+        .expect("a stalled target must not block the others")
+        .unwrap();
+        assert!(got == data);
+        driver.await.unwrap().unwrap();
+
+        // The stalled reader is told that it was dropped, rather than seeing a
+        // short but seemingly complete stream.
+        let mut rest = Vec::new();
+        let err = stalled.read_to_end(&mut rest).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut, "{err}");
+        assert!(rest.len() < data.len());
+    }
+
+    #[tokio::test]
     async fn tee_survives_dropped_reader_and_slow_reader() {
         let data = payload(300_000);
         let (mut readers, driver) = tee(
@@ -284,6 +373,7 @@ mod tests {
             TeeOptions {
                 chunk_size: 1024,
                 capacity: 1,
+                ..Default::default()
             },
         );
         let slow = readers.pop().unwrap();
@@ -383,6 +473,14 @@ impl<S> Idle<S> {
             timeout,
             sleep: Box::pin(tokio::time::sleep(timeout)),
         }
+    }
+
+    /// `None` means no inactivity limit (a deadline far in the future).
+    pub fn maybe(inner: S, timeout: Option<std::time::Duration>) -> Self {
+        Idle::new(
+            inner,
+            timeout.unwrap_or(std::time::Duration::from_secs(365 * 24 * 3600)),
+        )
     }
 
     pub fn into_inner(self) -> S {

@@ -69,6 +69,7 @@ impl Receiver for WebDavEndpoint {
         debug!(path = self.loc.path(), "webdav GET");
         let resp = self.client.get(self.loc.path()).await.map_err(dav_err)?;
         let reader = StreamReader::new(resp.bytes_stream().map_err(std::io::Error::other));
+        let reader = stream::Idle::maybe(reader, self.loc.timeout()?);
         Ok(stream::boxed(reader))
     }
 
@@ -128,4 +129,5 @@ impl Sender for WebDavEndpoint {
         let body = reqwest::Body::wrap_stream(ReaderStream::new(body));
         self.client.put(&target, body).await.map_err(dav_err)
     }
+
 }

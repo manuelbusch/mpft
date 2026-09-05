@@ -67,6 +67,7 @@ mpt ls <URL>                     list a directory
 mpt schemes                      print the table above
   -v / -vv / -vvv   log level    --insecure   disable TLS verification    --password <pw>
   --color auto|always|never      colored output (auto: only on a terminal, honours NO_COLOR)
+  --timeout <SECONDS>            inactivity timeout, 30 by default, 0 disables it
   --hash <ALGO>  --check        checksums (see below)     --sign <SPEC>  --verify-signers/--verify-keyring <FILE>
 ```
 
@@ -95,6 +96,17 @@ delivered twice. `--chunk` and `--queue` tune the streaming buffer.
 
 Targets that connect before they read (SCP, SMTP) pause the stream briefly at
 the start until they are ready; this is head-of-line blocking, not a deadlock.
+A target that stops accepting data altogether is dropped from the fan-out after
+`--timeout` and reports a timeout, so it cannot hold up the others.
+
+## Timeouts
+
+`--timeout <seconds>` (default 30, `0` disables it) is an **inactivity** limit,
+not a deadline for the whole transfer: any read or write that makes progress
+resets it, so arbitrarily large files are fine on a slow but steady line. It
+applies to connecting and logging in, to every data stream, to the FTP control
+channel, and to a fan-out target that stops draining its queue. `?timeout=` in
+a URL overrides the flag for that endpoint.
 
 ## Checksums
 
@@ -233,6 +245,7 @@ bash tests/local/stop_servers.sh /tmp/mpt-it
 ```
 
 Implicit FTPS (`tls=implicit`) is implemented but not covered by these servers.
+
 
 ## Possible further protocols
 

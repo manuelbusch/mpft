@@ -46,8 +46,31 @@ impl S3Endpoint {
             .or_else(|| std::env::var("AWS_ENDPOINT_URL").ok());
         let path_style = loc.opt_bool("path_style")?.unwrap_or(endpoint.is_some());
 
+        // Client options first: the builder's `with_allow_http` writes into
+        // them, so setting them afterwards would undo it.
+        let mut client = ClientOptions::new();
+        if insecure {
+            client = client
+                .with_allow_invalid_certificates(true)
+                .with_allow_http(true);
+        }
+        if let Some(t) = loc.timeout()? {
+            // `timeout` bounds one request (object_store defaults to 30 s too),
+            // `read_timeout` the gap between two reads of a response.
+            client = client
+                .with_connect_timeout(t)
+                .with_read_timeout(t)
+                .with_timeout(t);
+        } else {
+            client = client
+                .with_timeout_disabled()
+                .with_read_timeout_disabled()
+                .with_connect_timeout_disabled();
+        }
+
         let mut b = AmazonS3Builder::from_env()
             .with_bucket_name(&bucket)
+            .with_client_options(client)
             .with_virtual_hosted_style_request(!path_style);
         if let Some(ep) = &endpoint {
             b = b
@@ -63,13 +86,6 @@ impl S3Endpoint {
         }
         if let (Some(u), Some(p)) = (loc.username(), loc.password()) {
             b = b.with_access_key_id(u).with_secret_access_key(p);
-        }
-        if insecure {
-            b = b.with_client_options(
-                ClientOptions::new()
-                    .with_allow_invalid_certificates(true)
-                    .with_allow_http(true),
-            );
         }
         let store = b.build().map_err(|e| Error::transport("s3", e))?;
         Ok(S3Endpoint {
@@ -117,7 +133,10 @@ impl Receiver for S3Endpoint {
         debug!(bucket = %self.bucket, %path, "s3 get");
         let res = self.store.get(&path).await.map_err(s3_err)?;
         let reader = StreamReader::new(res.into_stream().map_err(std::io::Error::other));
-        Ok(stream::boxed(reader))
+        Ok(stream::boxed(stream::Idle::maybe(
+            reader,
+            self.loc.timeout()?,
+        )))
     }
 
     async fn list(&self) -> Result<Vec<Entry>> {
@@ -165,12 +184,15 @@ impl Sender for S3Endpoint {
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()> {
         let path = self.obj_path(meta.filename.as_deref())?;
         debug!(bucket = %self.bucket, %path, "s3 put");
-        let mut w = BufWriter::new(self.store.clone(), path);
+        let mut w = stream::Idle::maybe(
+            BufWriter::new(self.store.clone(), path),
+            self.loc.timeout()?,
+        );
         let result = stream::pipe(body, &mut w).await;
         match result {
             Ok(_) => w.shutdown().await?,
             Err(e) => {
-                let _ = w.abort().await;
+                let _ = w.into_inner().abort().await;
                 return Err(e);
             }
         }

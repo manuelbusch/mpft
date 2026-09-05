@@ -521,6 +521,7 @@ mod tests {
             tee: TeeOptions {
                 chunk_size: 8192,
                 capacity: 2,
+                ..Default::default()
             },
             ..Default::default()
         };
