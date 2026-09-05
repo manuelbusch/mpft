@@ -303,6 +303,9 @@ bash tests/local/stop_servers.sh /tmp/mpt-it
 
 Implicit FTPS (`tls=implicit`) is implemented but not covered by these servers.
 
+The minimum supported Rust version is 1.89, set by `russh` and `aes` rather
+than by this crate.
+
 One caveat of the local setup: under concurrent connects pyftpdlib writes its
 `220` greeting twice on about 1.5 % of connections, which shifts every reply on
 that control channel by one. It is a defect of the test server, reproducible
