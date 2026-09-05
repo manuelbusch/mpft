@@ -112,7 +112,7 @@ impl Receiver for SftpEndpoint {
 impl Sender for SftpEndpoint {
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()> {
         let (handle, sftp) = self.session().await?;
-        let mut target = strip_home(&self.loc.target_path(meta.filename.as_deref()));
+        let mut target = strip_home(&self.loc.target_path(meta.filename.as_deref())?);
         // If the path exists and is a directory, append the file name.
         if !self.loc.is_dir_target()
             && let Some(name) = &meta.filename

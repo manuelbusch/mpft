@@ -123,7 +123,7 @@ impl Receiver for WebDavEndpoint {
 #[async_trait]
 impl Sender for WebDavEndpoint {
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()> {
-        let target = self.loc.target_path(meta.filename.as_deref());
+        let target = self.loc.target_path(meta.filename.as_deref())?;
         debug!(%target, "webdav PUT");
         let body = reqwest::Body::wrap_stream(ReaderStream::new(body));
         self.client.put(&target, body).await.map_err(dav_err)

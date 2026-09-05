@@ -45,11 +45,19 @@ impl std::fmt::Debug for SendMeta {
 }
 
 impl SendMeta {
-    pub fn from_filename(name: impl Into<String>) -> Self {
-        SendMeta {
-            filename: Some(name.into()),
-            ..Default::default()
-        }
+    /// Metadata for a payload called `name`. The name is normalized to a
+    /// single safe path component (see [`crate::location::safe_name`]), so a
+    /// name taken from a remote listing cannot escape the target directory.
+    pub fn from_filename(name: impl AsRef<str>) -> Result<Self> {
+        let mut meta = SendMeta::default();
+        meta.set_filename(name)?;
+        Ok(meta)
+    }
+
+    /// Set the file name, normalizing it the same way as [`Self::from_filename`].
+    pub fn set_filename(&mut self, name: impl AsRef<str>) -> Result<()> {
+        self.filename = Some(crate::location::safe_name(name.as_ref())?);
+        Ok(())
     }
 
     pub fn with_size(mut self, size: u64) -> Self {

@@ -371,7 +371,7 @@ impl Receiver for FtpEndpoint {
 impl Sender for FtpEndpoint {
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()> {
         let mut ftp = self.connect().await?;
-        let target = self.loc.target_path(meta.filename.as_deref());
+        let target = self.loc.target_path(meta.filename.as_deref())?;
         debug!(%target, "ftp upload");
         let up = self.ctl("STOR", ftp.put_with_stream(&target)).await?;
         let mut up = stream::Idle::new(up, self.timeout);

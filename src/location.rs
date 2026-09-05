@@ -420,21 +420,23 @@ impl Location {
         if name.is_empty() { None } else { Some(name) }
     }
 
-    /// Path with `name` appended (for directory targets).
-    pub fn path_joined(&self, name: &str) -> String {
-        if self.path.ends_with('/') {
+    /// Path with `name` appended (for directory targets). `name` must be a
+    /// single, safe path component; see [`safe_name`].
+    pub fn path_joined(&self, name: &str) -> Result<String> {
+        let name = safe_name(name)?;
+        Ok(if self.path.ends_with('/') {
             format!("{}{}", self.path, name)
         } else {
             format!("{}/{}", self.path, name)
-        }
+        })
     }
 
     /// Resolve the effective target path for a send: the path itself, or path +
     /// file name when the location is a directory target.
-    pub fn target_path(&self, filename: Option<&str>) -> String {
+    pub fn target_path(&self, filename: Option<&str>) -> Result<String> {
         match (self.is_dir_target(), filename) {
             (true, Some(name)) => self.path_joined(name),
-            _ => self.path.clone(),
+            _ => Ok(self.path.clone()),
         }
     }
 
@@ -448,9 +450,10 @@ impl Location {
                 op: "address a sibling file",
             });
         }
+        let name = safe_name(name)?;
         let mut loc = self.clone();
         loc.path = if self.is_dir_target() {
-            self.path_joined(name)
+            self.path_joined(&name)?
         } else {
             match self.path.rfind('/') {
                 Some(idx) => format!("{}/{}", &self.path[..idx], name),
@@ -567,6 +570,28 @@ fn looks_like_url(s: &str) -> bool {
     false
 }
 
+/// Reduce a file name that came from somewhere else (a remote listing, an SCP
+/// header, a `Content-Disposition`, a URL) to a single safe path component.
+///
+/// Keeps only the last segment, so `../../etc/passwd` becomes `passwd`, and
+/// rejects names that cannot denote a file: empty, `.`, `..`, or containing
+/// control characters.
+pub fn safe_name(name: &str) -> Result<String> {
+    let last = name.rsplit(['/', '\\']).next().unwrap_or("");
+    let trimmed = last.trim();
+    let bad = |why: &str| Error::InvalidUrl(format!("unsafe file name '{name}': {why}"));
+    if trimmed.is_empty() {
+        return Err(bad("empty"));
+    }
+    if trimmed == "." || trimmed == ".." {
+        return Err(bad("refers to a directory"));
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err(bad("contains control characters"));
+    }
+    Ok(trimmed.to_string())
+}
+
 fn percent_decode(s: &str) -> String {
     percent_decode_str(s).decode_utf8_lossy().into_owned()
 }
@@ -659,9 +684,9 @@ mod tests {
     fn dir_target_appends_filename() {
         let l = Location::parse("sftp://u@h/incoming/").unwrap();
         assert!(l.is_dir_target());
-        assert_eq!(l.target_path(Some("r.pdf")), "/incoming/r.pdf");
+        assert_eq!(l.target_path(Some("r.pdf")).unwrap(), "/incoming/r.pdf");
         let l = Location::parse("sftp://u@h/incoming/x.pdf").unwrap();
-        assert_eq!(l.target_path(Some("r.pdf")), "/incoming/x.pdf");
+        assert_eq!(l.target_path(Some("r.pdf")).unwrap(), "/incoming/x.pdf");
     }
 
     #[test]
@@ -693,7 +718,7 @@ mod tests {
         assert_eq!(l.filename(), Some("obj.csv"));
         let d = Location::parse("s3://b/prefix/").unwrap();
         assert!(d.is_dir_target());
-        assert_eq!(d.target_path(Some("f")), "b/prefix/f");
+        assert_eq!(d.target_path(Some("f")).unwrap(), "b/prefix/f");
     }
 
     #[test]
@@ -816,6 +841,39 @@ mod tests {
                 .sibling("x")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn safe_names() {
+        assert_eq!(safe_name("report.pdf").unwrap(), "report.pdf");
+        assert_eq!(safe_name("../x").unwrap(), "x");
+        assert_eq!(safe_name("a/../../b").unwrap(), "b");
+        assert_eq!(safe_name("/etc/passwd").unwrap(), "passwd");
+        assert_eq!(safe_name("C:\\tmp\\x.bin").unwrap(), "x.bin");
+        assert_eq!(safe_name("  spaced.txt  ").unwrap(), "spaced.txt");
+        for bad in [
+            "",
+            "   ",
+            ".",
+            "..",
+            "../",
+            "a/..",
+            "with\nnewline",
+            "nul\0byte",
+            "/",
+        ] {
+            assert!(safe_name(bad).is_err(), "{bad:?} should be rejected");
+        }
+    }
+
+    #[test]
+    fn joins_reject_traversal() {
+        let dir = Location::parse("sftp://h/data/").unwrap();
+        assert_eq!(dir.path_joined("a.txt").unwrap(), "/data/a.txt");
+        assert_eq!(dir.path_joined("../a.txt").unwrap(), "/data/a.txt");
+        assert!(dir.path_joined("..").is_err());
+        assert!(dir.sibling("../../etc/shadow").unwrap().path() == "/data/shadow");
+        assert!(dir.sibling("").is_err());
     }
 
     #[test]

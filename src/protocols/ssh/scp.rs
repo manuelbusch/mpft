@@ -236,7 +236,7 @@ impl Sender for ScpEndpoint {
         let (handle, mut stream) = self.exec(&cmd).await?;
 
         read_ack(&mut stream).await?;
-        let header = format!("C0644 {size} {}\n", name.replace(['\n', '/'], "_"));
+        let header = format!("C0644 {size} {}\n", crate::location::safe_name(&name)?);
         stream.write_all(header.as_bytes()).await?;
         read_ack(&mut stream).await?;
         debug!(size, %target, "scp upload");

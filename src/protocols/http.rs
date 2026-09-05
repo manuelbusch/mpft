@@ -54,7 +54,7 @@ impl HttpEndpoint {
     /// The URL to talk to (with pass-through query parameters).
     fn url(&self, filename: Option<&str>) -> Result<Url> {
         let mut url = base_url(&self.loc, &["http", "https"])?;
-        url.set_path(&self.loc.target_path(filename));
+        url.set_path(&self.loc.target_path(filename)?);
         let passthrough: Vec<(&str, &str)> = self
             .loc
             .options()

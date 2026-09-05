@@ -80,12 +80,12 @@ impl S3Endpoint {
         })
     }
 
-    fn obj_path(&self, filename: Option<&str>) -> ObjPath {
+    fn obj_path(&self, filename: Option<&str>) -> Result<ObjPath> {
         let key = match (self.loc.is_dir_target(), filename) {
-            (true, Some(name)) => format!("{}{}", self.key, name),
+            (true, Some(name)) => format!("{}{}", self.key, crate::location::safe_name(name)?),
             _ => self.key.clone(),
         };
-        ObjPath::from(key)
+        Ok(ObjPath::from(key))
     }
 }
 
@@ -113,7 +113,7 @@ impl Endpoint for S3Endpoint {
 #[async_trait]
 impl Receiver for S3Endpoint {
     async fn receive(&self) -> Result<ByteStream> {
-        let path = self.obj_path(None);
+        let path = self.obj_path(None)?;
         debug!(bucket = %self.bucket, %path, "s3 get");
         let res = self.store.get(&path).await.map_err(s3_err)?;
         let reader = StreamReader::new(res.into_stream().map_err(std::io::Error::other));
@@ -153,7 +153,7 @@ impl Receiver for S3Endpoint {
     }
 
     async fn size(&self) -> Result<Option<u64>> {
-        match self.store.head(&self.obj_path(None)).await {
+        match self.store.head(&self.obj_path(None)?).await {
             Ok(meta) => Ok(Some(meta.size)),
             Err(_) => Ok(None),
         }
@@ -163,7 +163,7 @@ impl Receiver for S3Endpoint {
 #[async_trait]
 impl Sender for S3Endpoint {
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()> {
-        let path = self.obj_path(meta.filename.as_deref());
+        let path = self.obj_path(meta.filename.as_deref())?;
         debug!(bucket = %self.bucket, %path, "s3 put");
         let mut w = BufWriter::new(self.store.clone(), path);
         let result = stream::pipe(body, &mut w).await;

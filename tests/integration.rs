@@ -58,7 +58,7 @@ async fn roundtrip(base: &str, name: &str, len: usize, check_list: bool) {
 
     let dst = mpt::open(base).unwrap();
     let sender = dst.sender().unwrap();
-    let meta = SendMeta::from_filename(name).with_size(len as u64);
+    let meta = SendMeta::from_filename(name).unwrap().with_size(len as u64);
     sender
         .send(Box::pin(std::io::Cursor::new(payload.clone())), &meta)
         .await
@@ -526,7 +526,7 @@ async fn mailto_send() {
             );
         }
     }
-    let _ = SendMeta::from_filename("unused");
+    let _ = SendMeta::from_filename("unused").unwrap();
 }
 
 fn walk(dir: &str) -> Vec<std::path::PathBuf> {

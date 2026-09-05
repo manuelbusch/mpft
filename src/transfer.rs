@@ -213,7 +213,7 @@ pub async fn copy_many(
         ..Default::default()
     };
     if let Some(name) = src.location().filename() {
-        meta.filename = Some(name.to_string());
+        meta.set_filename(name)?;
     }
     info!(source = %src.location(), targets = dsts.len(), size = ?size, cache = ?opts.cache, hash = ?opts.hash, check = opts.check, "copy");
 
@@ -399,7 +399,7 @@ async fn write_sidecar(
     let loc = dst.location().sibling(&sidecar)?;
     let content = sidecar_content(hex, &name);
     let ep = crate::protocols::open(loc.clone())?;
-    let sidecar_meta = SendMeta::from_filename(&sidecar).with_size(content.len() as u64);
+    let sidecar_meta = SendMeta::from_filename(&sidecar)?.with_size(content.len() as u64);
     ep.sender()?
         .send(
             Box::pin(std::io::Cursor::new(content.clone())),
@@ -414,7 +414,7 @@ async fn write_sidecar(
         let sig_name = signer.format().signature_name(&sidecar);
         let sig_loc = dst.location().sibling(&sig_name)?;
         let ep = crate::protocols::open(sig_loc.clone())?;
-        let sig_meta = SendMeta::from_filename(&sig_name).with_size(sig.len() as u64);
+        let sig_meta = SendMeta::from_filename(&sig_name)?.with_size(sig.len() as u64);
         ep.sender()?
             .send(Box::pin(std::io::Cursor::new(sig)), &sig_meta)
             .await?;

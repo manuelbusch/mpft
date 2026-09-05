@@ -22,14 +22,14 @@ impl FileEndpoint {
 
     /// Effective target for a send: append the file name when the path is a
     /// directory (either trailing `/` or an existing directory).
-    async fn target(&self, meta: &SendMeta) -> PathBuf {
+    async fn target(&self, meta: &SendMeta) -> Result<PathBuf> {
         let p = self.path();
         let is_dir =
             self.loc.is_dir_target() || fs::metadata(p).await.map(|m| m.is_dir()).unwrap_or(false);
-        match (is_dir, &meta.filename) {
-            (true, Some(name)) => p.join(name),
+        Ok(match (is_dir, &meta.filename) {
+            (true, Some(name)) => p.join(crate::location::safe_name(name)?),
             _ => p.to_path_buf(),
-        }
+        })
     }
 }
 
@@ -77,7 +77,7 @@ impl Receiver for FileEndpoint {
 #[async_trait]
 impl Sender for FileEndpoint {
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()> {
-        let target = self.target(meta).await;
+        let target = self.target(meta).await?;
         if let Some(parent) = target.parent()
             && !parent.as_os_str().is_empty()
         {
