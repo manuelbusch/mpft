@@ -1,0 +1,9 @@
+# cargo-audit configuration. Keep in step with the `ignore` list in deny.toml.
+
+[advisories]
+# Marvin attack, a timing side channel in the `rsa` crate. It reaches us only
+# through `pgp` and `russh`/`ssh-key`, which need it for RSA keys, and no fixed
+# release exists. We sign and verify with those keys but never decrypt, and the
+# ed25519 keys this project recommends are unaffected. Revisit when `rsa`
+# publishes a fix.
+ignore = ["RUSTSEC-2023-0071"]

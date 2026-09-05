@@ -303,6 +303,18 @@ bash tests/local/stop_servers.sh /tmp/mpt-it
 
 Implicit FTPS (`tls=implicit`) is implemented but not covered by these servers.
 
+Beyond the two suites:
+
+```
+cargo deny check                     # licences, advisories, duplicate crates, sources
+cargo audit                          # RustSec advisories against Cargo.lock
+```
+
+`cargo deny` accepts one advisory on purpose, RUSTSEC-2023-0071 (a timing side
+channel in the `rsa` crate, reachable through `pgp` and `russh`). No fixed
+release exists; we sign and verify with those keys but never decrypt, and
+ed25519 keys are unaffected. `deny.toml` carries the reasoning.
+
 The minimum supported Rust version is 1.89, set by `russh` and `aes` rather
 than by this crate.
 
