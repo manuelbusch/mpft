@@ -19,6 +19,11 @@ class Handler(SimpleHTTPRequestHandler):
                         self.rfile.readline()
                         break
                     f.write(self.rfile.read(size)); self.rfile.readline()
+        # For the bearer-token test: record what the client authorized with.
+        auth = self.headers.get("Authorization")
+        if auth:
+            with open(path + ".auth", "w") as f:
+                f.write(auth)
         self.send_response(201); self.end_headers()
     def log_message(self, *a): pass
 

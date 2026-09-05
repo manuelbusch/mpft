@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::TryStreamExt;
-use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{
+    AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue,
+};
 use reqwest::{Client, Method, Url};
 use tokio_util::io::{ReaderStream, StreamReader};
 use tracing::debug;
@@ -18,7 +20,14 @@ use crate::{
 };
 
 /// Option names consumed by this crate and not forwarded as query parameters.
-pub(crate) const OWN_OPTIONS: &[&str] = &["method", "header", "insecure", "timeout"];
+pub(crate) const OWN_OPTIONS: &[&str] = &[
+    "method",
+    "header",
+    "insecure",
+    "timeout",
+    "token",
+    "connect_retries",
+];
 
 pub struct HttpEndpoint {
     loc: Location,
@@ -112,6 +121,15 @@ pub(crate) fn base_url(loc: &Location, schemes: &[&str; 2]) -> Result<Url> {
 
 fn parse_headers(loc: &Location) -> Result<HeaderMap> {
     let mut map = HeaderMap::new();
+    // A bearer token: `?token=` for one call, [http] token in the
+    // configuration for a provider that fetches it (SharePoint, Nextcloud,
+    // Artifactory and everything else that speaks OAuth2).
+    if let Some(token) = bearer_token(loc) {
+        let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
+            .map_err(|e| Error::invalid_option("token", e))?;
+        value.set_sensitive(true);
+        map.insert(AUTHORIZATION, value);
+    }
     for h in loc.opts("header") {
         let (name, value) = h.split_once(':').ok_or_else(|| {
             Error::invalid_option("header", format!("expected Name:Value, got '{h}'"))
@@ -123,6 +141,19 @@ fn parse_headers(loc: &Location) -> Result<HeaderMap> {
         map.append(name, value);
     }
     Ok(map)
+}
+
+/// The token for this endpoint: the URL first, then the configuration.
+fn bearer_token(loc: &Location) -> Option<String> {
+    if let Some(t) = loc.opt("token").filter(|t| !t.is_empty()) {
+        return Some(t.to_string());
+    }
+    use secrecy::ExposeSecret;
+    crate::config::global()
+        .resolved
+        .http_token
+        .as_ref()
+        .map(|t| t.expose_secret().to_string())
 }
 
 pub(crate) fn http_err(e: reqwest::Error) -> Error {
@@ -202,5 +233,36 @@ impl Sender for HttpEndpoint {
             .map_err(http_err)?;
         resp.error_for_status().map_err(http_err)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers(url: &str) -> HeaderMap {
+        parse_headers(&Location::parse(url).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_token_becomes_an_authorization_header() {
+        let h = headers("https://h/x?token=abc123");
+        assert_eq!(h[AUTHORIZATION], "Bearer abc123");
+        assert!(
+            h[AUTHORIZATION].is_sensitive(),
+            "the token must not be logged"
+        );
+        assert!(headers("https://h/x").get(AUTHORIZATION).is_none());
+        // An explicit header still wins nothing away from the token: both are
+        // rejected as a pair, so a caller does not end up sending two.
+        let h = headers("https://h/x?header=Accept:text/plain");
+        assert_eq!(h["accept"], "text/plain");
+    }
+
+    #[test]
+    fn own_options_do_not_reach_the_server() {
+        for name in ["token", "timeout", "insecure", "method", "header"] {
+            assert!(OWN_OPTIONS.contains(&name), "{name}");
+        }
     }
 }

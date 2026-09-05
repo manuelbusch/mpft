@@ -27,8 +27,8 @@ The crate is a library (`mpt`) with a thin CLI binary of the same name.
 | `scp://user@host/path` | SCP over SSH | ✓ | ✓ | 22 | as sftp (no `ls`) |
 | `ftp://user@host/path` | FTP without TLS | ✓ | ✓ | 21 | `passive=`, `nat=` |
 | `ftps://user@host/path` | FTP with TLS, explicit `AUTH TLS` by default | ✓ | ✓ | 21 / 990 | `tls=explicit\|implicit`, `insecure=`, `passive=`, `nat=` |
-| `http://`, `https://` | HTTP GET / PUT | ✓ | ✓ | 80 / 443 | `method=put\|post\|patch`, `header=Name:Value` (repeatable), `insecure=`, `timeout=` |
-| `webdav://`, `webdavs://` | WebDAV over HTTP(S) | ✓ | ✓ | 80 / 443 | `insecure=`, `timeout=` |
+| `http://`, `https://` | HTTP GET / PUT | ✓ | ✓ | 80 / 443 | `method=put\|post\|patch`, `header=Name:Value` (repeatable), `token=<bearer>`, `insecure=`, `timeout=` |
+| `webdav://`, `webdavs://` | WebDAV over HTTP(S) | ✓ | ✓ | 80 / 443 | `token=<bearer>`, `insecure=`, `timeout=` |
 | `s3://bucket/key` | S3-compatible object storage | ✓ | ✓ | – | `endpoint=<url>`, `region=`, `path_style=`, `insecure=`, `profile=`, `aws_chain=` |
 | `mailto:a@x.de,b@y.de` | e-mail attachment, server from `MPT_SMTP_URL` | ✗ | ✓ | – | `subject=`, `body=`, `cc=`, `bcc=`, `from=`, `filename=` |
 | `smtp://user@mail.host:587/a@x.de` | e-mail attachment, server in the URL | ✗ | ✓ | 587 | as mailto, plus `tls=starttls\|implicit\|none`, `auth=xoauth2\|plain\|login`, `insecure=` |
@@ -163,6 +163,9 @@ password       = { env = "MPT_SMTP_PASSWORD" }   # see "Credentials" below
 auth           = "auto"       # or xoauth2 | plain | login
 from           = "reports@example.com"
 max_attachment = "25M"
+
+[http]                        # defaults for http(s):// and WebDAV
+token = { cmd = "az account get-access-token --query accessToken -o tsv" }
 
 [s3]                          # defaults for s3://
 endpoint   = "https://minio.example.com"
@@ -324,6 +327,20 @@ mpt cp report.pdf "sftp://deploy@srv/in/?key=/tmp/k&cert=/tmp/k-cert.pub"
 ```
 
 If the server will not take the certificate, the bare key still gets its turn.
+
+**HTTP and WebDAV** — `?token=<bearer>` sends `Authorization: Bearer …`
+instead of basic authentication, and `[http] token` takes a credential
+reference, so the token is fetched when it is needed rather than pasted into
+the command line:
+
+```toml
+[http]
+token = { cmd = "az account get-access-token --resource https://graph.microsoft.com --query accessToken -o tsv" }
+```
+
+The header is marked sensitive, so it stays out of the logs. A device-code
+flow with a refresh token in the key store is not built in; a script that
+prints a token covers the same ground.
 
 ## Machine-readable output
 

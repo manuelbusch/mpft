@@ -51,6 +51,8 @@ pub struct Config {
     pub mail: MailSection,
     #[serde(default)]
     pub s3: S3Section,
+    #[serde(default)]
+    pub http: HttpSection,
     /// Named targets, addressed as `mpt://<name>/<path>`.
     #[serde(default)]
     pub profiles: BTreeMap<String, Profile>,
@@ -161,6 +163,14 @@ pub struct MailSection {
     pub max_attachment: Option<String>,
 }
 
+/// `[http]` — defaults for `http://`, `https://` and WebDAV.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HttpSection {
+    /// OAuth2 bearer token, sent as `Authorization: Bearer …`.
+    pub token: Option<Secret>,
+}
+
 /// `[s3]` — defaults for `s3://`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -180,6 +190,7 @@ pub struct Resolved {
     pub ssh_passphrase: Option<SecretString>,
     pub signing_passphrase: Option<SecretString>,
     pub mail_password: Option<SecretString>,
+    pub http_token: Option<SecretString>,
     pub s3_access_key_id: Option<SecretString>,
     pub s3_secret_access_key: Option<SecretString>,
     /// Passwords of the profiles that were asked for, by profile name.
@@ -382,6 +393,7 @@ impl Config {
             cfg.ssh = SshSection::default();
             cfg.mail = MailSection::default();
             cfg.s3 = S3Section::default();
+            cfg.http = HttpSection::default();
             cfg.profiles.clear();
         }
         Ok(Some(cfg))
@@ -585,6 +597,15 @@ impl Config {
         {
             self.resolved.mail_password = Some(s.resolve("[mail] password").await?);
         }
+        if uses(&[
+            crate::Scheme::Http,
+            crate::Scheme::Https,
+            crate::Scheme::WebDav,
+            crate::Scheme::WebDavs,
+        ]) && let Some(s) = &self.http.token
+        {
+            self.resolved.http_token = Some(s.resolve("[http] token").await?);
+        }
         if uses(&[crate::Scheme::S3]) {
             if let Some(s) = &self.s3.access_key_id {
                 self.resolved.s3_access_key_id = Some(s.resolve("[s3] access_key_id").await?);
@@ -603,7 +624,8 @@ impl Config {
     /// Whether the file holds credentials, which decides how strictly its
     /// permissions are judged.
     fn holds_credentials(&self) -> bool {
-        self.ssh.passphrase.is_some()
+        self.http.token.is_some()
+            || self.ssh.passphrase.is_some()
             || self.signing.passphrase.is_some()
             || self.mail.password.is_some()
             || self.s3.access_key_id.is_some()

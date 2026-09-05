@@ -775,3 +775,32 @@ async fn sftp_authenticates_with_a_certificate() {
         "unexpected error: {err}"
     );
 }
+
+/// `?token=` travels as `Authorization: Bearer …`, which is what an OAuth2
+/// endpoint (SharePoint, Nextcloud, Artifactory) wants instead of a password.
+#[tokio::test]
+async fn http_sends_a_bearer_token() {
+    let Some(base) = env("MPT_IT_HTTP") else {
+        eprintln!("skipping: MPT_IT_HTTP not set");
+        return;
+    };
+    mpt::init_crypto();
+    let name = format!("bearer_{}.bin", std::process::id());
+    let file = dir_url(&base, &format!("/{name}"));
+    let dst = mpt::open(&format!("{file}?token=s3cr3t")).unwrap();
+    let meta = SendMeta::from_filename(&name).unwrap().with_size(2);
+    dst.sender()
+        .unwrap()
+        .send(Box::pin(std::io::Cursor::new(b"hi".to_vec())), &meta)
+        .await
+        .expect("upload");
+
+    // The test server writes the header it saw next to the file.
+    let seen = mpt::open(&format!("{file}.auth")).unwrap();
+    let mut stream = seen.receiver().unwrap().receive().await.expect("download");
+    let mut got = String::new();
+    tokio::io::AsyncReadExt::read_to_string(&mut stream, &mut got)
+        .await
+        .unwrap();
+    assert_eq!(got, "Bearer s3cr3t");
+}

@@ -935,9 +935,11 @@ fn show_config(cfg: &mpt::Config) {
         "mail".smtp = cfg.mail.smtp,
         "mail".from = cfg.mail.from,
         "mail".max_attachment = cfg.mail.max_attachment,
+        "http".token = cfg.http.token.as_ref().map(|_| "(reference)"),
         "s3".endpoint = cfg.s3.endpoint,
         "s3".region = cfg.s3.region,
         "s3".path_style = cfg.s3.path_style,
+        "s3".profile = cfg.s3.profile,
     );
     if !cfg.ssh.hostkey.is_empty() {
         rows.push(("[ssh] hostkey".into(), cfg.ssh.hostkey.join(", ")));
