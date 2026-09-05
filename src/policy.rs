@@ -22,6 +22,9 @@ pub struct Policy {
     pub refuse_insecure_tls: bool,
     /// `--check` must verify a signature as well as the checksum.
     pub require_signature: bool,
+    /// A configuration file with credentials that others can read is an
+    /// error rather than a warning.
+    pub strict_permissions: bool,
     /// Default host-key policy for SSH (`strict`, `accept-new`, `off`).
     pub known_hosts: Option<String>,
 }

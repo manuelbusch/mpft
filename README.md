@@ -67,6 +67,7 @@ mpt cp <SRC_URL> <DST_URL>...    copy from one endpoint to one or more targets
 mpt ls <URL>                     list a directory
 mpt schemes                      print the table above
 mpt profiles                     list the named targets from the configuration
+mpt credentials set|get|delete   manage OS key store entries (feature "keyring")
 mpt config check                 read the configuration file and print what it sets
   -v / -vv / -vvv   log level    --insecure   disable TLS verification    --password <pw>
   --config <PATH>                configuration file (see below)
@@ -120,6 +121,7 @@ known_hosts           = "strict"   # default for sftp/scp: strict|accept-new|off
 refuse_plaintext_auth = false      # ftp:// with a password, http Basic, smtp without TLS
 refuse_insecure_tls   = false      # refuse ?insecure=true instead of honouring it
 require_signature     = false      # --check must verify a signature as well
+strict_permissions    = false      # a readable file with credentials is an error
 
 [signing]                     # default for --sign
 key = "ssh:~/.ssh/id_ed25519"      # used when --sign only names the format
@@ -132,11 +134,13 @@ keyring         = "~/.config/mpt/trusted.asc"
 [ssh]                         # defaults for sftp:// and scp://
 user             = "deploy"
 key              = "~/.ssh/id_ed25519"
+passphrase       = { cmd = "pass ssh/prod" }
 known_hosts_file = "~/.ssh/known_hosts"
 hostkey          = ["SHA256:…"]    # pinned host keys, one string or a list
 
 [mail]                        # defaults for mailto: and smtp://
 smtp           = "smtp://user@mail.example.com:587?tls=starttls"
+password       = { env = "MPT_SMTP_PASSWORD" }   # see "Credentials" below
 from           = "reports@example.com"
 max_attachment = "25M"
 
@@ -145,6 +149,44 @@ endpoint   = "https://minio.example.com"
 region     = "eu-central-1"
 path_style = true
 ```
+
+### Credentials
+
+The configuration file should not hold passwords. It holds a reference, and
+the secret is fetched when the endpoint is about to be used — and only then,
+so a `cmd` provider does not run for a profile this command does not touch:
+
+```toml
+[profiles.prod]
+url      = "sftp://deploy@srv.example.com/data/"
+password = { env = "PROD_PW" }                            # environment variable
+# password = { file = "~/.config/mpt/prod.pw" }           # first line of a file
+# password = { cmd = "op read op://Infra/prod/password" } # 1Password, pass, gopass, az, …
+# password = { keyring = "mpt/prod" }                     # OS key store (feature "keyring")
+# password = { vault = "secret/data/mpt/prod#password" }  # HashiCorp Vault (feature "vault")
+```
+
+The same references work for `[ssh] passphrase`, `[signing] passphrase`,
+`[mail] password` and `[s3] access_key_id` / `secret_access_key`. A password
+written out in the file works too, but warns.
+
+| Provider | Where it reads from | Good for |
+|---|---|---|
+| `env` | environment variable | CI, containers, systemd `LoadCredential` |
+| `file` | first line of a file (permissions are checked) | mounted secrets |
+| `cmd` | standard output of `sh -c <command>` | any secret manager with a CLI |
+| `keyring` | macOS Keychain, Windows Credential Manager, Linux Secret Service | workstations |
+| `vault` | `$VAULT_ADDR/v1/<path>` with `$VAULT_TOKEN` | servers without CLI tools |
+
+`keyring` and `vault` are optional features:
+`cargo build --features keyring,vault`. With `keyring`,
+`mpt credentials set mpt/prod` (secret on stdin), `get` and `delete` manage the
+entries.
+
+Because `cmd` runs what the file says, a configuration file that holds or
+points at credentials should be readable only by its owner: `mpt` warns
+otherwise, and `[policy] strict_permissions = true` makes it an error. `./mpt.toml`
+may not carry credentials at all.
 
 ### Named targets
 

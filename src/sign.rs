@@ -91,7 +91,8 @@ impl SignSpec {
         let passphrase = std::env::var("MPT_SIGN_KEY_PASSPHRASE")
             .ok()
             .filter(|p| !p.is_empty())
-            .map(SecretString::from);
+            .map(SecretString::from)
+            .or_else(|| crate::config::global().resolved.signing_passphrase.clone());
         Ok(SignSpec {
             format,
             key,

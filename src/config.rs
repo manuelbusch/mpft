@@ -26,9 +26,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 
+use secrecy::SecretString;
 use serde::Deserialize;
 use tracing::debug;
 
+use crate::credentials::Secret;
 use crate::{Error, Location, Result};
 
 /// The whole configuration file.
@@ -52,6 +54,10 @@ pub struct Config {
     /// Named targets, addressed as `mpt://<name>/<path>`.
     #[serde(default)]
     pub profiles: BTreeMap<String, Profile>,
+    /// The secrets the sections above refer to, once they have been fetched
+    /// (see [`Config::resolve_secrets`]).
+    #[serde(skip)]
+    pub resolved: Resolved,
     /// Which files it was read from; empty for the built-in defaults.
     #[serde(skip)]
     pub sources: Vec<PathBuf>,
@@ -94,6 +100,9 @@ pub struct PolicySection {
     pub refuse_insecure_tls: Option<bool>,
     /// `--check` must also verify a signature.
     pub require_signature: Option<bool>,
+    /// A configuration file with credentials that others can read is an
+    /// error, not a warning.
+    pub strict_permissions: Option<bool>,
 }
 
 /// `[signing]` — defaults for `--sign`.
@@ -104,6 +113,8 @@ pub struct SigningSection {
     pub key: Option<String>,
     /// Which ssh-agent identity to sign with (`SHA256:…`).
     pub agent_fingerprint: Option<String>,
+    /// Passphrase of the signing key.
+    pub passphrase: Option<Secret>,
 }
 
 /// `[verify]` — defaults for `--verify-signers` / `--verify-keyring`.
@@ -120,6 +131,8 @@ pub struct VerifySection {
 pub struct SshSection {
     pub user: Option<String>,
     pub key: Option<String>,
+    /// Passphrase of the private key.
+    pub passphrase: Option<Secret>,
     pub known_hosts_file: Option<String>,
     /// Pinned host-key fingerprints, one string or a list.
     #[serde(default, deserialize_with = "string_or_list")]
@@ -132,6 +145,8 @@ pub struct SshSection {
 pub struct MailSection {
     /// SMTP server for `mailto:` targets, e.g. `smtp://user@host:587?tls=starttls`.
     pub smtp: Option<String>,
+    /// Password for the SMTP server.
+    pub password: Option<Secret>,
     pub from: Option<String>,
     /// Attachment size limit with a unit, e.g. `25M`.
     pub max_attachment: Option<String>,
@@ -144,6 +159,20 @@ pub struct S3Section {
     pub endpoint: Option<String>,
     pub region: Option<String>,
     pub path_style: Option<bool>,
+    pub access_key_id: Option<Secret>,
+    pub secret_access_key: Option<Secret>,
+}
+
+/// The secrets of the sections above, fetched from their providers.
+#[derive(Debug, Clone, Default)]
+pub struct Resolved {
+    pub ssh_passphrase: Option<SecretString>,
+    pub signing_passphrase: Option<SecretString>,
+    pub mail_password: Option<SecretString>,
+    pub s3_access_key_id: Option<SecretString>,
+    pub s3_secret_access_key: Option<SecretString>,
+    /// Passwords of the profiles that were asked for, by profile name.
+    pub profile_passwords: BTreeMap<String, SecretString>,
 }
 
 /// `[profiles.<name>]` — a named target.
@@ -155,6 +184,8 @@ pub struct S3Section {
 pub struct Profile {
     /// The endpoint this profile stands for.
     pub url: String,
+    /// Password for this endpoint.
+    pub password: Option<Secret>,
     /// Sign checksum files written to this target (`--sign` syntax).
     pub sign: Option<String>,
     /// Checksum algorithm for this target.
@@ -253,6 +284,12 @@ impl Config {
                 .join(path)
                 .map_err(|e| Error::Config(format!("mpt://{name}/{path}: {e}")))?;
         }
+        if let Some(pw) = self.resolved.profile_passwords.get(name)
+            && !loc.password_in_url()
+        {
+            use secrecy::ExposeSecret;
+            loc.set_password(pw.expose_secret());
+        }
         override_options(&mut loc, profile.options()?);
         if let Some(q) = query {
             override_options(
@@ -345,8 +382,9 @@ impl Config {
         let SigningSection {
             key,
             agent_fingerprint,
+            passphrase,
         } = &self.signing;
-        if key.is_some() || agent_fingerprint.is_some() {
+        if key.is_some() || agent_fingerprint.is_some() || passphrase.is_some() {
             out.push("signing");
         }
         let VerifySection {
@@ -359,26 +397,40 @@ impl Config {
         let SshSection {
             user,
             key,
+            passphrase,
             known_hosts_file,
             hostkey,
         } = &self.ssh;
-        if user.is_some() || key.is_some() || known_hosts_file.is_some() || !hostkey.is_empty() {
+        if user.is_some()
+            || key.is_some()
+            || passphrase.is_some()
+            || known_hosts_file.is_some()
+            || !hostkey.is_empty()
+        {
             out.push("ssh");
         }
         let MailSection {
             smtp,
+            password,
             from,
             max_attachment,
         } = &self.mail;
-        if smtp.is_some() || from.is_some() || max_attachment.is_some() {
+        if smtp.is_some() || password.is_some() || from.is_some() || max_attachment.is_some() {
             out.push("mail");
         }
         let S3Section {
             endpoint,
             region,
             path_style,
+            access_key_id,
+            secret_access_key,
         } = &self.s3;
-        if endpoint.is_some() || region.is_some() || path_style.is_some() {
+        if endpoint.is_some()
+            || region.is_some()
+            || path_style.is_some()
+            || access_key_id.is_some()
+            || secret_access_key.is_some()
+        {
             out.push("s3");
         }
         out
@@ -391,6 +443,7 @@ impl Config {
             .map_err(|e| Error::Config(format!("reading {}: {e}", path.display())))?;
         let mut cfg =
             Config::parse(&text).map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
+        cfg.check_permissions(path)?;
         debug!(path = %path.display(), "configuration loaded");
         cfg.sources.push(path.to_path_buf());
         Ok(cfg)
@@ -428,6 +481,7 @@ impl Config {
             policy.refuse_plaintext_auth,
             policy.refuse_insecure_tls,
             policy.require_signature,
+            policy.strict_permissions,
             signing.key,
             signing.agent_fingerprint,
             verify.allowed_signers,
@@ -452,6 +506,112 @@ impl Config {
         self.warnings.append(&mut other.warnings);
     }
 
+    /// Fetch the secrets the given URLs will need, and no others: a
+    /// `cmd` provider starts a process, which should not happen for a
+    /// profile or a protocol this run does not touch.
+    ///
+    /// Call it before [`install`]; the values then reach the protocols
+    /// through [`Config::resolved`].
+    pub async fn resolve_secrets(&mut self, urls: &[&str], signing: bool) -> Result<()> {
+        let mut schemes = std::collections::HashSet::new();
+        let mut names = Vec::new();
+        for url in urls {
+            if let Some(name) = profile_name(url) {
+                names.push(name.to_string());
+            }
+            let loc = match self.resolve(url) {
+                Ok(Some(loc)) => Some(loc),
+                Ok(None) => Location::parse(url).ok(),
+                Err(_) => None, // an unusable URL is reported where it is opened
+            };
+            if let Some(loc) = loc {
+                schemes.insert(loc.scheme());
+            }
+        }
+        let uses = |wanted: &[crate::Scheme]| wanted.iter().any(|s| schemes.contains(s));
+        // A profile can ask for signing on its own.
+        let signing = signing
+            || names
+                .iter()
+                .filter_map(|n| self.profiles.get(n))
+                .any(|p| p.sign.is_some());
+
+        for name in names {
+            let Some(secret) = self.profiles.get(&name).and_then(|p| p.password.clone()) else {
+                continue;
+            };
+            let pw = secret
+                .resolve(&format!("password of profile '{name}'"))
+                .await?;
+            self.resolved.profile_passwords.insert(name, pw);
+        }
+        if uses(&[crate::Scheme::Sftp, crate::Scheme::Scp])
+            && let Some(s) = &self.ssh.passphrase
+        {
+            self.resolved.ssh_passphrase = Some(s.resolve("[ssh] passphrase").await?);
+        }
+        if uses(&[crate::Scheme::Mailto, crate::Scheme::Smtp])
+            && let Some(s) = &self.mail.password
+        {
+            self.resolved.mail_password = Some(s.resolve("[mail] password").await?);
+        }
+        if uses(&[crate::Scheme::S3]) {
+            if let Some(s) = &self.s3.access_key_id {
+                self.resolved.s3_access_key_id = Some(s.resolve("[s3] access_key_id").await?);
+            }
+            if let Some(s) = &self.s3.secret_access_key {
+                self.resolved.s3_secret_access_key =
+                    Some(s.resolve("[s3] secret_access_key").await?);
+            }
+        }
+        if signing && let Some(s) = &self.signing.passphrase {
+            self.resolved.signing_passphrase = Some(s.resolve("[signing] passphrase").await?);
+        }
+        Ok(())
+    }
+
+    /// Whether the file holds credentials, which decides how strictly its
+    /// permissions are judged.
+    fn holds_credentials(&self) -> bool {
+        self.ssh.passphrase.is_some()
+            || self.signing.passphrase.is_some()
+            || self.mail.password.is_some()
+            || self.s3.access_key_id.is_some()
+            || self.s3.secret_access_key.is_some()
+            || self.profiles.values().any(|p| p.password.is_some())
+    }
+
+    /// A file with credentials that others can read is a file that gives them
+    /// away — even when it only points at a provider, because `cmd` runs what
+    /// it says.
+    fn check_permissions(&mut self, path: &Path) -> Result<()> {
+        if !self.holds_credentials() {
+            return Ok(());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let Ok(md) = std::fs::metadata(path) else {
+                return Ok(());
+            };
+            let mode = md.permissions().mode() & 0o777;
+            if mode & 0o077 == 0 {
+                return Ok(());
+            }
+            let complaint = format!(
+                "{} holds credentials and is readable by others (mode {mode:o}); chmod 600 it",
+                path.display()
+            );
+            if self.policy.strict_permissions.unwrap_or(false) {
+                return Err(Error::Config(complaint));
+            }
+            self.warnings.push(complaint);
+        }
+        #[cfg(not(unix))]
+        let _ = path;
+        Ok(())
+    }
+
     /// The `[policy]` section as the process-wide policy, on top of what the
     /// environment already says.
     pub fn policy(&self) -> crate::policy::Policy {
@@ -464,6 +624,9 @@ impl Config {
         }
         if let Some(v) = self.policy.require_signature {
             p.require_signature = v;
+        }
+        if let Some(v) = self.policy.strict_permissions {
+            p.strict_permissions = v;
         }
         if let Some(v) = &self.policy.known_hosts {
             p.known_hosts = Some(v.clone());
@@ -499,9 +662,16 @@ pub fn locate(url: &str) -> Result<Location> {
 
 /// The profile a URL refers to, if it refers to one at all.
 pub fn profile_of(url: &str) -> Option<&'static Profile> {
-    let rest = url.trim().strip_prefix(PROFILE_PREFIX)?;
-    let name = rest.split(['/', '?']).next()?;
-    global().profiles.get(name)
+    global().profiles.get(profile_name(url)?)
+}
+
+/// The profile name a `mpt://` URL names, without looking it up.
+pub fn profile_name(url: &str) -> Option<&str> {
+    url.trim()
+        .strip_prefix(PROFILE_PREFIX)?
+        .split(['/', '?'])
+        .next()
+        .filter(|n| !n.is_empty())
 }
 
 /// Publish the loaded configuration for the rest of the process, and install
@@ -762,6 +932,78 @@ mod tests {
                 .unwrap();
         let err = cfg.resolve("mpt://a/x").unwrap_err().to_string();
         assert!(err.contains("do not chain"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_profile_password_comes_from_its_provider() {
+        // SAFETY: single-threaded test, the variable is only read here.
+        unsafe { std::env::set_var("MPT_TEST_PROFILE_PW", "s3cret") };
+        let mut cfg = Config::parse(
+            r#"
+            [profiles.prod]
+            url = "sftp://deploy@srv.example.com/data/"
+            password = { env = "MPT_TEST_PROFILE_PW" }
+
+            [profiles.other]
+            url = "ftp://h/"
+            password = { cmd = "exit 1" }
+            "#,
+        )
+        .unwrap();
+        // Only the profile this command uses is asked for, so the broken
+        // provider of the other one does not matter.
+        cfg.resolve_secrets(&["mpt://prod/x"], false).await.unwrap();
+        let loc = cfg.resolve("mpt://prod/x").unwrap().unwrap();
+        assert_eq!(loc.password(), Some("s3cret"));
+        assert!(!loc.password_in_url(), "it did not come from the URL");
+        assert!(
+            cfg.resolve("mpt://other/x")
+                .unwrap()
+                .unwrap()
+                .password()
+                .is_none()
+        );
+
+        let err = cfg
+            .resolve_secrets(&["mpt://other/x"], false)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("profile 'other'"), "{err}");
+    }
+
+    #[test]
+    fn credentials_want_a_private_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[mail]\npassword = { env = \"X\" }\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let cfg = Config::read(&path).unwrap();
+            assert!(
+                cfg.warnings
+                    .iter()
+                    .any(|w| w.contains("readable by others")),
+                "{:?}",
+                cfg.warnings
+            );
+
+            std::fs::write(
+                &path,
+                "[policy]\nstrict_permissions = true\n[mail]\npassword = { env = \"X\" }\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(Config::read(&path).is_err(), "strict makes it an error");
+
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(Config::read(&path).is_ok());
+        }
+        // A file without credentials is nobody's business.
+        std::fs::write(&path, "[defaults]\ntimeout = 5\n").unwrap();
+        assert!(Config::read(&path).unwrap().warnings.is_empty());
     }
 
     #[test]

@@ -91,6 +91,14 @@ impl S3Endpoint {
         }
         if let (Some(u), Some(p)) = (loc.username(), loc.password()) {
             b = b.with_access_key_id(u).with_secret_access_key(p);
+        } else if let (Some(id), Some(key)) = (
+            &cfg.resolved.s3_access_key_id,
+            &cfg.resolved.s3_secret_access_key,
+        ) {
+            use secrecy::ExposeSecret;
+            b = b
+                .with_access_key_id(id.expose_secret())
+                .with_secret_access_key(key.expose_secret());
         }
         let store = b.build().map_err(|e| Error::transport("s3", e))?;
         Ok(S3Endpoint {

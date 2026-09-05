@@ -95,7 +95,8 @@ impl SshConfig {
             .opt("passphrase")
             .map(String::from)
             .or_else(|| std::env::var("MPT_SSH_KEY_PASSPHRASE").ok())
-            .map(SecretString::from);
+            .map(SecretString::from)
+            .or_else(|| cfg.resolved.ssh_passphrase.clone());
         let known_hosts = match loc
             .opt("known_hosts")
             .map(String::from)

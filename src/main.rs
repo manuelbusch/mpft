@@ -139,6 +139,12 @@ enum Cmd {
     Schemes,
     /// List the profiles the configuration defines
     Profiles,
+    /// Manage secrets in the OS key store, for { keyring = "<service>/<user>" }
+    #[cfg(feature = "keyring")]
+    Credentials {
+        #[command(subcommand)]
+        action: CredentialCmd,
+    },
     /// Inspect the configuration file
     Config {
         #[command(subcommand)]
@@ -157,6 +163,18 @@ impl Cmd {
             _ => Vec::new(),
         }
     }
+}
+
+/// `mpt credentials …`, only with the `keyring` feature.
+#[cfg(feature = "keyring")]
+#[derive(Subcommand)]
+enum CredentialCmd {
+    /// Store a secret read from standard input (first line)
+    Set { entry: String },
+    /// Print the stored secret
+    Get { entry: String },
+    /// Delete the stored secret
+    Delete { entry: String },
 }
 
 #[derive(Subcommand)]
@@ -257,6 +275,7 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let mut cfg = cfg;
     let settings = match Settings::resolve(&cli, &cfg) {
         Ok(s) => s,
         Err(e) => {
@@ -271,6 +290,15 @@ async fn main() -> ExitCode {
     }
     for path in &cfg.sources {
         tracing::debug!(path = %path.display(), "configuration in use");
+    }
+    // Credentials are fetched before anything connects, and only those the
+    // endpoints of this command actually need.
+    if let Err(e) = cfg
+        .resolve_secrets(&cli.cmd.urls(), cli.sign.is_some())
+        .await
+    {
+        anstream::eprintln!("{FAIL}error:{FAIL:#} {e}");
+        return ExitCode::FAILURE;
     }
     mpt::config::install(cfg);
     mpt::init_crypto();
@@ -321,6 +349,7 @@ fn init_logging(verbosity: u8, configured: Option<&str>) {
 /// Read a password from a file or from standard input, without keeping the
 /// trailing newline an editor or `echo` leaves behind.
 fn read_password(cli: &Cli) -> anyhow::Result<Option<secrecy::SecretString>> {
+    use mpt::credentials::{first_line, warn_if_world_readable};
     if let Some(path) = &cli.password_file {
         warn_if_world_readable(path);
         let text = std::fs::read_to_string(path)
@@ -334,30 +363,6 @@ fn read_password(cli: &Cli) -> anyhow::Result<Option<secrecy::SecretString>> {
         return Ok(Some(first_line(&text).into()));
     }
     Ok(cli.password.clone().map(secrecy::SecretString::from))
-}
-
-fn first_line(text: &str) -> String {
-    text.lines().next().unwrap_or("").to_string()
-}
-
-/// A password file that others can read is a password everyone has.
-fn warn_if_world_readable(path: &std::path::Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(md) = std::fs::metadata(path) {
-            let mode = md.permissions().mode() & 0o077;
-            if mode != 0 {
-                tracing::warn!(
-                    "{} is readable by others (mode {:o}); chmod 600 it",
-                    path.display(),
-                    md.permissions().mode() & 0o777
-                );
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = path;
 }
 
 async fn run(cli: Cli, settings: Settings) -> anyhow::Result<()> {
@@ -414,8 +419,9 @@ async fn run(cli: Cli, settings: Settings) -> anyhow::Result<()> {
         if settings.retries > 0 && loc.opt("connect_retries").is_none() {
             loc.set_option("connect_retries", settings.retries.to_string());
         }
+        // A password in the URL stays; one from a profile gives way to the flag.
         if let Some(pw) = &password
-            && loc.password().is_none()
+            && !loc.password_in_url()
             && loc.scheme() != Scheme::File
         {
             use secrecy::ExposeSecret;
@@ -495,6 +501,29 @@ async fn run(cli: Cli, settings: Settings) -> anyhow::Result<()> {
                     "{DIM}{kind}{DIM:#} {NUM}{size:>12}{NUM:#}  {name_style}{}{name_style:#}",
                     e.name
                 );
+            }
+            Ok(())
+        }
+        #[cfg(feature = "keyring")]
+        Cmd::Credentials { action } => {
+            use mpt::credentials as cred;
+            match action {
+                CredentialCmd::Set { entry } => {
+                    let mut text = String::new();
+                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+                        .context("reading the secret from stdin")?;
+                    cred::keyring_set(entry, &cred::first_line(&text).into())?;
+                    anstream::eprintln!("{OK}stored{OK:#} {entry}");
+                }
+                CredentialCmd::Get { entry } => {
+                    use secrecy::ExposeSecret;
+                    let secret = cred::keyring_get(entry).await?;
+                    anstream::println!("{}", secret.expose_secret());
+                }
+                CredentialCmd::Delete { entry } => {
+                    cred::keyring_delete(entry)?;
+                    anstream::eprintln!("{OK}deleted{OK:#} {entry}");
+                }
             }
             Ok(())
         }

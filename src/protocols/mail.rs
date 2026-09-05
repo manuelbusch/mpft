@@ -50,7 +50,7 @@ impl MailEndpoint {
 
     /// Resolve the SMTP server: the URL itself for `smtp://`, `MPT_SMTP_URL` for `mailto:`.
     fn smtp_config(&self) -> Result<SmtpConfig> {
-        let server = match self.loc.scheme() {
+        let mut server = match self.loc.scheme() {
             Scheme::Smtp => self.loc.clone(),
             _ => {
                 let url = std::env::var("MPT_SMTP_URL")
@@ -74,6 +74,12 @@ impl MailEndpoint {
                 s
             }
         };
+        if server.password().is_none()
+            && let Some(pw) = &crate::config::global().resolved.mail_password
+        {
+            use secrecy::ExposeSecret;
+            server.set_password(pw.expose_secret());
+        }
         server.host_required()?;
         // The recipient URL was checked in `open`; the server it resolves to
         // carries the credentials, so it needs the same look.
