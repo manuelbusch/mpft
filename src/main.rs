@@ -207,20 +207,20 @@ fn init_logging(verbosity: u8) {
 
 /// Read a password from a file or from standard input, without keeping the
 /// trailing newline an editor or `echo` leaves behind.
-fn read_password(cli: &Cli) -> anyhow::Result<Option<String>> {
+fn read_password(cli: &Cli) -> anyhow::Result<Option<secrecy::SecretString>> {
     if let Some(path) = &cli.password_file {
         warn_if_world_readable(path);
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading the password from {}", path.display()))?;
-        return Ok(Some(first_line(&text)));
+        return Ok(Some(first_line(&text).into()));
     }
     if cli.password_stdin {
         let mut text = String::new();
         std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
             .context("reading the password from stdin")?;
-        return Ok(Some(first_line(&text)));
+        return Ok(Some(first_line(&text).into()));
     }
-    Ok(cli.password.clone())
+    Ok(cli.password.clone().map(secrecy::SecretString::from))
 }
 
 fn first_line(text: &str) -> String {
@@ -286,7 +286,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             && loc.password().is_none()
             && loc.scheme() != Scheme::File
         {
-            loc.set_password(pw.clone());
+            use secrecy::ExposeSecret;
+            loc.set_password(pw.expose_secret());
         }
         Ok(mpt::protocols::open(loc)?)
     };

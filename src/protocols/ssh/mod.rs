@@ -20,6 +20,7 @@ use russh::keys::known_hosts::{check_known_hosts, learn_known_hosts};
 use russh::keys::{
     HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate, load_secret_key,
 };
+use secrecy::{ExposeSecret, SecretString};
 use tracing::{debug, info, warn};
 
 use crate::{Error, Location, Result};
@@ -53,9 +54,9 @@ pub struct SshConfig {
     pub host: String,
     pub port: u16,
     pub user: String,
-    pub password: Option<String>,
+    pub password: Option<SecretString>,
     pub key_file: Option<PathBuf>,
-    pub key_passphrase: Option<String>,
+    pub key_passphrase: Option<SecretString>,
     pub known_hosts: KnownHostsPolicy,
     /// Expected host-key fingerprints (`SHA256:…`). Non-empty means the
     /// `known_hosts` file is not consulted at all.
@@ -86,7 +87,8 @@ impl SshConfig {
         let key_passphrase = loc
             .opt("passphrase")
             .map(String::from)
-            .or_else(|| std::env::var("MPT_SSH_KEY_PASSPHRASE").ok());
+            .or_else(|| std::env::var("MPT_SSH_KEY_PASSPHRASE").ok())
+            .map(SecretString::from);
         let known_hosts = match loc
             .opt("known_hosts")
             .map(String::from)
@@ -115,7 +117,7 @@ impl SshConfig {
             host,
             port: loc.port_or_default(),
             user,
-            password: loc.password().map(String::from),
+            password: loc.password().map(SecretString::from),
             key_file,
             key_passphrase,
             known_hosts,
@@ -214,7 +216,7 @@ impl SshConfig {
         if let Some(pw) = &self.password {
             tried.push("password".into());
             let res = handle
-                .authenticate_password(self.user.clone(), pw.clone())
+                .authenticate_password(self.user.clone(), pw.expose_secret().to_string())
                 .await
                 .map_err(ssh_err)?;
             if res.success() {
@@ -241,8 +243,11 @@ impl SshConfig {
         path: &PathBuf,
         rsa_hash: Option<HashAlg>,
     ) -> Result<bool> {
-        let key = load_secret_key(path, self.key_passphrase.as_deref())
-            .map_err(|e| Error::Auth(format!("cannot load key {}: {e}", path.display())))?;
+        let key = load_secret_key(
+            path,
+            self.key_passphrase.as_ref().map(|p| p.expose_secret()),
+        )
+        .map_err(|e| Error::Auth(format!("cannot load key {}: {e}", path.display())))?;
         let res = handle
             .authenticate_publickey(
                 self.user.clone(),
@@ -455,6 +460,19 @@ mod tests {
                 "{bad} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn secrets_stay_out_of_debug_output() {
+        let loc = Location::parse("sftp://u:hunter2@example.com/x?passphrase=letmein").unwrap();
+        let cfg = SshConfig::from_location(&loc).unwrap();
+        let debug = format!("{cfg:?}");
+        assert!(!debug.contains("hunter2"), "{debug}");
+        assert!(!debug.contains("letmein"), "{debug}");
+        assert_eq!(
+            cfg.key_passphrase.as_ref().map(|p| p.expose_secret()),
+            Some("letmein")
+        );
     }
 
     #[test]

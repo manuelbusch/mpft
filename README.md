@@ -183,6 +183,10 @@ Two things get a warning, once per run:
 and is deprecated for that reason. Put `?insecure=true` on the one URL that
 needs it.
 
+Inside the process, passwords and key passphrases are held in `SecretString`
+(the `secrecy` crate): they are redacted in `Debug` output and overwritten when
+dropped, so they do not linger in memory or turn up in a log line by accident.
+
 ## Host keys
 
 `sftp://` and `scp://` check the server's host key against `~/.ssh/known_hosts`

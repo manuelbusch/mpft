@@ -4,6 +4,7 @@
 use std::fmt;
 
 use percent_encoding::percent_decode_str;
+use secrecy::{ExposeSecret, SecretString};
 use url::Url;
 
 use crate::{Error, Result};
@@ -228,7 +229,8 @@ impl fmt::Display for Scheme {
 pub struct Location {
     scheme: Scheme,
     username: Option<String>,
-    password: Option<String>,
+    /// Wrapped so that it is redacted in `Debug` output and wiped on drop.
+    password: Option<SecretString>,
     host: Option<String>,
     port: Option<u16>,
     /// Percent-decoded path. For `file` this is the local path; for `s3` it is
@@ -269,7 +271,9 @@ impl Location {
         }
 
         let username = non_empty(percent_decode(url.username()));
-        let password = url.password().map(percent_decode);
+        let password = url
+            .password()
+            .map(|p| SecretString::from(percent_decode(p)));
         let host = url
             .host_str()
             .map(|h| h.trim_matches(['[', ']']).to_string());
@@ -368,7 +372,7 @@ impl Location {
         if let Ok(v) = std::env::var(var)
             && !v.is_empty()
         {
-            self.password = Some(v);
+            self.password = Some(SecretString::from(v));
             self.password_from_url = false;
         }
     }
@@ -379,8 +383,10 @@ impl Location {
     pub fn username(&self) -> Option<&str> {
         self.username.as_deref()
     }
+    /// The password in the clear. Callers must not log or store what they
+    /// get back; it is a secret everywhere else in this crate.
     pub fn password(&self) -> Option<&str> {
-        self.password.as_deref()
+        self.password.as_ref().map(|p| p.expose_secret())
     }
     pub fn host(&self) -> Option<&str> {
         self.host.as_deref()
@@ -404,7 +410,7 @@ impl Location {
         &self.options
     }
     pub fn set_password(&mut self, pw: impl Into<String>) {
-        self.password = Some(pw.into());
+        self.password = Some(SecretString::from(pw.into()));
         self.password_from_url = false;
     }
 
@@ -884,6 +890,17 @@ mod tests {
                 .sibling("x")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn secrets_stay_out_of_debug_output() {
+        let l = Location::parse("ftps://u:hunter2@h/x?passphrase=y").unwrap();
+        let debug = format!("{l:?}");
+        assert!(!debug.contains("hunter2"), "{debug}");
+        assert!(debug.contains("REDACTED"), "{debug}");
+        // Display masks it as before, and the value is still usable.
+        assert!(!l.to_string().contains("hunter2"), "{l}");
+        assert_eq!(l.password(), Some("hunter2"));
     }
 
     #[test]

@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::{Error, Result};
 
@@ -54,7 +55,7 @@ pub struct SignSpec {
     pub format: SignFormat,
     pub key: Option<PathBuf>,
     /// Passphrase of the key file (`MPT_SIGN_KEY_PASSPHRASE`).
-    pub passphrase: Option<String>,
+    pub passphrase: Option<SecretString>,
 }
 
 impl SignSpec {
@@ -85,7 +86,8 @@ impl SignSpec {
         }
         let passphrase = std::env::var("MPT_SIGN_KEY_PASSPHRASE")
             .ok()
-            .filter(|p| !p.is_empty());
+            .filter(|p| !p.is_empty())
+            .map(SecretString::from);
         Ok(SignSpec {
             format,
             key,
@@ -289,7 +291,7 @@ pub mod ssh {
     pub(super) async fn load(spec: &SignSpec) -> Result<Arc<dyn Signer>> {
         if let Some(path) = &spec.key {
             return Ok(Arc::new(FileSigner {
-                key: read_key(path, spec.passphrase.as_deref())?,
+                key: read_key(path, spec.passphrase.as_ref().map(|p| p.expose_secret()))?,
             }));
         }
         // No key given: ssh-agent first, then MPT_SSH_KEY, then default key files.
@@ -314,7 +316,7 @@ pub mod ssh {
         for path in candidates {
             if path.exists() {
                 return Ok(Arc::new(FileSigner {
-                    key: read_key(&path, spec.passphrase.as_deref())?,
+                    key: read_key(&path, spec.passphrase.as_ref().map(|p| p.expose_secret()))?,
                 }));
             }
         }
@@ -716,8 +718,8 @@ pub mod pgp {
         })?;
         let password = spec
             .passphrase
-            .as_deref()
-            .map(Password::from)
+            .as_ref()
+            .map(|p| Password::from(p.expose_secret()))
             .unwrap_or_else(Password::empty);
         // Fail early if the passphrase is wrong.
         key.primary_key
@@ -1097,6 +1099,21 @@ mod tests {
                 .verify(msg, &theirs)
                 .unwrap()
                 .starts_with("alice@example.com")
+        );
+    }
+
+    #[test]
+    fn passphrases_stay_out_of_debug_output() {
+        let spec = SignSpec {
+            format: SignFormat::Pgp,
+            key: Some(PathBuf::from("/k/sec.asc")),
+            passphrase: Some("letmein".into()),
+        };
+        let debug = format!("{spec:?}");
+        assert!(!debug.contains("letmein"), "{debug}");
+        assert_eq!(
+            spec.passphrase.as_ref().map(|p| p.expose_secret()),
+            Some("letmein")
         );
     }
 
