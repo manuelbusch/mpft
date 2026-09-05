@@ -39,12 +39,17 @@ impl S3Endpoint {
             return Err(Error::InvalidUrl("s3: missing bucket".into()));
         }
 
+        let cfg = crate::config::global();
         let insecure = loc.opt_bool("insecure")?.unwrap_or(false);
         let endpoint = loc
             .opt("endpoint")
             .map(String::from)
-            .or_else(|| std::env::var("AWS_ENDPOINT_URL").ok());
-        let path_style = loc.opt_bool("path_style")?.unwrap_or(endpoint.is_some());
+            .or_else(|| std::env::var("AWS_ENDPOINT_URL").ok())
+            .or_else(|| cfg.s3.endpoint.clone());
+        let path_style = loc
+            .opt_bool("path_style")?
+            .or(cfg.s3.path_style)
+            .unwrap_or(endpoint.is_some());
 
         // Client options first: the builder's `with_allow_http` writes into
         // them, so setting them afterwards would undo it.
@@ -82,7 +87,7 @@ impl S3Endpoint {
         } else if std::env::var_os("AWS_REGION").is_none()
             && std::env::var_os("AWS_DEFAULT_REGION").is_none()
         {
-            b = b.with_region("us-east-1");
+            b = b.with_region(cfg.s3.region.as_deref().unwrap_or("us-east-1"));
         }
         if let (Some(u), Some(p)) = (loc.username(), loc.password()) {
             b = b.with_access_key_id(u).with_secret_access_key(p);

@@ -15,6 +15,10 @@ pub enum Error {
     #[error("scheme '{scheme}' cannot {op}")]
     UnsupportedOperation { scheme: String, op: &'static str },
 
+    /// The configuration file is missing, unreadable or invalid.
+    #[error("configuration: {0}")]
+    Config(String),
+
     /// A query option had an invalid value.
     #[error("invalid option '{name}': {reason}")]
     InvalidOption { name: String, reason: String },
@@ -92,6 +96,7 @@ impl Error {
         !matches!(
             self,
             Error::Auth(_)
+                | Error::Config(_)
                 | Error::InvalidUrl(_)
                 | Error::InvalidOption { .. }
                 | Error::UnsupportedScheme(_)

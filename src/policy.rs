@@ -1,41 +1,74 @@
 //! Process-wide security policy.
 //!
-//! Only one rule lives here for now: what to do when credentials would travel
-//! unprotected. It is a global because it must hold for every endpoint the
-//! process opens, not just the one a caller is looking at. A configuration
-//! file will take it over later; until then it is `MPT_REFUSE_PLAINTEXT_AUTH`
-//! and `--refuse-plaintext-auth`.
+//! The rules here must hold for every endpoint the process opens, not just
+//! the one a caller happens to look at, so they live in a global rather than
+//! in [`crate::Location`]. Defaults come from the environment; the `[policy]`
+//! section of the configuration file replaces them (see
+//! [`crate::config::install`]), and the CLI flags replace those.
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 
 use tracing::warn;
 
 use crate::{Error, Location, Result, Scheme};
 
-/// 0 = not resolved yet, 1 = warn only, 2 = refuse.
-static REFUSE: AtomicU8 = AtomicU8::new(0);
+/// The rules that hold for the whole process.
+#[derive(Debug, Clone, Default)]
+pub struct Policy {
+    /// Credentials that would travel unencrypted are an error, not a warning.
+    pub refuse_plaintext_auth: bool,
+    /// `?insecure=true` is refused instead of switching certificate checks off.
+    pub refuse_insecure_tls: bool,
+    /// `--check` must verify a signature as well as the checksum.
+    pub require_signature: bool,
+    /// Default host-key policy for SSH (`strict`, `accept-new`, `off`).
+    pub known_hosts: Option<String>,
+}
 
-/// Whether unprotected credentials are an error rather than a warning.
-/// Defaults to the `MPT_REFUSE_PLAINTEXT_AUTH` environment variable.
-pub fn refuse_plaintext_auth() -> bool {
-    match REFUSE.load(Ordering::Relaxed) {
-        0 => {
-            let on = std::env::var("MPT_REFUSE_PLAINTEXT_AUTH")
-                .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
-                .unwrap_or(false);
-            REFUSE.store(if on { 2 } else { 1 }, Ordering::Relaxed);
-            on
+impl Policy {
+    /// The defaults, taken from the environment.
+    pub fn from_env() -> Policy {
+        Policy {
+            refuse_plaintext_auth: env_flag("MPT_REFUSE_PLAINTEXT_AUTH"),
+            ..Policy::default()
         }
-        2 => true,
-        _ => false,
     }
 }
 
-/// Override the environment default.
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
+fn slot() -> &'static RwLock<Policy> {
+    static POLICY: OnceLock<RwLock<Policy>> = OnceLock::new();
+    POLICY.get_or_init(|| RwLock::new(Policy::from_env()))
+}
+
+/// The policy in force. Cheap enough to call per endpoint.
+pub fn policy() -> Policy {
+    slot().read().map(|p| p.clone()).unwrap_or_default()
+}
+
+/// Replace the policy, usually with the `[policy]` section of the configuration.
+pub fn set_policy(p: Policy) {
+    if let Ok(mut slot) = slot().write() {
+        *slot = p;
+    }
+}
+
+/// Whether unprotected credentials are an error rather than a warning.
+pub fn refuse_plaintext_auth() -> bool {
+    policy().refuse_plaintext_auth
+}
+
+/// Override just that one rule (the `--refuse-plaintext-auth` flag).
 pub fn set_refuse_plaintext_auth(refuse: bool) {
-    REFUSE.store(if refuse { 2 } else { 1 }, Ordering::Relaxed);
+    if let Ok(mut slot) = slot().write() {
+        slot.refuse_plaintext_auth = refuse;
+    }
 }
 
 /// Emit `message` at most once per process; the same warning would otherwise
@@ -74,14 +107,15 @@ fn smtp_without_tls(loc: &Location) -> bool {
     }
 }
 
-/// Check an endpoint before it is used: unprotected credentials, and a
-/// password that anyone with `ps` can read.
+/// Check an endpoint before it is used: unprotected credentials, a password
+/// that anyone with `ps` can read, and switched-off certificate checks.
 ///
-/// Returns an error instead of warning when [`refuse_plaintext_auth`] is set.
+/// Returns an error instead of warning where the policy says so.
 pub fn check_credentials(loc: &Location) -> Result<()> {
+    let policy = policy();
     if let Some(why) = plaintext_exposure(loc) {
         let where_ = format!("{}://{}", loc.scheme(), loc.host().unwrap_or(""));
-        if refuse_plaintext_auth() {
+        if policy.refuse_plaintext_auth {
             return Err(Error::Auth(format!(
                 "{where_}: {why} (refused by policy; switch to the TLS variant of the \
                  scheme, or drop --refuse-plaintext-auth / MPT_REFUSE_PLAINTEXT_AUTH)"
@@ -91,6 +125,13 @@ pub fn check_credentials(loc: &Location) -> Result<()> {
             format!("plaintext:{where_}"),
             &format!("{where_}: {why}. Prefer the TLS variant of this scheme"),
         );
+    }
+    if policy.refuse_insecure_tls && loc.opt_bool("insecure")?.unwrap_or(false) {
+        return Err(Error::Auth(format!(
+            "{}: insecure=true would switch off certificate verification, \
+             which policy.refuse_insecure_tls forbids",
+            loc.masked()
+        )));
     }
     if loc.password_in_url() {
         warn_once(
@@ -108,6 +149,12 @@ mod tests {
 
     fn loc(u: &str) -> Location {
         Location::parse(u).unwrap()
+    }
+
+    /// The policy is global, so the tests that change it must not overlap.
+    fn exclusive() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     #[test]
@@ -141,11 +188,30 @@ mod tests {
 
     #[test]
     fn refusal_turns_the_warning_into_an_error() {
+        let _guard = exclusive();
         let l = loc("ftp://u:p@h/x");
         set_refuse_plaintext_auth(true);
         let err = check_credentials(&l).unwrap_err().to_string();
         assert!(err.contains("unencrypted"), "{err}");
         set_refuse_plaintext_auth(false);
         assert!(check_credentials(&l).is_ok());
+    }
+
+    #[test]
+    fn insecure_tls_can_be_forbidden() {
+        let _guard = exclusive();
+        let l = loc("ftps://u@h/x?insecure=true");
+        assert!(check_credentials(&l).is_ok());
+        set_policy(Policy {
+            refuse_insecure_tls: true,
+            ..Policy::default()
+        });
+        let err = check_credentials(&l).unwrap_err().to_string();
+        assert!(err.contains("refuse_insecure_tls"), "{err}");
+        assert!(
+            check_credentials(&loc("ftps://u@h/x")).is_ok(),
+            "an endpoint that does not ask for it is unaffected"
+        );
+        set_policy(Policy::default());
     }
 }

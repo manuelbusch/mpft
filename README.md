@@ -66,7 +66,9 @@ Priority: URL > environment > default. Passwords are masked in all log output.
 mpt cp <SRC_URL> <DST_URL>...    copy from one endpoint to one or more targets
 mpt ls <URL>                     list a directory
 mpt schemes                      print the table above
+mpt config check                 read the configuration file and print what it sets
   -v / -vv / -vvv   log level    --insecure   disable TLS verification    --password <pw>
+  --config <PATH>                configuration file (see below)
   --color auto|always|never      colored output (auto: only on a terminal, honours NO_COLOR)
   --password-file <PATH>  --password-stdin   read the password without putting it in argv
   --refuse-plaintext-auth        make unencrypted credentials an error instead of a warning
@@ -77,6 +79,76 @@ mpt schemes                      print the table above
 
 Ctrl-C stops a running copy: open connections are dropped, partial files are
 removed, every unfinished target reports `cancelled`, and the exit code is 130.
+
+## Configuration
+
+Everything that is not a source or a target can come from a TOML file, so
+recurring settings do not have to be repeated on every command line. The first
+of these that exists is read:
+
+1. `--config <path>` (an error if it does not exist)
+2. `$MPT_CONFIG` (likewise)
+3. `$XDG_CONFIG_HOME/mpt/config.toml`, else `~/.config/mpt/config.toml`
+
+`./mpt.toml` in the working directory is read in addition and wins over the
+user file, but only for `[defaults]` and `[policy]`: a directory one happens to
+stand in must not redirect a transfer or name a key. Other sections in it are
+ignored with a warning.
+
+The file never overrides what the caller says explicitly:
+
+```
+command-line flag  >  URL option  >  environment variable  >  configuration  >  built-in
+```
+
+```toml
+[defaults]                    # values for the flags of the same name
+timeout     = 60              # seconds of inactivity, 0 disables it
+cache       = false
+cache_limit = "256M"
+retries     = 0
+chunk       = "64K"
+queue       = 16
+atomic      = true            # finish through <name>.mpt-part
+hash        = "sha256"
+color       = "auto"          # auto | always | never
+log         = "warn"          # level, or RUST_LOG syntax; -v and RUST_LOG win
+
+[policy]                      # rules for every endpoint of the process
+known_hosts           = "strict"   # default for sftp/scp: strict|accept-new|off
+refuse_plaintext_auth = false      # ftp:// with a password, http Basic, smtp without TLS
+refuse_insecure_tls   = false      # refuse ?insecure=true instead of honouring it
+require_signature     = false      # --check must verify a signature as well
+
+[signing]                     # default for --sign
+key = "ssh:~/.ssh/id_ed25519"      # used when --sign only names the format
+agent_fingerprint = "SHA256:…"     # which ssh-agent identity to sign with
+
+[verify]                      # trusted keys for --check, when no --verify-* is given
+allowed_signers = "~/.config/mpt/allowed_signers"
+keyring         = "~/.config/mpt/trusted.asc"
+
+[ssh]                         # defaults for sftp:// and scp://
+user             = "deploy"
+key              = "~/.ssh/id_ed25519"
+known_hosts_file = "~/.ssh/known_hosts"
+hostkey          = ["SHA256:…"]    # pinned host keys, one string or a list
+
+[mail]                        # defaults for mailto: and smtp://
+smtp           = "smtp://user@mail.example.com:587?tls=starttls"
+from           = "reports@example.com"
+max_attachment = "25M"
+
+[s3]                          # defaults for s3://
+endpoint   = "https://minio.example.com"
+region     = "eu-central-1"
+path_style = true
+```
+
+Every string may contain `${VAR}`, which is replaced by that environment
+variable (an error if it is unset), and paths may start with `~/`. Unknown keys
+are an error rather than a silent typo — `mpt config check` reports them, shows
+which files were read and prints everything they set.
 
 ## Several targets at once
 

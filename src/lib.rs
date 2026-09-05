@@ -5,6 +5,7 @@
 //! exposes a [`Receiver`] (download / list) and a [`Sender`] (upload).
 //! Protocols that can only send (e-mail) simply return `None` for the receiver.
 
+pub mod config;
 pub mod endpoint;
 pub mod error;
 pub mod hash;
@@ -17,6 +18,7 @@ pub mod stream;
 pub mod tls;
 pub mod transfer;
 
+pub use config::Config;
 pub use endpoint::{Endpoint, Entry, Receiver, SendMeta, Sender};
 pub use error::{Error, Result};
 pub use hash::{DigestHandle, HashAlgo};

@@ -29,6 +29,19 @@ pub enum SignFormat {
 }
 
 impl SignFormat {
+    pub fn parse(s: &str) -> Result<Self> {
+        Ok(match s.trim().to_ascii_lowercase().as_str() {
+            "ssh" | "openssh" => SignFormat::Ssh,
+            "pgp" | "gpg" | "openpgp" => SignFormat::Pgp,
+            other => {
+                return Err(Error::invalid_option(
+                    "sign",
+                    format!("expected ssh[:<key>] or pgp:<key>, got '{other}'"),
+                ));
+            }
+        })
+    }
+
     /// Extension of the detached signature file (`x.sha256.sig` / `x.sha256.asc`).
     pub fn extension(self) -> &'static str {
         match self {
@@ -64,16 +77,7 @@ impl SignSpec {
             Some((f, k)) => (f, Some(k)),
             None => (s, None),
         };
-        let format = match fmt.trim().to_ascii_lowercase().as_str() {
-            "ssh" | "openssh" => SignFormat::Ssh,
-            "pgp" | "gpg" | "openpgp" => SignFormat::Pgp,
-            other => {
-                return Err(Error::invalid_option(
-                    "sign",
-                    format!("expected ssh[:<key>] or pgp:<key>, got '{other}'"),
-                ));
-            }
-        };
+        let format = SignFormat::parse(fmt)?;
         let key = key
             .map(str::trim)
             .filter(|k| !k.is_empty())
@@ -581,7 +585,9 @@ pub mod ssh {
                     .request_identities()
                     .await
                     .map_err(|e| Error::Auth(format!("ssh-agent: {e}")))?;
-                let wanted = std::env::var("MPT_SIGN_KEY_FINGERPRINT").ok();
+                let wanted = std::env::var("MPT_SIGN_KEY_FINGERPRINT")
+                    .ok()
+                    .or_else(|| crate::config::global().signing.agent_fingerprint.clone());
                 let identity = ids
                     .into_iter()
                     .find(|id| match &wanted {

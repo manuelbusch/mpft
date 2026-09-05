@@ -16,7 +16,9 @@ use std::time::Duration;
 
 use russh::client::{self, Handle};
 use russh::keys::agent::client::AgentClient;
-use russh::keys::known_hosts::{check_known_hosts, learn_known_hosts};
+use russh::keys::known_hosts::{
+    check_known_hosts, check_known_hosts_path, learn_known_hosts, learn_known_hosts_path,
+};
 use russh::keys::{
     HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate, load_secret_key,
 };
@@ -61,6 +63,8 @@ pub struct SshConfig {
     /// Expected host-key fingerprints (`SHA256:…`). Non-empty means the
     /// `known_hosts` file is not consulted at all.
     pub pinned_host_keys: Vec<String>,
+    /// `known_hosts` file to consult; `None` uses OpenSSH's own default.
+    pub known_hosts_file: Option<PathBuf>,
     /// Deadline for connecting and authenticating.
     pub timeout: Duration,
     /// Inactivity limit for the data streams; `None` disables it.
@@ -71,17 +75,20 @@ pub struct SshConfig {
 
 impl SshConfig {
     pub fn from_location(loc: &Location) -> Result<Self> {
+        let cfg = crate::config::global();
         let host = loc.host_required()?.to_string();
         let user = loc
             .username()
             .map(String::from)
             .or_else(|| std::env::var("MPT_SSH_USER").ok())
+            .or_else(|| cfg.ssh.user.clone())
             .or_else(|| std::env::var("USER").ok())
             .ok_or_else(|| Error::Auth("no user name in URL and $USER is unset".into()))?;
         let key_file = loc
             .opt("key")
             .map(String::from)
             .or_else(|| std::env::var("MPT_SSH_KEY").ok())
+            .or_else(|| cfg.ssh.key.clone())
             .filter(|s| !s.is_empty())
             .map(|s| PathBuf::from(expand_tilde(&s)));
         let key_passphrase = loc
@@ -93,6 +100,7 @@ impl SshConfig {
             .opt("known_hosts")
             .map(String::from)
             .or_else(|| std::env::var("MPT_SSH_KNOWN_HOSTS").ok())
+            .or_else(|| crate::policy::policy().known_hosts.clone())
         {
             Some(v) => KnownHostsPolicy::parse(&v)?,
             None => KnownHostsPolicy::Strict,
@@ -109,6 +117,11 @@ impl SshConfig {
                 pinned.push(normalize_fingerprint(part)?);
             }
         }
+        if pinned.is_empty() {
+            for v in &cfg.ssh.hostkey {
+                pinned.push(normalize_fingerprint(v)?);
+            }
+        }
         let timeout = loc.timeout_or(Duration::from_secs(30))?;
         // `?timeout=0` means "no inactivity limit" for the data streams; the
         // connect phase still needs a deadline.
@@ -122,6 +135,7 @@ impl SshConfig {
             key_passphrase,
             known_hosts,
             pinned_host_keys: pinned,
+            known_hosts_file: crate::config::path(&cfg.ssh.known_hosts_file),
             timeout,
             idle,
             connect_retries: loc.connect_retries()?,
@@ -148,6 +162,7 @@ impl SshConfig {
             port: self.port,
             policy: self.known_hosts,
             pinned: self.pinned_host_keys.clone(),
+            known_hosts_file: self.known_hosts_file.clone(),
             rejection: Arc::clone(&rejection),
         };
         debug!(host = %self.host, port = self.port, user = %self.user, "ssh connect");
@@ -295,6 +310,7 @@ pub struct ClientHandler {
     port: u16,
     policy: KnownHostsPolicy,
     pinned: Vec<String>,
+    known_hosts_file: Option<PathBuf>,
     /// Filled with the reason when a host key is refused, so that `connect`
     /// can report it instead of russh's generic "unknown key".
     rejection: Arc<Mutex<Option<String>>>,
@@ -303,6 +319,32 @@ pub struct ClientHandler {
 impl ClientHandler {
     /// Record why the host key was refused and return `false`. The reason
     /// travels out through `connect`, so it is only logged at debug level.
+    /// Look the host up in the configured `known_hosts` file, or in the one
+    /// OpenSSH itself would use.
+    fn check_known_hosts(
+        &self,
+        host: &str,
+        port: u16,
+        key: &PublicKey,
+    ) -> std::result::Result<bool, russh::keys::Error> {
+        match &self.known_hosts_file {
+            Some(path) => check_known_hosts_path(host, port, key, path),
+            None => check_known_hosts(host, port, key),
+        }
+    }
+
+    fn learn_known_hosts(
+        &self,
+        host: &str,
+        port: u16,
+        key: &PublicKey,
+    ) -> std::result::Result<(), russh::keys::Error> {
+        match &self.known_hosts_file {
+            Some(path) => learn_known_hosts_path(host, port, key, path),
+            None => learn_known_hosts(host, port, key),
+        }
+    }
+
     fn reject(&self, why: String) -> bool {
         debug!("{why}");
         if let Ok(mut slot) = self.rejection.lock() {
@@ -343,7 +385,7 @@ impl client::Handler for ClientHandler {
             warn!(%host, %fp, "host key not verified (known_hosts=off)");
             return Ok(true);
         }
-        match check_known_hosts(host, port, &key) {
+        match self.check_known_hosts(host, port, &key) {
             Ok(true) => {
                 debug!(%host, %fp, "host key found in known_hosts");
                 Ok(true)
@@ -351,7 +393,7 @@ impl client::Handler for ClientHandler {
             Ok(false) => match self.policy {
                 KnownHostsPolicy::AcceptNew => {
                     warn!("adding new host key for {host}:{port} to known_hosts: {fp}");
-                    if let Err(e) = learn_known_hosts(host, port, &key) {
+                    if let Err(e) = self.learn_known_hosts(host, port, &key) {
                         warn!("could not write known_hosts: {e}");
                     }
                     Ok(true)

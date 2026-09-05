@@ -53,9 +53,16 @@ impl MailEndpoint {
         let server = match self.loc.scheme() {
             Scheme::Smtp => self.loc.clone(),
             _ => {
-                let url = std::env::var("MPT_SMTP_URL").map_err(|_| {
-                    Error::Auth("mailto: requires MPT_SMTP_URL (e.g. smtp://user@mail.example.com:587?tls=starttls)".into())
-                })?;
+                let url = std::env::var("MPT_SMTP_URL")
+                    .ok()
+                    .or_else(|| crate::config::global().mail.smtp.clone())
+                    .ok_or_else(|| {
+                        Error::Auth(
+                            "mailto: requires MPT_SMTP_URL or [mail] smtp in the configuration \
+                             (e.g. smtp://user@mail.example.com:587?tls=starttls)"
+                                .into(),
+                        )
+                    })?;
                 let mut s = Location::parse(&url)?;
                 if s.scheme() != Scheme::Smtp {
                     return Err(Error::InvalidUrl(format!(
@@ -103,6 +110,12 @@ impl MailEndpoint {
         std::env::var("MPT_MAIL_MAX_ATTACHMENT")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
+            .or_else(|| {
+                let v = crate::config::global().mail.max_attachment.as_deref()?;
+                crate::config::parse_size(v)
+                    .map_err(|e| tracing::warn!("[mail] max_attachment: {e}"))
+                    .ok()
+            })
             .unwrap_or(DEFAULT_MAX_ATTACHMENT)
     }
 
@@ -147,6 +160,7 @@ impl MailEndpoint {
             .opt(server, "from")
             .map(String::from)
             .or_else(|| std::env::var("MPT_MAIL_FROM").ok())
+            .or_else(|| crate::config::global().mail.from.clone())
             .or_else(|| {
                 server
                     .username()
