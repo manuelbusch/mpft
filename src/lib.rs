@@ -1,0 +1,38 @@
+//! Multi-protocol file transceiver.
+//!
+//! Every endpoint is a URL with a protocol prefix (`sftp://`, `ftps://`, `s3://`,
+//! `mailto:` ...). [`open`] turns a URL into an [`Endpoint`], which optionally
+//! exposes a [`Receiver`] (download / list) and a [`Sender`] (upload).
+//! Protocols that can only send (e-mail) simply return `None` for the receiver.
+
+pub mod endpoint;
+pub mod error;
+pub mod location;
+pub mod protocols;
+pub mod stream;
+#[cfg(feature = "ftp")]
+pub mod tls;
+pub mod transfer;
+
+pub use endpoint::{Endpoint, Entry, Receiver, SendMeta, Sender};
+pub use error::{Error, Result};
+pub use location::{Location, Scheme};
+pub use stream::ByteStream;
+pub use transfer::{CopyReport, copy};
+
+/// Parse a URL (or bare local path) and open the matching protocol endpoint.
+///
+/// No network connection is made here; connections are established lazily by
+/// the individual operations.
+pub fn open(url: &str) -> Result<Box<dyn Endpoint>> {
+    let loc = Location::parse(url)?;
+    protocols::open(loc)
+}
+
+/// Install the process-wide rustls crypto provider (aws-lc-rs).
+///
+/// Several dependencies (reqwest, lettre, suppaftp, object_store) build rustls
+/// configs and panic if no default provider is installed. Idempotent.
+pub fn init_crypto() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+}
