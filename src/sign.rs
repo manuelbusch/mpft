@@ -12,6 +12,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 
@@ -113,8 +114,82 @@ pub trait Signer: Send + Sync {
 /// Verifies detached signatures against a set of trusted keys.
 pub trait Verifier: Send + Sync {
     fn format(&self) -> SignFormat;
+
     /// Returns the identity of the trusted key that produced `signature`.
-    fn verify(&self, message: &[u8], signature: &[u8]) -> Result<String>;
+    /// Validity windows are checked against the current time.
+    fn verify(&self, message: &[u8], signature: &[u8]) -> Result<String> {
+        self.verify_at(message, signature, SystemTime::now())
+    }
+
+    /// Like [`Verifier::verify`], but checks key and signer validity against
+    /// `at` instead of now (the signing time recorded in the checksum file).
+    fn verify_at(&self, message: &[u8], signature: &[u8], at: SystemTime) -> Result<String>;
+}
+
+/// Parse an OpenSSH `allowed_signers` timestamp: `YYYYMMDD`, `YYYYMMDDHHMM`
+/// or `YYYYMMDDHHMMSS`, with an optional `Z`. Always read as UTC.
+fn parse_ssh_time(raw: &str) -> Result<SystemTime> {
+    let v = raw.trim().trim_end_matches(['Z', 'z']);
+    let bad = || {
+        Error::InvalidUrl(format!(
+            "'{raw}' is not an allowed_signers timestamp (YYYYMMDD[HHMM[SS]])"
+        ))
+    };
+    if !matches!(v.len(), 8 | 12 | 14) || !v.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(bad());
+    }
+    let num = |a: usize, b: usize| v[a..b].parse::<i64>().map_err(|_| bad());
+    let (y, m, d) = (num(0, 4)?, num(4, 6)?, num(6, 8)?);
+    let (hh, mm, ss) = match v.len() {
+        8 => (0, 0, 0),
+        12 => (num(8, 10)?, num(10, 12)?, 0),
+        _ => (num(8, 10)?, num(10, 12)?, num(12, 14)?),
+    };
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || hh > 23 || mm > 59 || ss > 60 {
+        return Err(bad());
+    }
+    let secs = days_from_civil(y, m, d) * 86_400 + hh * 3600 + mm * 60 + ss;
+    if secs < 0 {
+        return Err(bad());
+    }
+    Ok(UNIX_EPOCH + Duration::from_secs(secs as u64))
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant\'s
+/// `days_from_civil`).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Human-readable UTC date for error messages, without pulling in a date crate.
+fn fmt_time(t: SystemTime) -> String {
+    let secs = t
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Inverse of days_from_civil.
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rest / 3600,
+        (rest % 3600) / 60,
+        rest % 60
+    )
 }
 
 /// Trusted keys for verification.
@@ -265,22 +340,34 @@ pub mod ssh {
         Ok(key)
     }
 
+    /// One usable line of an `allowed_signers` file.
+    pub struct SignerEntry {
+        principals: String,
+        key: PublicKey,
+        /// `namespaces="a,b"`; `None` means every namespace is allowed.
+        namespaces: Option<Vec<String>>,
+        valid_after: Option<SystemTime>,
+        valid_before: Option<SystemTime>,
+    }
+
     /// Verifier backed by an OpenSSH `allowed_signers` file.
     pub struct AllowedSigners {
-        entries: Vec<(String, PublicKey)>,
+        entries: Vec<SignerEntry>,
     }
 
     impl AllowedSigners {
         pub fn parse(text: &str) -> Result<Self> {
             let mut entries = Vec::new();
+            let mut skipped = 0usize;
             for (n, line) in text.lines().enumerate() {
                 let line = line.trim();
                 if line.is_empty() || line.starts_with('#') {
                     continue;
                 }
+                let n = n + 1;
                 let tokens: Vec<&str> = line.split_whitespace().collect();
                 let principals = tokens[0].to_string();
-                // Skip options (cert-authority, namespaces="...", valid-after=...) up to the key type.
+                // Everything between the principals and the key type is options.
                 let Some(idx) = tokens
                     .iter()
                     .skip(1)
@@ -288,27 +375,99 @@ pub mod ssh {
                     .map(|i| i + 1)
                 else {
                     return Err(Error::InvalidUrl(format!(
-                        "allowed_signers line {}: no key found",
-                        n + 1
+                        "allowed_signers line {n}: no key found"
                     )));
                 };
                 if tokens.len() < idx + 2 {
                     return Err(Error::InvalidUrl(format!(
-                        "allowed_signers line {}: truncated key",
-                        n + 1
+                        "allowed_signers line {n}: truncated key"
                     )));
                 }
                 let key_text = tokens[idx..].join(" ");
-                let key = PublicKey::from_openssh(&key_text).map_err(|e| {
-                    Error::InvalidUrl(format!("allowed_signers line {}: {e}", n + 1))
-                })?;
-                entries.push((principals, key));
+                let key = PublicKey::from_openssh(&key_text)
+                    .map_err(|e| Error::InvalidUrl(format!("allowed_signers line {n}: {e}")))?;
+
+                let mut entry = SignerEntry {
+                    principals,
+                    key,
+                    namespaces: None,
+                    valid_after: None,
+                    valid_before: None,
+                };
+                let mut is_ca = false;
+                for (name, value) in split_options(&tokens[1..idx].join(" ")) {
+                    match name.as_str() {
+                        // A CA line delegates trust to certificates, which this
+                        // program cannot check — never treat it as a plain key.
+                        "cert-authority" => is_ca = true,
+                        "namespaces" => {
+                            entry.namespaces = Some(
+                                value
+                                    .unwrap_or_default()
+                                    .split(',')
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty())
+                                    .collect(),
+                            )
+                        }
+                        "valid-after" => {
+                            entry.valid_after = Some(parse_ssh_time(&value.unwrap_or_default())?)
+                        }
+                        "valid-before" => {
+                            entry.valid_before = Some(parse_ssh_time(&value.unwrap_or_default())?)
+                        }
+                        other => {
+                            tracing::warn!("allowed_signers line {n}: ignoring option '{other}'")
+                        }
+                    }
+                }
+                if is_ca {
+                    tracing::warn!(
+                        "allowed_signers line {n}: skipping cert-authority entry \
+                         (certificate signatures are not supported)"
+                    );
+                    skipped += 1;
+                    continue;
+                }
+                entries.push(entry);
             }
             if entries.is_empty() {
-                return Err(Error::InvalidUrl("allowed_signers: no keys".into()));
+                return Err(Error::InvalidUrl(if skipped > 0 {
+                    format!(
+                        "allowed_signers: only cert-authority entries ({skipped}), no usable keys"
+                    )
+                } else {
+                    "allowed_signers: no keys".into()
+                }));
             }
             Ok(AllowedSigners { entries })
         }
+    }
+
+    /// Split an `allowed_signers` option list on commas outside quotes and
+    /// return `(name, value)` pairs with the quotes removed.
+    fn split_options(blob: &str) -> Vec<(String, Option<String>)> {
+        let mut out = Vec::new();
+        let mut cur = String::new();
+        let mut quoted = false;
+        for c in blob.chars() {
+            match c {
+                '"' => quoted = !quoted,
+                ',' if !quoted => {
+                    out.push(std::mem::take(&mut cur));
+                }
+                _ => cur.push(c),
+            }
+        }
+        out.push(cur);
+        out.into_iter()
+            .map(|o| o.trim().to_string())
+            .filter(|o| !o.is_empty())
+            .map(|o| match o.split_once('=') {
+                Some((k, v)) => (k.trim().to_ascii_lowercase(), Some(v.trim().to_string())),
+                None => (o.to_ascii_lowercase(), None),
+            })
+            .collect()
     }
 
     fn is_key_type(t: &str) -> bool {
@@ -319,7 +478,8 @@ pub mod ssh {
         fn format(&self) -> SignFormat {
             SignFormat::Ssh
         }
-        fn verify(&self, message: &[u8], signature: &[u8]) -> Result<String> {
+
+        fn verify_at(&self, message: &[u8], signature: &[u8], at: SystemTime) -> Result<String> {
             let sig = SshSig::from_pem(signature)
                 .map_err(|e| Error::Remote(format!("invalid SSH signature: {e}")))?;
             if sig.namespace() != SSH_NAMESPACE {
@@ -328,22 +488,64 @@ pub mod ssh {
                     sig.namespace()
                 )));
             }
-            let Some((principals, key)) = self
+            let matching: Vec<&SignerEntry> = self
                 .entries
                 .iter()
-                .find(|(_, k)| k.key_data() == sig.public_key())
-            else {
+                .filter(|e| e.key.key_data() == sig.public_key())
+                .collect();
+            if matching.is_empty() {
                 let fp = PublicKey::from(sig.public_key().clone()).fingerprint(HashAlg::Sha256);
                 return Err(Error::Auth(format!(
                     "signature made by {fp}, which is not in allowed_signers"
                 )));
-            };
-            key.verify(SSH_NAMESPACE, message, &sig)
-                .map_err(|e| Error::Auth(format!("SSH signature invalid: {e}")))?;
-            Ok(format!(
-                "{principals} ({})",
-                key.fingerprint(HashAlg::Sha256)
-            ))
+            }
+            let mut why = Vec::new();
+            for entry in matching {
+                if let Some(ns) = &entry.namespaces
+                    && !ns.iter().any(|n| n == SSH_NAMESPACE)
+                {
+                    why.push(format!(
+                        "{}: key is limited to namespaces {}",
+                        entry.principals,
+                        ns.join(",")
+                    ));
+                    continue;
+                }
+                if let Some(after) = entry.valid_after
+                    && at < after
+                {
+                    why.push(format!(
+                        "{}: key is only valid after {}",
+                        entry.principals,
+                        fmt_time(after)
+                    ));
+                    continue;
+                }
+                if let Some(before) = entry.valid_before
+                    && at >= before
+                {
+                    why.push(format!(
+                        "{}: key expired at {}",
+                        entry.principals,
+                        fmt_time(before)
+                    ));
+                    continue;
+                }
+                entry
+                    .key
+                    .verify(SSH_NAMESPACE, message, &sig)
+                    .map_err(|e| Error::Auth(format!("SSH signature invalid: {e}")))?;
+                return Ok(format!(
+                    "{} ({})",
+                    entry.principals,
+                    entry.key.fingerprint(HashAlg::Sha256)
+                ));
+            }
+            Err(Error::Auth(format!(
+                "signature rejected at {}: {}",
+                fmt_time(at),
+                why.join("; ")
+            )))
         }
     }
 
@@ -452,6 +654,7 @@ pub mod pgp {
         ArmorOptions, Deserializable, DetachedSignature, SignedPublicKey, SignedSecretKey,
     };
     use ::pgp::crypto::hash::HashAlgorithm;
+    use ::pgp::packet::{Signature, SignatureType};
     use ::pgp::types::{KeyDetails, Password};
 
     pub struct PgpSigner {
@@ -538,13 +741,87 @@ pub mod pgp {
         pub fn parse(bytes: &[u8]) -> Result<Self> {
             let (iter, _) = SignedPublicKey::from_armor_many(std::io::Cursor::new(bytes))
                 .map_err(|e| Error::InvalidUrl(format!("keyring: {e}")))?;
-            let keys = iter
+            let parsed = iter
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(|e| Error::InvalidUrl(format!("keyring: {e}")))?;
-            if keys.is_empty() {
+            if parsed.is_empty() {
                 return Err(Error::InvalidUrl("keyring: no public keys".into()));
             }
+            // Only keys whose own self-signatures check out, and which have not
+            // been revoked, are trusted.
+            let mut keys = Vec::new();
+            let mut dropped = 0usize;
+            for key in parsed {
+                let fp = key.primary_key.fingerprint();
+                if let Err(e) = key.verify_bindings() {
+                    tracing::warn!(
+                        "keyring: ignoring {fp}, its self-signatures do not verify: {e}"
+                    );
+                    dropped += 1;
+                    continue;
+                }
+                if !key.details.revocation_signatures.is_empty() {
+                    tracing::warn!("keyring: ignoring revoked key {fp}");
+                    dropped += 1;
+                    continue;
+                }
+                keys.push(key);
+            }
+            if keys.is_empty() {
+                return Err(Error::InvalidUrl(format!(
+                    "keyring: no usable public keys ({dropped} revoked or unverifiable)"
+                )));
+            }
             Ok(Keyring { keys })
+        }
+    }
+
+    /// Expiry of a key component: creation time plus the expiration subpacket
+    /// of its newest self-signature.
+    fn expiry_of<'a>(
+        created: SystemTime,
+        sigs: impl Iterator<Item = &'a Signature>,
+    ) -> Option<SystemTime> {
+        let mut newest: Option<(SystemTime, Duration)> = None;
+        for sig in sigs {
+            let Some(exp) = sig.key_expiration_time() else {
+                continue;
+            };
+            let exp: Duration = exp.into();
+            if exp.is_zero() {
+                continue;
+            }
+            let made = sig.created().map(SystemTime::from).unwrap_or(UNIX_EPOCH);
+            if newest.as_ref().is_none_or(|(t, _)| made >= *t) {
+                newest = Some((made, exp));
+            }
+        }
+        newest.map(|(_, exp)| created + exp)
+    }
+
+    fn revoked(sigs: &[Signature]) -> bool {
+        sigs.iter().any(|s| {
+            matches!(
+                s.typ(),
+                Some(SignatureType::KeyRevocation)
+                    | Some(SignatureType::SubkeyRevocation)
+                    | Some(SignatureType::CertRevocation)
+            )
+        })
+    }
+
+    /// `None` when the component was usable at `at`, otherwise the reason.
+    fn invalid_at(
+        created: SystemTime,
+        expiry: Option<SystemTime>,
+        at: SystemTime,
+    ) -> Option<String> {
+        if at < created {
+            return Some(format!("key was only created at {}", fmt_time(created)));
+        }
+        match expiry {
+            Some(exp) if at >= exp => Some(format!("key expired at {}", fmt_time(exp))),
+            _ => None,
         }
     }
 
@@ -552,9 +829,18 @@ pub mod pgp {
         fn format(&self) -> SignFormat {
             SignFormat::Pgp
         }
-        fn verify(&self, message: &[u8], signature: &[u8]) -> Result<String> {
+
+        fn verify_at(&self, message: &[u8], signature: &[u8], at: SystemTime) -> Result<String> {
             let (sig, _) = DetachedSignature::from_armor_single(std::io::Cursor::new(signature))
                 .map_err(|e| Error::Remote(format!("invalid OpenPGP signature: {e}")))?;
+            // The key must have been valid when the signature was made; a
+            // signature that claims a future date is judged at `at`.
+            let made = sig
+                .signature
+                .created()
+                .map(SystemTime::from)
+                .filter(|t| *t <= at)
+                .unwrap_or(at);
             let issuers: Vec<String> = sig
                 .signature
                 .issuer_fingerprint()
@@ -567,7 +853,14 @@ pub mod pgp {
                 .iter()
                 .map(|k| k.to_string())
                 .collect();
+            let mut why: Vec<String> = Vec::new();
             for key in &self.keys {
+                let self_sigs = || {
+                    key.details
+                        .direct_signatures
+                        .iter()
+                        .chain(key.details.users.iter().flat_map(|u| u.signatures.iter()))
+                };
                 // Primary key or any subkey that matches the issuer.
                 let primary_matches = issuers
                     .iter()
@@ -575,19 +868,42 @@ pub mod pgp {
                     || issuer_ids
                         .iter()
                         .any(|k| *k == key.primary_key.legacy_key_id().to_string());
-                if primary_matches && sig.verify(key, message).is_ok() {
-                    return Ok(format!(
-                        "{} {}",
-                        user_id(&key.details),
-                        key.primary_key.fingerprint()
-                    ));
+                if primary_matches {
+                    let created = SystemTime::from(key.primary_key.created_at());
+                    match invalid_at(created, expiry_of(created, self_sigs()), made) {
+                        Some(reason) => {
+                            why.push(format!("{}: {reason}", key.primary_key.fingerprint()))
+                        }
+                        None if sig.verify(key, message).is_ok() => {
+                            return Ok(format!(
+                                "{} {}",
+                                user_id(&key.details),
+                                key.primary_key.fingerprint()
+                            ));
+                        }
+                        None => {}
+                    }
                 }
                 for sub in &key.public_subkeys {
                     let m = issuers.iter().any(|f| *f == sub.fingerprint().to_string())
                         || issuer_ids
                             .iter()
                             .any(|k| *k == sub.legacy_key_id().to_string());
-                    if m && sig.verify(sub, message).is_ok() {
+                    if !m {
+                        continue;
+                    }
+                    if revoked(&sub.signatures) {
+                        why.push(format!("subkey {} is revoked", sub.fingerprint()));
+                        continue;
+                    }
+                    let created = SystemTime::from(sub.created_at());
+                    if let Some(reason) =
+                        invalid_at(created, expiry_of(created, sub.signatures.iter()), made)
+                    {
+                        why.push(format!("subkey {}: {reason}", sub.fingerprint()));
+                        continue;
+                    }
+                    if sig.verify(sub, message).is_ok() {
                         return Ok(format!(
                             "{} {} (subkey {})",
                             user_id(&key.details),
@@ -602,8 +918,15 @@ pub mod pgp {
                 .or(issuer_ids.first())
                 .cloned()
                 .unwrap_or_else(|| "unknown key".into());
+            if why.is_empty() {
+                return Err(Error::Auth(format!(
+                    "OpenPGP signature by {who} is not valid for any key in the keyring"
+                )));
+            }
             Err(Error::Auth(format!(
-                "OpenPGP signature by {who} is not valid for any key in the keyring"
+                "OpenPGP signature by {who} rejected (signed {}): {}",
+                fmt_time(made),
+                why.join("; ")
             )))
         }
     }
@@ -612,6 +935,30 @@ pub mod pgp {
         let bytes = std::fs::read(path)
             .map_err(|e| Error::Auth(format!("cannot read {}: {e}", path.display())))?;
         Ok(Arc::new(Keyring::parse(&bytes)?))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn validity_window() {
+            let t0 = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+            let day = Duration::from_secs(86_400);
+            assert!(invalid_at(t0, None, t0).is_none());
+            assert!(invalid_at(t0, None, t0 + day).is_none());
+            assert!(
+                invalid_at(t0, None, t0 - Duration::from_secs(1))
+                    .unwrap()
+                    .contains("only created at")
+            );
+            assert!(invalid_at(t0, Some(t0 + day), t0 + Duration::from_secs(60)).is_none());
+            assert!(
+                invalid_at(t0, Some(t0 + day), t0 + day)
+                    .unwrap()
+                    .contains("expired at")
+            );
+        }
     }
 }
 
@@ -751,6 +1098,180 @@ mod tests {
                 .unwrap()
                 .starts_with("alice@example.com")
         );
+    }
+
+    #[test]
+    fn ssh_timestamps() {
+        // 2024-02-29T12:30:45Z — leap day, so the civil-date maths is exercised.
+        let t = parse_ssh_time("20240229123045").unwrap();
+        assert_eq!(fmt_time(t), "2024-02-29T12:30:45Z");
+        assert_eq!(
+            fmt_time(parse_ssh_time("19700101").unwrap()),
+            "1970-01-01T00:00:00Z"
+        );
+        assert_eq!(
+            fmt_time(parse_ssh_time("20991231Z").unwrap()),
+            "2099-12-31T00:00:00Z"
+        );
+        assert_eq!(
+            fmt_time(parse_ssh_time("202412311800").unwrap()),
+            "2024-12-31T18:00:00Z"
+        );
+        assert!(parse_ssh_time("20240229123045").unwrap() > parse_ssh_time("20240229").unwrap());
+        for bad in [
+            "",
+            "2024",
+            "20241301",
+            "20240100",
+            "2024123118",
+            "20240101246000",
+            "abcdefgh",
+        ] {
+            assert!(parse_ssh_time(bad).is_err(), "{bad} should be rejected");
+        }
+    }
+
+    #[cfg(feature = "sign-ssh")]
+    #[tokio::test]
+    async fn allowed_signers_options_are_enforced() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(key_path) = keygen(dir.path(), "id_ed25519") else {
+            eprintln!("skipping: ssh-keygen not available");
+            return;
+        };
+        let pub_line = std::fs::read_to_string(dir.path().join("id_ed25519.pub")).unwrap();
+        let pub_line = pub_line.trim().to_string();
+        let msg = b"deadbeef  report.pdf\n";
+        let signer = load_signer(&SignSpec {
+            format: SignFormat::Ssh,
+            key: Some(key_path),
+            passphrase: None,
+        })
+        .await
+        .unwrap();
+        let sig = signer.sign(msg).await.unwrap();
+
+        let verify = |line: &str| -> Result<String> {
+            let f = dir.path().join("signers");
+            std::fs::write(&f, format!("{line}\n")).unwrap();
+            load_verifier(&VerifySpec::SshAllowedSigners(f))?.verify(msg, &sig)
+        };
+
+        // A window that contains today, and no options at all, both work.
+        assert!(verify(&format!("alice {pub_line}")).is_ok());
+        assert!(
+            verify(&format!(
+                "alice valid-after=\"20200101\",valid-before=\"20990101\" {pub_line}"
+            ))
+            .is_ok()
+        );
+        // Windows in the past or the future are refused.
+        let e = verify(&format!("alice valid-before=\"20200101\" {pub_line}")).unwrap_err();
+        assert!(e.to_string().contains("expired at 2020-01-01"), "{e}");
+        let e = verify(&format!("alice valid-after=\"20990101\" {pub_line}")).unwrap_err();
+        assert!(e.to_string().contains("only valid after 2099-01-01"), "{e}");
+        // The namespace must include the one we sign in.
+        let e = verify(&format!("alice namespaces=\"git,shell\" {pub_line}")).unwrap_err();
+        assert!(e.to_string().contains("limited to namespaces"), "{e}");
+        assert!(verify(&format!("alice namespaces=\"git,file\" {pub_line}")).is_ok());
+        // Certificate authorities are not honoured as plain signing keys.
+        let e = verify(&format!("alice cert-authority {pub_line}")).unwrap_err();
+        assert!(e.to_string().contains("cert-authority"), "{e}");
+        // …but they do not invalidate the rest of the file.
+        assert!(verify(&format!("ca cert-authority {pub_line}\nalice {pub_line}")).is_ok());
+        // Unknown options are ignored, not fatal.
+        assert!(verify(&format!("alice verify-time=\"20240101\" {pub_line}")).is_ok());
+    }
+
+    #[cfg(feature = "sign-pgp")]
+    #[tokio::test]
+    async fn pgp_key_outside_its_validity_is_rejected() {
+        use ::pgp::composed::{ArmorOptions, KeyType, SecretKeyParamsBuilder, SignedPublicKey};
+        use ::pgp::types::Timestamp;
+        let created = SystemTime::now() + Duration::from_secs(3 * 86_400);
+        let params = SecretKeyParamsBuilder::default()
+            .key_type(KeyType::Ed25519Legacy)
+            .can_sign(true)
+            .created_at(Timestamp::try_from(created).unwrap())
+            .primary_user_id("Future <future@example.com>".to_string())
+            .build()
+            .unwrap();
+        let secret = params.generate(rand::thread_rng()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let sec_path = dir.path().join("sec.asc");
+        std::fs::write(
+            &sec_path,
+            secret.to_armored_string(ArmorOptions::default()).unwrap(),
+        )
+        .unwrap();
+        let public: SignedPublicKey = secret.clone().into();
+        let pub_path = dir.path().join("pub.asc");
+        std::fs::write(
+            &pub_path,
+            public.to_armored_string(ArmorOptions::default()).unwrap(),
+        )
+        .unwrap();
+
+        let signer = load_signer(&SignSpec {
+            format: SignFormat::Pgp,
+            key: Some(sec_path),
+            passphrase: None,
+        })
+        .await
+        .unwrap();
+        let msg = b"deadbeef  report.pdf\n";
+        let sig = signer.sign(msg).await.unwrap();
+        let verifier = load_verifier(&VerifySpec::PgpKeyring(pub_path)).unwrap();
+
+        // The key claims to be created in three days, so nothing it signs is
+        // acceptable today.
+        let e = verifier.verify(msg, &sig).unwrap_err();
+        assert!(e.to_string().contains("only created at"), "{e}");
+    }
+
+    /// A signature is judged against the moment it claims to have been made,
+    /// capped at the verification time; before the key existed it is refused.
+    #[cfg(feature = "sign-pgp")]
+    #[tokio::test]
+    async fn pgp_signature_before_key_creation_is_rejected() {
+        use ::pgp::composed::{ArmorOptions, KeyType, SecretKeyParamsBuilder, SignedPublicKey};
+        let params = SecretKeyParamsBuilder::default()
+            .key_type(KeyType::Ed25519Legacy)
+            .can_sign(true)
+            .primary_user_id("Carol <carol@example.com>".to_string())
+            .build()
+            .unwrap();
+        let secret = params.generate(rand::thread_rng()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let sec_path = dir.path().join("sec.asc");
+        std::fs::write(
+            &sec_path,
+            secret.to_armored_string(ArmorOptions::default()).unwrap(),
+        )
+        .unwrap();
+        let public: SignedPublicKey = secret.clone().into();
+        let pub_path = dir.path().join("pub.asc");
+        std::fs::write(
+            &pub_path,
+            public.to_armored_string(ArmorOptions::default()).unwrap(),
+        )
+        .unwrap();
+
+        let signer = load_signer(&SignSpec {
+            format: SignFormat::Pgp,
+            key: Some(sec_path),
+            passphrase: None,
+        })
+        .await
+        .unwrap();
+        let msg = b"deadbeef  report.pdf\n";
+        let sig = signer.sign(msg).await.unwrap();
+        let verifier = load_verifier(&VerifySpec::PgpKeyring(pub_path)).unwrap();
+        assert!(verifier.verify(msg, &sig).is_ok());
+
+        let long_ago = SystemTime::now() - Duration::from_secs(10 * 86_400);
+        let e = verifier.verify_at(msg, &sig, long_ago).unwrap_err();
+        assert!(e.to_string().contains("only created at"), "{e}");
     }
 
     #[cfg(feature = "sign-pgp")]

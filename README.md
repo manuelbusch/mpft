@@ -166,6 +166,13 @@ third attachment.
 Encrypted key files take their passphrase from `MPT_SIGN_KEY_PASSPHRASE`;
 `MPT_SIGN_KEY_FINGERPRINT` selects a specific ssh-agent identity.
 
+`allowed_signers` options are honoured: `namespaces="…"` must include `file`,
+`valid-after=`/`valid-before=` (`YYYYMMDD[HHMM[SS]]`, read as UTC) must contain
+the time of verification, and `cert-authority` lines are skipped, because
+certificate signatures are not checked. For OpenPGP the keyring's
+self-signatures are verified on load; revoked keys and subkeys, and keys that
+were not yet valid or had expired when the signature was made, are refused.
+
 On the receiving side `--verify-signers <allowed_signers>` (OpenSSH) or
 `--verify-keyring <pubkeys.asc>` (OpenPGP) imply `--check`, require the
 signature next to the source's checksum file and reject the transfer **before
