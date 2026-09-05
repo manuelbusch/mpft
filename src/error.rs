@@ -31,6 +31,10 @@ pub enum Error {
     #[error("remote error: {0}")]
     Remote(String),
 
+    /// A signature could not be verified, or its signer is not trusted.
+    #[error("signature: {0}")]
+    Signature(String),
+
     /// The transferred content does not match the expected checksum.
     #[error("{algo} checksum mismatch: expected {expected}, got {actual}")]
     ChecksumMismatch {
@@ -102,6 +106,7 @@ impl Error {
                 | Error::UnsupportedScheme(_)
                 | Error::UnsupportedOperation { .. }
                 | Error::ChecksumMismatch { .. }
+                | Error::Signature(_)
                 | Error::Cancelled
         )
     }

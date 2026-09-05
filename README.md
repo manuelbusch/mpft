@@ -122,6 +122,7 @@ refuse_plaintext_auth = false      # ftp:// with a password, http Basic, smtp wi
 refuse_insecure_tls   = false      # refuse ?insecure=true instead of honouring it
 require_signature     = false      # --check must verify a signature as well
 strict_permissions    = false      # a readable file with credentials is an error
+max_signature_age     = "0"        # refuse signatures older than e.g. "7d"; 0 = no limit
 
 [signing]                     # default for --sign
 key = "ssh:~/.ssh/id_ed25519"      # used when --sign only names the format
@@ -397,11 +398,30 @@ signature next to the source's checksum file and reject the transfer **before
 any data is copied** when the signature is missing, invalid or made by a key
 that is not trusted. The signer's identity is printed on success.
 
+### Signing time
+
+A signed checksum file carries a second line with the moment it was signed:
+
+```
+9f2b…  report.pdf
+# mpt-signed-at: 2026-09-09T05:12:44Z
+```
+
+It is a comment, so `sha256sum -c` and `b3sum -c` ignore it, and it is covered
+by the signature, so it cannot be changed unnoticed. Two things use it:
+
+* the signer is judged as it stood **at that moment**, not as it stands now, so
+  a key that has expired or been revoked since then still verifies for what it
+  signed before;
+* `[policy] max_signature_age = "7d"` refuses a signature older than that, which
+  is what keeps an old but validly signed file from being replayed in place of
+  the current one. With the policy set, a checksum file without a signing time
+  is refused as well.
+
 Both backends are verified against the reference tools in the test-suite:
 OpenSSH accepts mpt's signatures and vice versa, and `gpg --verify` accepts
-mpt's OpenPGP signatures. A signature proves origin and integrity, not
-freshness: an old, validly signed file can be re-delivered. Cargo features
-`sign-ssh` and `sign-pgp` (both default) select the backends.
+mpt's OpenPGP signatures. Cargo features `sign-ssh` and `sign-pgp` (both
+default) select the backends.
 
 ## Library
 

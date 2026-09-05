@@ -25,6 +25,9 @@ pub struct Policy {
     /// A configuration file with credentials that others can read is an
     /// error rather than a warning.
     pub strict_permissions: bool,
+    /// How old a signature may be, judged against the signing time recorded
+    /// in the checksum file. `None` puts no limit on it.
+    pub max_signature_age: Option<std::time::Duration>,
     /// Default host-key policy for SSH (`strict`, `accept-new`, `off`).
     pub known_hosts: Option<String>,
 }

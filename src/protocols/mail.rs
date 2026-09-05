@@ -257,7 +257,11 @@ impl Sender for MailEndpoint {
             .singlepart(Attachment::new(filename.clone()).body(data, content_type));
         if let Some((algo, hex)) = &checksum {
             let sidecar = algo.sidecar_name(&filename);
-            let content = crate::hash::sidecar_content(hex, &filename);
+            let content = crate::hash::sidecar_content_at(
+                hex,
+                &filename,
+                meta.signer.as_ref().map(|_| std::time::SystemTime::now()),
+            );
             parts = parts.singlepart(
                 Attachment::new(sidecar.clone()).body(content.clone(), ContentType::TEXT_PLAIN),
             );

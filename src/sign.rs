@@ -174,8 +174,9 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-/// Human-readable UTC date for error messages, without pulling in a date crate.
-fn fmt_time(t: SystemTime) -> String {
+/// UTC timestamp in RFC 3339, without pulling in a date crate. Used in
+/// messages and for the signing time in checksum files.
+pub fn format_time(t: SystemTime) -> String {
     let secs = t
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -197,6 +198,59 @@ fn fmt_time(t: SystemTime) -> String {
         (rest % 3600) / 60,
         rest % 60
     )
+}
+
+/// Read back what [`format_time`] wrote: `YYYY-MM-DDTHH:MM:SSZ`, and the
+/// same with a numeric offset or fractional seconds, as other tools write it.
+pub fn parse_time(raw: &str) -> Result<SystemTime> {
+    let v = raw.trim();
+    let bad = || Error::InvalidUrl(format!("'{raw}' is not an RFC 3339 timestamp"));
+    if v.len() < 19 || !v.is_char_boundary(19) {
+        return Err(bad());
+    }
+    let (date, time) = v.split_at(10);
+    let mut rest = &time[1..];
+    if !matches!(
+        time.as_bytes().first(),
+        Some(b'T') | Some(b't') | Some(b' ')
+    ) {
+        return Err(bad());
+    }
+    let num = |s: &str| s.parse::<i64>().map_err(|_| bad());
+    let (y, m, d) = match (date.get(0..4), date.get(5..7), date.get(8..10)) {
+        (Some(y), Some(m), Some(d)) if date.as_bytes()[4] == b'-' && date.as_bytes()[7] == b'-' => {
+            (num(y)?, num(m)?, num(d)?)
+        }
+        _ => return Err(bad()),
+    };
+    let (hh, mm, ss) = match (rest.get(0..2), rest.get(3..5), rest.get(6..8)) {
+        (Some(h), Some(mi), Some(s)) => (num(h)?, num(mi)?, num(s)?),
+        _ => return Err(bad()),
+    };
+    rest = &rest[8..];
+    // Fractional seconds are accepted and dropped.
+    if let Some(f) = rest.strip_prefix('.') {
+        let digits = f.bytes().take_while(u8::is_ascii_digit).count();
+        rest = &f[digits..];
+    }
+    let offset = match rest.as_bytes() {
+        [] | [b'Z'] | [b'z'] => 0,
+        [sign @ (b'+' | b'-'), ..] if rest.len() >= 6 => {
+            let h = num(&rest[1..3])?;
+            let m = num(&rest[4..6])?;
+            let secs = h * 3600 + m * 60;
+            if *sign == b'-' { -secs } else { secs }
+        }
+        _ => return Err(bad()),
+    };
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || hh > 23 || mm > 59 || ss > 60 {
+        return Err(bad());
+    }
+    let secs = days_from_civil(y, m, d) * 86_400 + hh * 3600 + mm * 60 + ss - offset;
+    if secs < 0 {
+        return Err(bad());
+    }
+    Ok(UNIX_EPOCH + Duration::from_secs(secs as u64))
 }
 
 /// Trusted keys for verification.
@@ -488,9 +542,9 @@ pub mod ssh {
 
         fn verify_at(&self, message: &[u8], signature: &[u8], at: SystemTime) -> Result<String> {
             let sig = SshSig::from_pem(signature)
-                .map_err(|e| Error::Remote(format!("invalid SSH signature: {e}")))?;
+                .map_err(|e| Error::Signature(format!("invalid SSH signature: {e}")))?;
             if sig.namespace() != SSH_NAMESPACE {
-                return Err(Error::Remote(format!(
+                return Err(Error::Signature(format!(
                     "SSH signature has namespace '{}', expected '{SSH_NAMESPACE}'",
                     sig.namespace()
                 )));
@@ -502,8 +556,8 @@ pub mod ssh {
                 .collect();
             if matching.is_empty() {
                 let fp = PublicKey::from(sig.public_key().clone()).fingerprint(HashAlg::Sha256);
-                return Err(Error::Auth(format!(
-                    "signature made by {fp}, which is not in allowed_signers"
+                return Err(Error::Signature(format!(
+                    "made by {fp}, which is not in allowed_signers"
                 )));
             }
             let mut why = Vec::new();
@@ -524,7 +578,7 @@ pub mod ssh {
                     why.push(format!(
                         "{}: key is only valid after {}",
                         entry.principals,
-                        fmt_time(after)
+                        format_time(after)
                     ));
                     continue;
                 }
@@ -534,23 +588,23 @@ pub mod ssh {
                     why.push(format!(
                         "{}: key expired at {}",
                         entry.principals,
-                        fmt_time(before)
+                        format_time(before)
                     ));
                     continue;
                 }
                 entry
                     .key
                     .verify(SSH_NAMESPACE, message, &sig)
-                    .map_err(|e| Error::Auth(format!("SSH signature invalid: {e}")))?;
+                    .map_err(|e| Error::Signature(format!("SSH signature invalid: {e}")))?;
                 return Ok(format!(
                     "{} ({})",
                     entry.principals,
                     entry.key.fingerprint(HashAlg::Sha256)
                 ));
             }
-            Err(Error::Auth(format!(
-                "signature rejected at {}: {}",
-                fmt_time(at),
+            Err(Error::Signature(format!(
+                "rejected at {}: {}",
+                format_time(at),
                 why.join("; ")
             )))
         }
@@ -826,10 +880,10 @@ pub mod pgp {
         at: SystemTime,
     ) -> Option<String> {
         if at < created {
-            return Some(format!("key was only created at {}", fmt_time(created)));
+            return Some(format!("key was only created at {}", format_time(created)));
         }
         match expiry {
-            Some(exp) if at >= exp => Some(format!("key expired at {}", fmt_time(exp))),
+            Some(exp) if at >= exp => Some(format!("key expired at {}", format_time(exp))),
             _ => None,
         }
     }
@@ -841,7 +895,7 @@ pub mod pgp {
 
         fn verify_at(&self, message: &[u8], signature: &[u8], at: SystemTime) -> Result<String> {
             let (sig, _) = DetachedSignature::from_armor_single(std::io::Cursor::new(signature))
-                .map_err(|e| Error::Remote(format!("invalid OpenPGP signature: {e}")))?;
+                .map_err(|e| Error::Signature(format!("invalid OpenPGP signature: {e}")))?;
             // The key must have been valid when the signature was made; a
             // signature that claims a future date is judged at `at`.
             let made = sig
@@ -928,13 +982,13 @@ pub mod pgp {
                 .cloned()
                 .unwrap_or_else(|| "unknown key".into());
             if why.is_empty() {
-                return Err(Error::Auth(format!(
+                return Err(Error::Signature(format!(
                     "OpenPGP signature by {who} is not valid for any key in the keyring"
                 )));
             }
-            Err(Error::Auth(format!(
+            Err(Error::Signature(format!(
                 "OpenPGP signature by {who} rejected (signed {}): {}",
-                fmt_time(made),
+                format_time(made),
                 why.join("; ")
             )))
         }
@@ -1128,17 +1182,17 @@ mod tests {
     fn ssh_timestamps() {
         // 2024-02-29T12:30:45Z — leap day, so the civil-date maths is exercised.
         let t = parse_ssh_time("20240229123045").unwrap();
-        assert_eq!(fmt_time(t), "2024-02-29T12:30:45Z");
+        assert_eq!(format_time(t), "2024-02-29T12:30:45Z");
         assert_eq!(
-            fmt_time(parse_ssh_time("19700101").unwrap()),
+            format_time(parse_ssh_time("19700101").unwrap()),
             "1970-01-01T00:00:00Z"
         );
         assert_eq!(
-            fmt_time(parse_ssh_time("20991231Z").unwrap()),
+            format_time(parse_ssh_time("20991231Z").unwrap()),
             "2099-12-31T00:00:00Z"
         );
         assert_eq!(
-            fmt_time(parse_ssh_time("202412311800").unwrap()),
+            format_time(parse_ssh_time("202412311800").unwrap()),
             "2024-12-31T18:00:00Z"
         );
         assert!(parse_ssh_time("20240229123045").unwrap() > parse_ssh_time("20240229").unwrap());

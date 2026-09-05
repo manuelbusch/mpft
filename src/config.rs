@@ -103,6 +103,9 @@ pub struct PolicySection {
     /// A configuration file with credentials that others can read is an
     /// error, not a warning.
     pub strict_permissions: Option<bool>,
+    /// How old a signature may be, judged against the signing time in the
+    /// checksum file: `7d`, `24h`, `30m`, `0` for no limit.
+    pub max_signature_age: Option<String>,
 }
 
 /// `[signing]` — defaults for `--sign`.
@@ -454,7 +457,11 @@ impl Config {
     pub fn parse(text: &str) -> std::result::Result<Config, String> {
         let mut value: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
         interpolate(&mut value)?;
-        Config::deserialize(value).map_err(|e| e.to_string())
+        let cfg = Config::deserialize(value).map_err(|e| e.to_string())?;
+        if let Some(v) = &cfg.policy.max_signature_age {
+            parse_duration(v).map_err(|e| format!("[policy] max_signature_age: {e}"))?;
+        }
+        Ok(cfg)
     }
 
     /// Take every value `other` sets; used to lay `./mpt.toml` over the user file.
@@ -482,6 +489,7 @@ impl Config {
             policy.refuse_insecure_tls,
             policy.require_signature,
             policy.strict_permissions,
+            policy.max_signature_age,
             signing.key,
             signing.agent_fingerprint,
             verify.allowed_signers,
@@ -628,6 +636,10 @@ impl Config {
         if let Some(v) = self.policy.strict_permissions {
             p.strict_permissions = v;
         }
+        if let Some(v) = &self.policy.max_signature_age {
+            // Checked when the file is read; a bad value cannot reach here.
+            p.max_signature_age = parse_duration(v).ok().filter(|d| !d.is_zero());
+        }
         if let Some(v) = &self.policy.known_hosts {
             p.known_hosts = Some(v.clone());
         }
@@ -747,6 +759,23 @@ pub fn parse_size(s: &str) -> std::result::Result<u64, String> {
         .map_err(|e| format!("invalid size '{s}': {e}"))
 }
 
+/// Parse spans like `90` (seconds), `30m`, `24h` or `7d`. `0` means "no
+/// limit" and comes back as a zero duration.
+pub fn parse_duration(s: &str) -> std::result::Result<std::time::Duration, String> {
+    let s = s.trim();
+    let (num, mult) = match s.chars().last().map(|c| c.to_ascii_lowercase()) {
+        Some('s') => (&s[..s.len() - 1], 1u64),
+        Some('m') => (&s[..s.len() - 1], 60),
+        Some('h') => (&s[..s.len() - 1], 3600),
+        Some('d') => (&s[..s.len() - 1], 86_400),
+        _ => (s, 1),
+    };
+    num.trim()
+        .parse::<u64>()
+        .map(|n| std::time::Duration::from_secs(n * mult))
+        .map_err(|e| format!("invalid duration '{s}': {e} (try 7d, 24h, 30m or 0)"))
+}
+
 /// A configured path, with `~/` expanded.
 pub fn path(value: &Option<String>) -> Option<PathBuf> {
     value
@@ -828,6 +857,16 @@ mod tests {
         // A value that merely looks like a shell expansion stays intact.
         let cfg = Config::parse("[s3]\nregion = \"$HOME/x\"\n").unwrap();
         assert_eq!(cfg.s3.region.as_deref(), Some("$HOME/x"));
+    }
+
+    #[test]
+    fn durations_carry_units() {
+        assert_eq!(parse_duration("90").unwrap().as_secs(), 90);
+        assert_eq!(parse_duration("30m").unwrap().as_secs(), 1800);
+        assert_eq!(parse_duration("7d").unwrap().as_secs(), 604_800);
+        assert!(parse_duration("0").unwrap().is_zero(), "0 is no limit");
+        let err = Config::parse("[policy]\nmax_signature_age = \"soon\"\n").unwrap_err();
+        assert!(err.contains("max_signature_age"), "{err}");
     }
 
     #[test]

@@ -1,13 +1,13 @@
 //! The generic copy pipeline: receiver → ByteStream → one or many senders.
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use std::sync::Arc;
 
-use crate::hash::{DigestHandle, HashAlgo, hashing, parse_sidecar, sidecar_content};
+use crate::hash::{DigestHandle, HashAlgo, hashing, parse_sidecar, sidecar_content_at};
 use crate::sign::{Signer, Verifier};
 use crate::stream::{Counted, MemoryCache, TeeOptions, tee};
 use crate::{Endpoint, Error, Result, SendMeta};
@@ -534,7 +534,9 @@ async fn write_sidecar(
     let name = target_filename(dst, meta);
     let sidecar = algo.sidecar_name(&name);
     let loc = dst.location().sibling(&sidecar)?;
-    let content = sidecar_content(hex, &name);
+    // A signed checksum file records when it was signed, so a verifier can
+    // judge the signer's validity at that moment and refuse an old one.
+    let content = sidecar_content_at(hex, &name, signer.map(|_| SystemTime::now()));
     let ep = crate::protocols::open(loc.clone())?;
     let sidecar_meta = SendMeta::from_filename(&sidecar)?.with_size(content.len() as u64);
     ep.sender()?
@@ -559,6 +561,44 @@ async fn write_sidecar(
         signature = Some(sig_loc.to_string());
     }
     Ok((loc.to_string(), signature))
+}
+
+/// Refuse a signature that is older than `policy.max_signature_age`, so an
+/// old checksum file cannot be replayed in place of the current one.
+fn check_signature_age(signed_at: Option<SystemTime>, max: Option<Duration>) -> Result<()> {
+    let Some(max) = max else {
+        return Ok(());
+    };
+    let Some(at) = signed_at else {
+        return Err(Error::Signature(format!(
+            "the checksum file carries no '{}' line, so its age cannot be judged \
+             (policy.max_signature_age is {})",
+            crate::hash::SIGNED_AT.trim(),
+            fmt_age(max)
+        )));
+    };
+    // A signature from the future is left to the verifier to judge.
+    let age = SystemTime::now().duration_since(at).unwrap_or_default();
+    if age > max {
+        return Err(Error::Signature(format!(
+            "the checksum file was signed {} ago ({}), longer than the {} the policy allows",
+            fmt_age(age),
+            crate::sign::format_time(at),
+            fmt_age(max)
+        )));
+    }
+    Ok(())
+}
+
+/// A span in the largest unit that still says something, for messages.
+fn fmt_age(d: Duration) -> String {
+    let s = d.as_secs();
+    match s {
+        0..=99 => format!("{s}s"),
+        100..=5999 => format!("{}m", s / 60),
+        6000..=172_799 => format!("{}h", s / 3600),
+        _ => format!("{}d", s / 86_400),
+    }
 }
 
 /// Read a small sibling file of the source (checksum file, signature).
@@ -615,13 +655,21 @@ async fn find_source_checksum(
         if let Some(v) = verifier {
             let sig_name = v.format().signature_name(&sidecar);
             let sig = read_sibling(src, &sig_name, 64 * 1024).await.map_err(|e| {
-                Error::Auth(format!(
+                Error::Signature(format!(
                     "check: no {} signature {sig_name} next to the source: {e}",
                     v.format().label()
                 ))
             })?;
-            let who = v.verify(text.as_bytes(), &sig)?;
-            info!(%who, "checksum file signature verified");
+            // Judge the signer as it stood when it signed, not as it stands
+            // now: a key that has expired since then still signed validly.
+            let signed_at = crate::hash::parse_signed_at(&text);
+            check_signature_age(signed_at, crate::policy::policy().max_signature_age)?;
+            let who = v.verify_at(
+                text.as_bytes(),
+                &sig,
+                signed_at.unwrap_or_else(SystemTime::now),
+            )?;
+            info!(%who, signed_at = ?signed_at.map(crate::sign::format_time), "checksum file signature verified");
             signer = Some(who);
         }
         return Ok((algo, hex, signer));
@@ -975,6 +1023,29 @@ mod tests {
     }
 
     #[cfg(feature = "sign-ssh")]
+    #[test]
+    fn old_signatures_are_refused_when_the_policy_says_so() {
+        let hour = Duration::from_secs(3600);
+        let ago = |d: Duration| Some(SystemTime::now() - d);
+        // No limit: anything goes, with or without a timestamp.
+        assert!(check_signature_age(ago(hour * 100), None).is_ok());
+        assert!(check_signature_age(None, None).is_ok());
+        // Inside the limit.
+        assert!(check_signature_age(ago(hour), Some(hour * 24)).is_ok());
+        // Too old.
+        let err = check_signature_age(ago(hour * 50), Some(hour * 24))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("2d ago") && err.contains("24h"), "{err}");
+        // Without a signing time the age cannot be judged at all.
+        let err = check_signature_age(None, Some(hour))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("mpt-signed-at"), "{err}");
+        // A clock that runs behind must not turn into a huge age.
+        assert!(check_signature_age(Some(SystemTime::now() + hour), Some(hour)).is_ok());
+    }
+
     #[tokio::test]
     async fn sign_sidecar_and_verify_on_check() {
         use crate::sign::{SignFormat, SignSpec, VerifySpec};
@@ -1039,6 +1110,14 @@ mod tests {
                 .ends_with("data.bin.sha256.sig")
         );
 
+        // The signed checksum file says when it was signed.
+        let text = std::fs::read_to_string(dir.path().join("out/data.bin.sha256")).unwrap();
+        let signed_at = crate::hash::parse_signed_at(&text).expect("signing time");
+        assert!(
+            SystemTime::now().duration_since(signed_at).unwrap() < Duration::from_secs(60),
+            "{text}"
+        );
+
         // Copy back with check + verify: signature must be accepted.
         let verifier = crate::sign::load_verifier(&VerifySpec::SshAllowedSigners(signers)).unwrap();
         let out_file = crate::open(dir.path().join("out/data.bin").to_str().unwrap()).unwrap();
@@ -1063,7 +1142,7 @@ mod tests {
         let err = copy_many(out_file.as_ref(), &[back.as_ref()], &opts)
             .await
             .unwrap_err();
-        assert!(matches!(err, Error::Auth(_)), "{err}");
+        assert!(matches!(err, Error::Signature(_)), "{err}");
         assert!(!dir.path().join("back2").exists());
 
         // Missing signature → error.

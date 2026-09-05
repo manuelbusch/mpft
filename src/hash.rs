@@ -4,6 +4,7 @@
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
+use std::time::SystemTime;
 
 use sha2::Digest;
 use tokio::io::{AsyncRead, ReadBuf};
@@ -208,10 +209,42 @@ pub fn sidecar_content(hex: &str, filename: &str) -> String {
     format!("{hex}  {filename}\n")
 }
 
+/// Comment that records when a checksum file was signed. `sha256sum -c` and
+/// `b3sum -c` ignore comment lines, so the file keeps their format.
+pub const SIGNED_AT: &str = "# mpt-signed-at: ";
+
+/// Sidecar file with the signing time, so a verifier can judge the signer's
+/// validity at that moment and refuse a signature that is too old.
+pub fn sidecar_content_at(hex: &str, filename: &str, signed_at: Option<SystemTime>) -> String {
+    match signed_at {
+        None => sidecar_content(hex, filename),
+        Some(t) => format!(
+            "{hex}  {filename}\n{SIGNED_AT}{}\n",
+            crate::sign::format_time(t)
+        ),
+    }
+}
+
+/// The signing time out of a checksum file, if it carries one.
+pub fn parse_signed_at(text: &str) -> Option<SystemTime> {
+    let line = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix(SIGNED_AT.trim_end()))?;
+    match crate::sign::parse_time(line) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            tracing::warn!("ignoring an unreadable '{}' line: {e}", SIGNED_AT.trim());
+            None
+        }
+    }
+}
+
 /// Parse the first line of a sidecar file: hex digest and file name (the
 /// name may be prefixed with `*` for binary mode, as coreutils does).
 pub fn parse_sidecar(text: &str) -> Option<(String, String)> {
-    let line = text.lines().find(|l| !l.trim().is_empty())?;
+    let line = text
+        .lines()
+        .find(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))?;
     let mut it = line.split_whitespace();
     let hex = it.next()?;
     if hex.len() < 32 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -290,6 +323,25 @@ mod tests {
         assert_eq!(n, "dir/my file.bin");
         assert!(parse_sidecar("not a hash  x").is_none());
         assert!(parse_sidecar("").is_none());
+    }
+
+    #[test]
+    fn the_signing_time_travels_in_a_comment() {
+        let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let c = sidecar_content_at(SHA256_ABC, "report.pdf", Some(t));
+        assert_eq!(
+            c,
+            format!("{SHA256_ABC}  report.pdf\n# mpt-signed-at: 2023-11-14T22:13:20Z\n")
+        );
+        // The digest is still the first thing a checker sees.
+        assert_eq!(parse_sidecar(&c).unwrap().0, SHA256_ABC);
+        assert_eq!(parse_signed_at(&c), Some(t));
+        // Without the comment, and with an unreadable one.
+        assert_eq!(parse_signed_at(&sidecar_content(SHA256_ABC, "x")), None);
+        assert_eq!(parse_signed_at("# mpt-signed-at: yesterday\n"), None);
+        // A file that leads with comments still parses.
+        let (hex, name) = parse_sidecar(&format!("# a comment\n{SHA256_ABC}  x\n")).unwrap();
+        assert_eq!((hex.as_str(), name.as_str()), (SHA256_ABC, "x"));
     }
 
     #[test]
