@@ -355,7 +355,7 @@ pub mod ssh {
         }
         // No key given: ssh-agent first, then MPT_SSH_KEY, then default key files.
         #[cfg(feature = "ssh")]
-        if std::env::var_os("SSH_AUTH_SOCK").is_some() {
+        if crate::protocols::ssh::agent::available() {
             match agent::AgentSigner::connect().await {
                 Ok(s) => return Ok(Arc::new(s)),
                 Err(e) => tracing::warn!("ssh-agent not usable for signing: {e}"),
@@ -620,22 +620,21 @@ pub mod ssh {
     #[cfg(feature = "ssh")]
     pub mod agent {
         use super::*;
+        use crate::protocols::ssh::agent;
         use russh::keys::agent::AgentIdentity;
         use russh::keys::agent::client::AgentClient;
         use ssh_key::Signature;
         use tokio::sync::Mutex;
 
         pub struct AgentSigner {
-            client: Mutex<AgentClient<tokio::net::UnixStream>>,
+            client: Mutex<AgentClient<agent::Stream>>,
             identity: AgentIdentity,
             public: PublicKey,
         }
 
         impl AgentSigner {
             pub async fn connect() -> Result<Self> {
-                let mut client = AgentClient::connect_env()
-                    .await
-                    .map_err(|e| Error::Auth(format!("ssh-agent: {e}")))?;
+                let mut client = agent::connect().await?;
                 let ids = client
                     .request_identities()
                     .await

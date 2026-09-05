@@ -53,6 +53,7 @@ Priority: URL > environment > default. Passwords are masked in all log output.
 | `MPT_REFUSE_PLAINTEXT_AUTH` | `1` turns the warning about unencrypted credentials into an error |
 | `MPT_SSH_KEY`, `MPT_SSH_KEY_PASSPHRASE` | SSH private key. Without it: ssh-agent (`SSH_AUTH_SOCK`), then `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`, then password |
 | `MPT_SSH_CERT` | OpenSSH certificate for that key (`<key>-cert.pub` is found on its own) |
+| `SSH_AUTH_SOCK` | ssh-agent socket (Unix) or named pipe (Windows); without it Windows tries the OpenSSH agent service and then Pageant |
 | `MPT_SSH_USER` | SSH user when not in the URL (default `$USER`) |
 | `MPT_SSH_KNOWN_HOSTS` | default host-key policy (`strict` if unset) |
 | `MPT_SSH_HOSTKEY` | expected host-key fingerprints, comma-separated (`?hostkey=` per URL) |

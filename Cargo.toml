@@ -19,7 +19,7 @@ path = "src/main.rs"
 [features]
 default = ["all"]
 all = ["ssh", "ftp", "http", "webdav", "s3", "mail", "sign-ssh", "sign-pgp"]
-ssh = ["dep:russh", "dep:russh-sftp", "dep:dirs"]
+ssh = ["dep:russh", "dep:russh-sftp", "dep:dirs", "dep:pageant"]
 ftp = ["dep:suppaftp", "dep:tokio-rustls", "dep:rustls-platform-verifier"]
 http = ["dep:reqwest"]
 webdav = ["http", "dep:reqwest_dav"]
@@ -94,6 +94,11 @@ toml = "0.9"
 # credential providers (serde_json is also the --json report)
 keyring = { version = "3", optional = true, features = ["apple-native", "windows-native", "sync-secret-service"] }
 serde_json = "1"
+
+# Windows: PuTTY's Pageant as a second kind of ssh-agent, next to the named
+# pipe of the Windows OpenSSH agent. Same version russh itself uses.
+[target.'cfg(windows)'.dependencies]
+pageant = { version = "0.2", optional = true }
 
 [dev-dependencies]
 proptest = "1.11.0"

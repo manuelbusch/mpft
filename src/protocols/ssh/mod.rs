@@ -7,6 +7,7 @@
 //! `?hostkey=SHA256:…` pins one or more expected host keys and then replaces
 //! the `known_hosts` lookup entirely.
 
+pub mod agent;
 pub mod scp;
 pub mod sftp;
 
@@ -15,7 +16,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use russh::client::{self, Handle};
-use russh::keys::agent::client::AgentClient;
 use russh::keys::known_hosts::{
     check_known_hosts, check_known_hosts_path, learn_known_hosts, learn_known_hosts_path,
 };
@@ -221,7 +221,7 @@ impl SshConfig {
             }
         } else {
             // 2. ssh-agent
-            if std::env::var_os("SSH_AUTH_SOCK").is_some() {
+            if agent::available() {
                 tried.push("ssh-agent".into());
                 match self.try_agent(handle, rsa_hash).await {
                     Ok(true) => return Ok(()),
@@ -319,9 +319,7 @@ impl SshConfig {
         handle: &mut Handle<ClientHandler>,
         rsa_hash: Option<HashAlg>,
     ) -> Result<bool> {
-        let mut agent = AgentClient::connect_env()
-            .await
-            .map_err(|e| Error::Auth(format!("ssh-agent: {e}")))?;
+        let mut agent = agent::connect().await?;
         let identities = agent
             .request_identities()
             .await
