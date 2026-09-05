@@ -36,6 +36,15 @@ fn random_payload(len: usize) -> Vec<u8> {
         .collect()
 }
 
+/// The URL without one query option.
+fn drop_option(url: &str, name: &str) -> String {
+    let prefix = format!("{name}=");
+    url.split('&')
+        .filter(|p| !p.starts_with(&prefix))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
 fn dir_url(base: &str, name: &str) -> String {
     let (path, query) = base
         .split_once('?')
@@ -700,4 +709,69 @@ async fn s3_credentials_come_from_an_aws_profile() {
         .await
         .unwrap();
     assert_eq!(buf, b"from the aws chain");
+}
+
+/// A certificate signed by a CA the server trusts gets in where the key
+/// alone does not: `cert_key` is deliberately absent from `authorized_keys`.
+#[tokio::test]
+async fn sftp_authenticates_with_a_certificate() {
+    let Some(url) = env("MPT_IT_SFTP_CERT") else {
+        eprintln!("skipping: MPT_IT_SFTP_CERT not set");
+        return;
+    };
+    mpt::init_crypto();
+    let name = format!("cert_{}.bin", std::process::id());
+    let file = dir_url(&url, &format!("/{name}"));
+    let payload = b"signed by the CA".to_vec();
+
+    let dst = mpt::open(&url).unwrap();
+    let meta = SendMeta::from_filename(&name)
+        .unwrap()
+        .with_size(payload.len() as u64);
+    dst.sender()
+        .unwrap()
+        .send(Box::pin(std::io::Cursor::new(payload.clone())), &meta)
+        .await
+        .expect("upload with a certificate");
+
+    let src = mpt::open(&file).unwrap();
+    let mut stream = src.receiver().unwrap().receive().await.expect("download");
+    let mut got = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut got)
+        .await
+        .unwrap();
+    assert_eq!(got, payload);
+
+    // The certificate is found next to the key even when the URL is silent
+    // about it, the way OpenSSH looks for <key>-cert.pub.
+    let implied = drop_option(&url, "cert");
+    mpt::open(&implied)
+        .unwrap()
+        .receiver()
+        .unwrap()
+        .list()
+        .await
+        .expect("the certificate beside the key is found");
+
+    // Away from its certificate, the same key is turned away — which is what
+    // proves the certificate did the work.
+    let key_path = url
+        .split(['?', '&'])
+        .find_map(|p| p.strip_prefix("key="))
+        .expect("key= in MPT_IT_SFTP_CERT");
+    let dir = tempfile::tempdir().unwrap();
+    let lonely = dir.path().join("cert_key");
+    std::fs::copy(key_path, &lonely).unwrap();
+    let bare = drop_option(&url, "cert").replace(key_path, &lonely.display().to_string());
+    let err = mpt::open(&bare)
+        .unwrap()
+        .receiver()
+        .unwrap()
+        .list()
+        .await
+        .expect_err("the bare key is not in authorized_keys");
+    assert!(
+        err.to_string().contains("no accepted method"),
+        "unexpected error: {err}"
+    );
 }

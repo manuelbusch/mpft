@@ -19,6 +19,7 @@ use russh::keys::agent::client::AgentClient;
 use russh::keys::known_hosts::{
     check_known_hosts, check_known_hosts_path, learn_known_hosts, learn_known_hosts_path,
 };
+use russh::keys::ssh_key::Certificate;
 use russh::keys::{
     HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate, load_secret_key,
 };
@@ -58,6 +59,9 @@ pub struct SshConfig {
     pub user: String,
     pub password: Option<SecretString>,
     pub key_file: Option<PathBuf>,
+    /// OpenSSH certificate for `key_file` (`<key>-cert.pub`), which lets a CA
+    /// vouch for the key instead of `authorized_keys` listing it.
+    pub cert_file: Option<PathBuf>,
     pub key_passphrase: Option<SecretString>,
     pub known_hosts: KnownHostsPolicy,
     /// Expected host-key fingerprints (`SHA256:…`). Non-empty means the
@@ -91,6 +95,18 @@ impl SshConfig {
             .or_else(|| cfg.ssh.key.clone())
             .filter(|s| !s.is_empty())
             .map(|s| PathBuf::from(expand_tilde(&s)));
+        // OpenSSH looks for <key>-cert.pub next to the key; so do we.
+        let cert_file = loc
+            .opt("cert")
+            .map(String::from)
+            .or_else(|| std::env::var("MPT_SSH_CERT").ok())
+            .or_else(|| cfg.ssh.cert.clone())
+            .filter(|s| !s.is_empty())
+            .map(|s| PathBuf::from(expand_tilde(&s)))
+            .or_else(|| {
+                let beside = PathBuf::from(format!("{}-cert.pub", key_file.as_ref()?.display()));
+                beside.exists().then_some(beside)
+            });
         let key_passphrase = loc
             .opt("passphrase")
             .map(String::from)
@@ -133,6 +149,7 @@ impl SshConfig {
             user,
             password: loc.password().map(SecretString::from),
             key_file,
+            cert_file,
             key_passphrase,
             known_hosts,
             pinned_host_keys: pinned,
@@ -264,6 +281,26 @@ impl SshConfig {
             self.key_passphrase.as_ref().map(|p| p.expose_secret()),
         )
         .map_err(|e| Error::Auth(format!("cannot load key {}: {e}", path.display())))?;
+        // A certificate first: the server may trust the CA without knowing
+        // this key. If it will not have it, the bare key still gets a turn.
+        if let Some(cert_path) = &self.cert_file {
+            let cert = Certificate::read_file(cert_path).map_err(|e| {
+                Error::Auth(format!(
+                    "cannot load certificate {}: {e}",
+                    cert_path.display()
+                ))
+            })?;
+            debug!(cert = %cert_path.display(), key_id = cert.key_id(), "ssh certificate");
+            let res = handle
+                .authenticate_openssh_cert(self.user.clone(), Arc::new(key.clone()), cert)
+                .await
+                .map_err(ssh_err)?;
+            if res.success() {
+                info!(cert = %cert_path.display(), "ssh: authenticated with a certificate");
+                return Ok(true);
+            }
+            debug!("the server did not accept the certificate; trying the key itself");
+        }
         let res = handle
             .authenticate_publickey(
                 self.user.clone(),

@@ -23,7 +23,7 @@ The crate is a library (`mpt`) with a thin CLI binary of the same name.
 | Prefix | Protocol | Receive | Send | Port | Options |
 |---|---|---|---|---|---|
 | `file:///abs/path` or a bare path | local file system | ✓ | ✓ | – | – |
-| `sftp://user@host/path` | SFTP over SSH | ✓ | ✓ | 22 | `key=<file>`, `passphrase=`, `known_hosts=strict\|accept-new\|off`, `hostkey=SHA256:…`, `timeout=<s>` |
+| `sftp://user@host/path` | SFTP over SSH | ✓ | ✓ | 22 | `key=<file>`, `cert=<file>`, `passphrase=`, `known_hosts=strict\|accept-new\|off`, `hostkey=SHA256:…`, `timeout=<s>` |
 | `scp://user@host/path` | SCP over SSH | ✓ | ✓ | 22 | as sftp (no `ls`) |
 | `ftp://user@host/path` | FTP without TLS | ✓ | ✓ | 21 | `passive=`, `nat=` |
 | `ftps://user@host/path` | FTP with TLS, explicit `AUTH TLS` by default | ✓ | ✓ | 21 / 990 | `tls=explicit\|implicit`, `insecure=`, `passive=`, `nat=` |
@@ -52,6 +52,7 @@ Priority: URL > environment > default. Passwords are masked in all log output.
 | `MPT_PASSWORD` | password for sftp/scp/ftp/ftps/http/webdav when not in the URL (`--password`, `--password-file`, `--password-stdin` on the CLI) |
 | `MPT_REFUSE_PLAINTEXT_AUTH` | `1` turns the warning about unencrypted credentials into an error |
 | `MPT_SSH_KEY`, `MPT_SSH_KEY_PASSPHRASE` | SSH private key. Without it: ssh-agent (`SSH_AUTH_SOCK`), then `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`, then password |
+| `MPT_SSH_CERT` | OpenSSH certificate for that key (`<key>-cert.pub` is found on its own) |
 | `MPT_SSH_USER` | SSH user when not in the URL (default `$USER`) |
 | `MPT_SSH_KNOWN_HOSTS` | default host-key policy (`strict` if unset) |
 | `MPT_SSH_HOSTKEY` | expected host-key fingerprints, comma-separated (`?hostkey=` per URL) |
@@ -151,6 +152,7 @@ keyring         = "~/.config/mpt/trusted.asc"
 [ssh]                         # defaults for sftp:// and scp://
 user             = "deploy"
 key              = "~/.ssh/id_ed25519"
+cert             = "~/.ssh/id_ed25519-cert.pub"
 passphrase       = { cmd = "pass ssh/prod" }
 known_hosts_file = "~/.ssh/known_hosts"
 hostkey          = ["SHA256:…"]    # pinned host keys, one string or a list
@@ -309,6 +311,19 @@ password = { cmd = "az account get-access-token --resource https://outlook.offic
 Anything that prints a token works the same way (`gcloud auth print-access-token`,
 a script around a client-credentials flow), and the token is fetched once per
 run, when the mail is about to be sent.
+
+**SFTP and SCP** — short-lived OpenSSH certificates from Vault, Teleport or
+step-ca work, so a CA can vouch for a key that `authorized_keys` never lists.
+An agent that holds a certificate needs nothing extra; a key in a file takes
+`?cert=<id-cert.pub>` — or nothing at all, since `<key>-cert.pub` beside the
+key is found the way OpenSSH finds it:
+
+```
+mpt cp report.pdf "sftp://deploy@srv/in/?key=~/.ssh/id_ed25519"     # uses id_ed25519-cert.pub
+mpt cp report.pdf "sftp://deploy@srv/in/?key=/tmp/k&cert=/tmp/k-cert.pub"
+```
+
+If the server will not take the certificate, the bare key still gets its turn.
 
 ## Machine-readable output
 

@@ -36,12 +36,18 @@ if [ ! -f ssh/host_key ]; then
   ssh-keygen -q -t ed25519 -N "" -f ssh/client_key
   cp ssh/client_key.pub ssh/authorized_keys
   chmod 600 ssh/authorized_keys
+  # A CA and a key that is deliberately *not* in authorized_keys: only the
+  # certificate can let it in, which is what the cert test proves.
+  ssh-keygen -q -t ed25519 -N "" -f ssh/ssh_ca
+  ssh-keygen -q -t ed25519 -N "" -f ssh/cert_key
+  ssh-keygen -q -s ssh/ssh_ca -I mpt-test -n "$USER" -V -5m:+52w ssh/cert_key.pub
   SFTP=$(ls /usr/libexec/sftp-server /usr/lib/openssh/sftp-server /usr/lib/ssh/sftp-server 2>/dev/null | head -1)
   cat > ssh/sshd_config <<CFG
 Port 2222
 ListenAddress 127.0.0.1
 HostKey $WORK/ssh/host_key
 AuthorizedKeysFile $WORK/ssh/authorized_keys
+TrustedUserCAKeys $WORK/ssh/ssh_ca.pub
 PasswordAuthentication no
 PubkeyAuthentication yes
 PidFile $WORK/ssh/sshd.pid
@@ -73,6 +79,9 @@ export MPT_IT_SFTP="sftp://$USER@127.0.0.1:2222/$WORK/ssh/data/?key=$WORK/ssh/cl
 # A directory of its own: sftp and scp targets in one fan-out would otherwise
 # write the same file (including the same .mpt-part) at the same time.
 export MPT_IT_SCP="scp://$USER@127.0.0.1:2222/$WORK/ssh/scp/?key=$WORK/ssh/client_key&known_hosts=off"
+# Certificate authentication: cert_key is not in authorized_keys, so this URL
+# only works if the certificate is presented.
+export MPT_IT_SFTP_CERT="sftp://$USER@127.0.0.1:2222/$WORK/ssh/data/?key=$WORK/ssh/cert_key&cert=$WORK/ssh/cert_key-cert.pub&known_hosts=off"
 export MPT_IT_SSH_HOSTKEY="$(ssh-keygen -lf "$WORK/ssh/host_key.pub" | cut -d' ' -f2)"
 ENV
 echo "servers started; logs in $WORK/logs"

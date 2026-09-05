@@ -136,6 +136,8 @@ pub struct VerifySection {
 pub struct SshSection {
     pub user: Option<String>,
     pub key: Option<String>,
+    /// OpenSSH certificate for the key (`<key>-cert.pub` is found on its own).
+    pub cert: Option<String>,
     /// Passphrase of the private key.
     pub passphrase: Option<Secret>,
     pub known_hosts_file: Option<String>,
@@ -406,12 +408,14 @@ impl Config {
         let SshSection {
             user,
             key,
+            cert,
             passphrase,
             known_hosts_file,
             hostkey,
         } = &self.ssh;
         if user.is_some()
             || key.is_some()
+            || cert.is_some()
             || passphrase.is_some()
             || known_hosts_file.is_some()
             || !hostkey.is_empty()
@@ -511,6 +515,7 @@ impl Config {
             verify.keyring,
             ssh.user,
             ssh.key,
+            ssh.cert,
             ssh.known_hosts_file,
             mail.smtp,
             mail.auth,
