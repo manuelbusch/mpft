@@ -1288,3 +1288,61 @@ async fn recursive_copy_creates_directories_on_every_protocol() {
         assert!(listing.iter().all(|e| e.name != format!("rtree_dry_{tag}")));
     }
 }
+
+/// A second `-r --skip-existing` run over the same tree sends nothing; a
+/// file that grew in between is sent again.
+#[tokio::test]
+async fn skip_existing_makes_a_tree_copy_repeatable() {
+    let Some(sftp) = env("MPT_IT_SFTP") else {
+        eprintln!("skipping: MPT_IT_SFTP not set");
+        return;
+    };
+    mpt::init_crypto();
+    let tag = std::process::id();
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("tree");
+    std::fs::create_dir_all(src.join("sub")).unwrap();
+    std::fs::write(src.join("one.txt"), "one").unwrap();
+    std::fs::write(src.join("sub/two.txt"), "two").unwrap();
+    let target = dir_url(&sftp, &format!("/skip_{tag}/"));
+    let run = |extra: &[&str]| {
+        let mut args = vec!["cp", "-r", "--skip-existing", "--json"];
+        args.extend_from_slice(extra);
+        args.push(src.to_str().unwrap());
+        args.push(&target);
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+            .args(&args)
+            .output()
+            .expect("running mpt");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let skipped = |lines: &[serde_json::Value]| -> usize {
+        lines
+            .iter()
+            .filter(|l| l["targets"][0]["skipped"] == true)
+            .count()
+    };
+
+    let first = run(&[]);
+    assert_eq!(first.len(), 2);
+    assert_eq!(skipped(&first), 0);
+
+    let second = run(&[]);
+    assert_eq!(second.len(), 2);
+    assert_eq!(skipped(&second), 2, "{second:?}");
+    assert!(second.iter().all(|l| l["bytes_read"] == 0));
+
+    std::fs::write(src.join("sub/two.txt"), "two, longer").unwrap();
+    let third = run(&[]);
+    assert_eq!(skipped(&third), 1, "{third:?}");
+    let root = dir_url(&sftp, &format!("/skip_{tag}/tree"));
+    assert_eq!(fetch(&root, "sub/two.txt").await, b"two, longer");
+}

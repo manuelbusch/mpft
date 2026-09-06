@@ -85,6 +85,7 @@ mpt man                          the manual page in roff (mpt man | man -l -)
   --timeout <SECONDS>            inactivity timeout, 30 by default, 0 disables it
   --no-atomic                    write straight to the target name (see below)
   --resume                       continue an interrupted transfer from its .mpt-part file
+  --skip-existing                leave targets alone that already hold the file (same name and size)
   --hash <ALGO>  --check        checksums (see below)     --sign <SPEC>  --verify-signers/--verify-keyring <FILE>
   -r  --parallel <N>  --fail-fast  --dry-run  --allow-empty   for cp and batch (see "Many files")
 ```
@@ -528,6 +529,18 @@ In a fan-out each target resumes from its own offset — the shared source strea
 is read once and every target skips what it already has. A part file that is
 not shorter than the payload is not treated as a prefix of it: it is written
 again from the top.
+
+### Skipping what is there
+
+`--skip-existing` (`[defaults] skip_existing`) leaves a target alone when it
+already holds a file of the source's name and size, and reports it as
+`skipped`. It is decided per target, so in a fan-out only the targets that
+lack the file receive it, and the source is not read at all when none does.
+With `-r` or a pattern this makes a repeated run send only what is new,
+which is what a cron job over an inbox wants; it is a size comparison, not a
+checksum, so a changed file of the same length is not noticed. Targets
+without a size to ask for (mail, an HTTP server without HEAD) are never
+skipped.
 
 ## Checksums
 

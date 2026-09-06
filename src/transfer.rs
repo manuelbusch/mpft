@@ -113,6 +113,10 @@ pub struct CopyOptions {
     /// already on the target stays, and only the rest is sent. Needs `atomic`
     /// (there is no partial file otherwise) and a target that can append.
     pub resume: bool,
+    /// Leave a target alone when it already holds a file of the source's
+    /// name and size, so a repeated run only sends what is new. Needs the
+    /// source's size to be known; mail targets are never skipped.
+    pub skip_existing: bool,
 }
 
 impl std::fmt::Debug for CopyOptions {
@@ -143,6 +147,7 @@ impl Default for CopyOptions {
             cancel: None,
             progress: None,
             resume: false,
+            skip_existing: false,
         }
     }
 }
@@ -196,6 +201,8 @@ pub struct TargetReport {
     pub sidecar: Option<String>,
     /// Location of the detached signature written next to the checksum file, if any.
     pub signature: Option<String>,
+    /// The target already had the file (`skip_existing`); nothing was sent.
+    pub skipped: bool,
 }
 
 /// Outcome of [`copy_many`].
@@ -296,6 +303,58 @@ pub async fn copy_many(
     }
     info!(source = %src.location(), targets = dsts.len(), size = ?size, cache = ?opts.cache, hash = ?opts.hash, check = opts.check, "copy");
 
+    // Targets that already hold the file are left out of the copy; their
+    // reports are put back in place at the end.
+    let all_dsts = dsts;
+    let mut skipped = vec![false; all_dsts.len()];
+    if opts.skip_existing && size.is_some() {
+        for (i, (dst, sender)) in all_dsts.iter().zip(&senders).enumerate() {
+            if dst.location().scheme().is_mail() {
+                continue;
+            }
+            let name = target_filename(*dst, &meta);
+            // A target that cannot even be asked is not skipped: sending
+            // to it will say what is wrong.
+            let there = sender.existing_size(&name).await.ok().flatten();
+            if there == size {
+                info!(target = %dst.location(), size = ?size, "already there, skipped");
+                skipped[i] = true;
+            }
+        }
+    }
+    let skipped_report = |dst: &dyn Endpoint| TargetReport {
+        target: dst.location().to_string(),
+        bytes: 0,
+        elapsed: Duration::ZERO,
+        attempts: 0,
+        result: Ok(()),
+        sidecar: None,
+        signature: None,
+        skipped: true,
+    };
+    let dsts: Vec<&dyn Endpoint> = all_dsts
+        .iter()
+        .zip(&skipped)
+        .filter(|(_, s)| !**s)
+        .map(|(d, _)| *d)
+        .collect();
+    let senders: Vec<&dyn crate::Sender> = senders
+        .into_iter()
+        .zip(&skipped)
+        .filter(|(_, s)| !**s)
+        .map(|(d, _)| d)
+        .collect();
+    if dsts.is_empty() {
+        return Ok(FanoutReport {
+            source: src.location().to_string(),
+            bytes_read: 0,
+            elapsed: started.elapsed(),
+            targets: all_dsts.iter().map(|d| skipped_report(*d)).collect(),
+            digests: Vec::new(),
+            checked: None,
+        });
+    }
+
     // Checksum file next to the source (for `check`), found before anything is transferred.
     let expected = if opts.check {
         Some(find_source_checksum(src, opts.verify.as_deref()).await?)
@@ -394,7 +453,7 @@ pub async fn copy_many(
                         }
                     };
                     let result = finalize(job, result).await;
-                    TargetReport { target: job.dst.location().to_string(), bytes, elapsed: t.elapsed(), attempts, result, sidecar: None, signature: None }
+                    TargetReport { target: job.dst.location().to_string(), bytes, elapsed: t.elapsed(), attempts, result, sidecar: None, signature: None, skipped: false }
                 }
             });
             futures::future::join_all(running).await
@@ -422,6 +481,7 @@ pub async fn copy_many(
                     result,
                     sidecar: None,
                     signature: None,
+                    skipped: false,
                 }
             });
             let targets = futures::future::join_all(running).await;
@@ -450,7 +510,7 @@ pub async fn copy_many(
     if let Some(algo) = opts.hash {
         match digests.iter().find(|(a, _)| *a == algo) {
             Some((_, hex)) => {
-                for (t, dst) in targets.iter_mut().zip(dsts) {
+                for (t, dst) in targets.iter_mut().zip(&dsts) {
                     if t.result.is_err() || dst.location().scheme().is_mail() {
                         continue;
                     }
@@ -489,6 +549,19 @@ pub async fn copy_many(
         }
     }
 
+    // Back into the caller's order, skipped targets included.
+    let mut sent = targets.into_iter();
+    let targets = all_dsts
+        .iter()
+        .zip(&skipped)
+        .map(|(d, s)| {
+            if *s {
+                skipped_report(*d)
+            } else {
+                sent.next().expect("one report per active target")
+            }
+        })
+        .collect();
     Ok(FanoutReport {
         source: src.location().to_string(),
         bytes_read: read_count.load(std::sync::atomic::Ordering::Relaxed),
@@ -872,6 +945,56 @@ mod tests {
         assert_eq!(report.targets[0].bytes, data.len() as u64);
         assert_eq!(std::fs::read(dir.path().join("a/src.bin")).unwrap(), data);
         assert_eq!(std::fs::read(dir.path().join("b/src.bin")).unwrap(), data);
+    }
+
+    #[tokio::test]
+    async fn skip_existing_leaves_targets_with_the_file_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("src.bin");
+        let data = vec![7u8; 10_000];
+        std::fs::write(&src_path, &data).unwrap();
+        let src = crate::open(src_path.to_str().unwrap()).unwrap();
+        let a = crate::open(&format!("{}/a/", dir.path().display())).unwrap();
+        let b = crate::open(&format!("{}/b/", dir.path().display())).unwrap();
+        // `a` already has the file, `b` a file of another size.
+        std::fs::create_dir_all(dir.path().join("a")).unwrap();
+        std::fs::create_dir_all(dir.path().join("b")).unwrap();
+        std::fs::write(dir.path().join("a/src.bin"), &data).unwrap();
+        std::fs::write(dir.path().join("b/src.bin"), b"stale").unwrap();
+        let opts = CopyOptions {
+            skip_existing: true,
+            hash: Some(HashAlgo::Sha256),
+            ..Default::default()
+        };
+
+        let report = copy_many(src.as_ref(), &[a.as_ref(), b.as_ref()], &opts)
+            .await
+            .unwrap();
+        assert!(report.all_ok());
+        assert!(report.targets[0].skipped);
+        assert_eq!(report.targets[0].bytes, 0);
+        assert!(report.targets[0].sidecar.is_none());
+        assert!(!report.targets[1].skipped);
+        assert_eq!(report.targets[1].bytes, data.len() as u64);
+        assert!(report.targets[1].sidecar.is_some());
+        assert_eq!(report.bytes_read, data.len() as u64);
+        assert_eq!(std::fs::read(dir.path().join("b/src.bin")).unwrap(), data);
+
+        // Now both have it: nothing is read at all.
+        let report = copy_many(src.as_ref(), &[a.as_ref(), b.as_ref()], &opts)
+            .await
+            .unwrap();
+        assert!(report.all_ok());
+        assert!(report.targets.iter().all(|t| t.skipped));
+        assert_eq!(report.bytes_read, 0);
+        assert!(report.digests.is_empty());
+
+        // Without the option the file is sent again.
+        let report = copy_many(src.as_ref(), &[a.as_ref()], &CopyOptions::default())
+            .await
+            .unwrap();
+        assert!(!report.targets[0].skipped);
+        assert_eq!(report.targets[0].bytes, data.len() as u64);
     }
 
     #[tokio::test]

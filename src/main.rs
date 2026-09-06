@@ -104,6 +104,11 @@ struct Cli {
     #[arg(long, global = true, conflicts_with = "no_atomic")]
     resume: bool,
 
+    /// Leave a target alone when it already holds a file of the same name
+    /// and size, so a repeated run (a tree, a pattern) sends only what is new
+    #[arg(long, global = true)]
+    skip_existing: bool,
+
     /// Compute a checksum while copying and write <name>.sha256|.sha512|.b3
     /// next to every target (sha256sum/b3sum format; mail gets it as attachment)
     #[arg(long, global = true, value_name = "ALGO")]
@@ -339,6 +344,7 @@ struct Settings {
     timeout: u64,
     atomic: bool,
     resume: bool,
+    skip_existing: bool,
     hash: Option<HashAlgo>,
     json: bool,
     parallel: usize,
@@ -376,6 +382,7 @@ impl Settings {
             // --no-atomic and `atomic = false` both switch it off.
             atomic: !cli.no_atomic && d.atomic.unwrap_or(true),
             resume: cli.resume || d.resume.unwrap_or(false),
+            skip_existing: cli.skip_existing || d.skip_existing.unwrap_or(false),
             json: cli.json || d.json.unwrap_or(false),
             parallel: match cli
                 .cmd
@@ -686,6 +693,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
         },
         atomic: settings.atomic,
         resume: settings.resume,
+        skip_existing: settings.skip_existing,
         cancel: Some(cancel.clone()),
         progress: show_progress(&cli, &settings).then(mpt::transfer::Progress::new),
         hash: settings.hash.or(sign.as_ref().map(|_| HashAlgo::Sha256)),
@@ -903,6 +911,14 @@ fn print_report(
             let code = if cancelled { INTERRUPTED } else { code_of(e) };
             return Some((code, what));
         }
+        if t.skipped {
+            anstream::eprintln!(
+                "{prefix}{DIM}{}{DIM:#} -> {DIM}{}{DIM:#}: {DIM}already there, skipped{DIM:#}",
+                report.source,
+                t.target
+            );
+            return None;
+        }
         anstream::eprintln!(
             "{prefix}{DIM}{}{DIM:#} -> {DIM}{}{DIM:#}: {NUM}{}{NUM:#} bytes in {NUM}{:.2?}{NUM:#}",
             report.source,
@@ -920,6 +936,14 @@ fn print_report(
     }
     for t in &report.targets {
         match &t.result {
+            Ok(()) if t.skipped => {
+                anstream::eprintln!(
+                    "{prefix}{DIM}skip  {:>14}  {:>9}  {}{DIM:#}",
+                    "already there",
+                    "",
+                    t.target
+                );
+            }
             Ok(()) => {
                 anstream::eprintln!(
                     "{prefix}{OK}ok    {OK:#}  {NUM}{:>12}{NUM:#} bytes  {NUM}{:>9.2?}{NUM:#}  {DIM}{}{DIM:#}",
@@ -1226,6 +1250,7 @@ fn report_json(report: &mpt::FanoutReport) -> serde_json::Value {
                 "cancelled": matches!(t.result, Err(mpt::Error::Cancelled)),
                 "sidecar": t.sidecar,
                 "signature": t.signature,
+                "skipped": t.skipped,
             })
         })
         .collect();
@@ -1412,6 +1437,7 @@ fn show_config(cfg: &mpt::Config) {
         "defaults".timeout = d.timeout,
         "defaults".atomic = d.atomic,
         "defaults".resume = d.resume,
+        "defaults".skip_existing = d.skip_existing,
         "defaults".log = d.log,
         "defaults".parallel = d.parallel,
         "policy".known_hosts = p.known_hosts,
@@ -1622,6 +1648,7 @@ mod tests {
                     result: Ok(()),
                     sidecar: Some("sftp://h/in/a.txt.sha256".into()),
                     signature: None,
+                    skipped: false,
                 },
                 mpt::TargetReport {
                     target: "ftp://h/in/".into(),
@@ -1631,6 +1658,7 @@ mod tests {
                     result: Err(mpt::Error::Auth("wrong password".into())),
                     sidecar: None,
                     signature: None,
+                    skipped: false,
                 },
             ],
             digests: vec![(HashAlgo::Sha256, "abc".into())],

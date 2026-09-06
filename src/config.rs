@@ -89,6 +89,8 @@ pub struct Defaults {
     pub atomic: Option<bool>,
     /// Continue an interrupted transfer from what is in the `.mpt-part` file.
     pub resume: Option<bool>,
+    /// Leave targets alone that already hold a file of the same name and size.
+    pub skip_existing: Option<bool>,
     /// Log level, either a bare level or `RUST_LOG` syntax.
     pub log: Option<String>,
     /// Print the report as JSON on standard output.
