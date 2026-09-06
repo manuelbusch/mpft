@@ -30,8 +30,8 @@ use tracing::{info, warn};
 use crate::batch::Targets;
 use crate::config::UrlRule;
 use crate::transfer::CopyOptions;
-use crate::{Error, Location, Result};
-use model::{Event, JobId, JobOptions};
+use crate::{Error, Result};
+use model::{Event, JobId};
 use store::{Journal, Store};
 
 pub use api::router;
@@ -157,7 +157,7 @@ impl ServerConfig {
 }
 
 /// A URL to a location, with the job's options at hand.
-pub type LocateFn = dyn Fn(&str, &JobOptions) -> Result<Location> + Send + Sync;
+pub use crate::options::LocateFn;
 
 /// How jobs are run: the copy options every job starts from and how a URL
 /// becomes a location.

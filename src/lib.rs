@@ -12,8 +12,11 @@ pub mod endpoint;
 pub mod error;
 pub mod hash;
 pub mod location;
+pub mod options;
 pub mod policy;
 pub mod protocols;
+#[cfg(feature = "relay")]
+pub mod relay;
 pub mod report;
 #[cfg(feature = "server")]
 pub mod server;

@@ -111,6 +111,24 @@ impl Error {
         )
     }
 
+    /// The exit code the command line gives for this error, so a relay
+    /// ends the way `cp` would have: 1 a failed transfer, 2 a bad URL,
+    /// option or configuration, 3 a checksum or signature that did not
+    /// hold, 4 refused credentials, 130 cancelled.
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            Error::ChecksumMismatch { .. } | Error::Signature(_) => 3,
+            Error::Auth(_) => 4,
+            Error::Cancelled => 130,
+            Error::Config(_)
+            | Error::InvalidUrl(_)
+            | Error::InvalidOption { .. }
+            | Error::UnsupportedScheme(_)
+            | Error::UnsupportedOperation { .. } => 2,
+            _ => 1,
+        }
+    }
+
     /// A short, stable name of the variant, for machine-readable output:
     /// `io`, `auth`, `cancelled`, …
     pub fn kind(&self) -> &'static str {

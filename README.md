@@ -492,6 +492,77 @@ that submits jobs, follows their progress over the WebSocket and lists and
 cancels them; its `demo.sh` starts a server on temporary directories and
 runs the client against it.
 
+## Relay
+
+`cp` reads a source once but sends it once per target, and on a thin
+uplink — a home office, a mobile connection — that is N uploads. `mpt relay`
+(feature `relay`, in the default build) puts the fan-out where the bandwidth
+is: a machine that takes the file **once**, over SSH, and delivers it to the
+targets itself while the data is still arriving. Nothing is spooled, and
+everything `cp` does — checksums, atomic finishing, the memory cache with
+retries, timeouts — applies unchanged, because a relay *is* `cp` with its
+stdin as the source. The relay knows no targets: the client names them,
+credentials included, and the relay only delivers.
+
+```
+# on the relay host: an SSH server of its own, nothing else to configure
+mpt relay --listen                                # 0.0.0.0:2222
+cat laptop.pub >> ~/.config/mpt/authorized_keys   # who may relay
+
+# on the client
+mpt cp --via ssh://relay@fast.example:2222 report.pdf mpt://prod/ mpt://archive/
+```
+
+`--via` takes an `ssh://` URL, or a profile whose `url` is one; the key,
+the agent, `known_hosts` and `?hostkey=` work as they do for `sftp://`.
+The targets are resolved on the client — profiles, credential providers,
+`--password` — and travel to the relay in full over the SSH channel, so the
+relay needs nothing but a line in `authorized_keys` per client. The one
+thing that cannot travel is a key file: a target with `?key=` (or `?cert=`)
+is refused, since the file is on this side; give such a target a password
+or a token, or put its key on the relay. Flags that need this side —
+`--check`, `--sign`, `--delete-source`, `--resume` — are refused with
+`--via`; `--hash`, `--timeout`, `--cache`/`--retries`, `--skip-existing`,
+`--no-atomic` and `?options` of the targets go along. The progress line
+shows what was sent and what the relay has delivered, the report comes
+back with the targets named as they were given, `--json` prints it as
+usual, and the exit code is what `cp` would have given.
+
+The client stays connected until the relay is done: the upload is the
+transfer. If the connection drops, the relay's source ends early, every
+target fails and partial files are removed (`--no-atomic` leaves them);
+nothing resumes, because nothing is kept on the relay. The slowest target
+sets the pace; `--timeout` drops one that stops taking data, and the
+others finish.
+
+`mpt relay --listen [ADDR]` serves public-key clients from
+`authorized_keys` (`--authorized-keys`, default `~/.config/mpt/authorized_keys`,
+re-read when it changes) with a host key it generates on the first start
+(`--host-key`, default `~/.local/state/mpt/relay_host_key`; the fingerprint
+is in the log). It answers `exec "mpt relay"` and the subsystem `mpt`, and
+nothing else: no shell, no pty, no forwarding, no sftp. `--parallel` bounds
+the relays running at once (further sessions wait), `--max-size` refuses
+larger uploads, and Ctrl-C stops accepting and waits `--grace` for the
+running relays before cancelling them. The same keys go under `[relay]`
+in the configuration; the flags of the process (`--timeout`, `--cache`,
+`--hash`, `[defaults]`) apply to every relay it runs, as they do for
+`serve`.
+
+Without a server of its own, a relay is an sshd account with `mpt` in its
+`PATH`: the client runs `mpt relay` there, and
+`command="mpt relay",restrict ssh-ed25519 …` in that account's
+`authorized_keys` keeps the key from doing anything else. The protocol on
+the channel is small enough for other clients: one JSON line
+`{"v": 1, "name": "report.pdf", "size": 1234, "dst": ["sftp://u:pw@h/in/", …], "options": {…}}`
+(the `options` of the API), then exactly `size` bytes; back come JSON
+lines `{"progress": {"read", "total"}}`, then `{"report": …}` (the shape of
+`--json`) or `{"error": {"kind", "message"}}`, and the exit status.
+
+Whoever is in `authorized_keys` can make the relay write wherever the URLs
+say, with the credentials they carry — trust it like a shell account.
+Those credentials go over SSH to a host whose key the client checked, and
+the relay's log names sizes and outcomes at `-v`, not hosts or paths.
+
 ## Single sign-on
 
 Long-lived keys in a file are what SSO replaces. Where a protocol has an
@@ -869,12 +940,18 @@ source size is unknown).
 Cargo features select protocols: `ssh`, `ftp`, `http`, `webdav`, `s3`, `mail`
 (default: all). `server` adds `mpt::server`: `serve()` runs the API on its
 own, `router()` hands the routes to an axum application of your own.
+`relay` (in the default build) adds `mpt::relay`: `run()` is the relay over
+any reader and writer, `sshd::serve()` its SSH server, `client::send()` the
+sending side; `stream::ReaderEndpoint` makes any reader of a known size a
+source for `copy_many`.
 
 ## Testing
 
 Unit tests: `cargo test` (`cargo test --features server` adds the server's,
 including `tests/server.rs`, which starts the binary and moves local files
-over HTTP and WebSocket).
+over HTTP and WebSocket). `tests/relay.rs` starts the binary as a relay and
+sends a file through it with the binary as the client; it needs
+`ssh-keygen` for the client keys.
 
 End-to-end tests in `tests/integration.rs` run against real servers and are
 skipped unless the corresponding `MPT_IT_*` variable is set. A Docker-free local

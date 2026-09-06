@@ -55,6 +55,8 @@ pub struct Config {
     pub http: HttpSection,
     #[serde(default)]
     pub server: ServerSection,
+    #[serde(default)]
+    pub relay: RelaySection,
     /// Named targets, addressed as `mpt://<name>/<path>`.
     #[serde(default)]
     pub profiles: BTreeMap<String, Profile>,
@@ -215,6 +217,22 @@ pub struct ServerSection {
     pub max_transfers: Option<usize>,
     /// Jobs not yet finished before new ones are refused.
     pub max_queued: Option<usize>,
+}
+
+/// `[relay]` — settings for `mpt relay --listen`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelaySection {
+    /// The server's host key; generated when the file is missing.
+    pub host_key: Option<String>,
+    /// OpenSSH `authorized_keys`: who may relay.
+    pub authorized_keys: Option<String>,
+    /// Relays running at once; further sessions wait.
+    pub parallel: Option<usize>,
+    /// How long a shutdown waits for running relays before cancelling them.
+    pub grace: Option<String>,
+    /// Refuse uploads larger than this, with a unit: `10G`; 0 for no limit.
+    pub max_size: Option<String>,
 }
 
 /// Which URLs the server accepts in a job.
@@ -572,6 +590,21 @@ impl Config {
         {
             out.push("server");
         }
+        let RelaySection {
+            host_key,
+            authorized_keys,
+            parallel,
+            grace,
+            max_size,
+        } = &self.relay;
+        if host_key.is_some()
+            || authorized_keys.is_some()
+            || parallel.is_some()
+            || grace.is_some()
+            || max_size.is_some()
+        {
+            out.push("relay");
+        }
         if !self.profiles.is_empty() {
             out.push("profiles");
         }
@@ -717,7 +750,7 @@ impl Config {
                 .await?;
             self.resolved.profile_passwords.insert(name, pw);
         }
-        if uses(&[crate::Scheme::Sftp, crate::Scheme::Scp])
+        if uses(&[crate::Scheme::Sftp, crate::Scheme::Scp, crate::Scheme::Ssh])
             && let Some(s) = &self.ssh.passphrase
         {
             self.resolved.ssh_passphrase = Some(s.resolve("[ssh] passphrase").await?);

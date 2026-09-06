@@ -207,6 +207,39 @@ enum Cmd {
     /// Take jobs over HTTP and run them; progress by GET or WebSocket
     #[cfg(feature = "server")]
     Serve(ServeArgs),
+    /// Take one upload on stdin and deliver it to the targets its header
+    /// names; with --listen, as an SSH server of its own (see `cp --via`)
+    #[cfg(feature = "relay")]
+    Relay(RelayArgs),
+}
+
+/// Flags of `mpt relay`; each one wins over its `[relay]` key.
+#[cfg(feature = "relay")]
+#[derive(clap::Args, Debug, Clone)]
+struct RelayArgs {
+    /// Listen as an SSH server on this address (0.0.0.0:2222 when the
+    /// flag has no value) instead of reading one upload from stdin
+    #[arg(long, value_name = "ADDR", num_args = 0..=1, default_missing_value = "0.0.0.0:2222")]
+    listen: Option<String>,
+    /// The server's host key; generated when the file is missing
+    /// (~/.local/state/mpt/relay_host_key)
+    #[arg(long, value_name = "PATH")]
+    host_key: Option<PathBuf>,
+    /// Who may connect, in OpenSSH format (~/.config/mpt/authorized_keys)
+    #[arg(long, value_name = "PATH")]
+    authorized_keys: Option<PathBuf>,
+    /// Relays running at once; further sessions wait (4)
+    #[arg(long, value_name = "N")]
+    parallel: Option<usize>,
+    /// Seconds a shutdown waits for running relays before cancelling them (30)
+    #[arg(long, value_name = "SECONDS")]
+    grace: Option<u64>,
+    /// Refuse uploads larger than this, e.g. 10G; 0 for no limit
+    #[arg(long, value_name = "SIZE", value_parser = parse_size)]
+    max_size: Option<u64>,
+    /// Write the port actually bound to this file (for --listen 127.0.0.1:0)
+    #[arg(long, value_name = "PATH")]
+    port_file: Option<PathBuf>,
 }
 
 /// Flags of `mpt serve`; each one wins over its `[server]` key.
@@ -270,14 +303,38 @@ struct BatchArgs {
     /// contents into the target, `dir` the directory itself
     #[arg(short = 'r', long)]
     recursive: bool,
+    /// Send the source once to this SSH host running `mpt relay` (an
+    /// ssh:// URL or a profile with one) and let it deliver to the targets
+    #[cfg(feature = "relay")]
+    #[arg(long, value_name = "URL")]
+    via: Option<String>,
+}
+
+impl BatchArgs {
+    /// The relay `cp --via` names, if the build has one.
+    fn via(&self) -> Option<&str> {
+        #[cfg(feature = "relay")]
+        {
+            self.via.as_deref()
+        }
+        #[cfg(not(feature = "relay"))]
+        {
+            None
+        }
+    }
 }
 
 /// What the command is going to touch, worked out before anything connects
 /// so the credentials of every endpoint can be fetched in one go.
 #[derive(Debug)]
 enum Work {
-    /// One source, its targets: the plain `cp`.
-    Single { src: String, dsts: Vec<String> },
+    /// One source, its targets: the plain `cp`; `via` names the relay
+    /// that delivers instead of this process.
+    Single {
+        src: String,
+        dsts: Vec<String>,
+        via: Option<String>,
+    },
     /// A list of jobs: `cp -t` or `batch`.
     Many(Vec<JobSpec>),
     /// Jobs read from stdin as they come: `batch - --follow`.
@@ -290,8 +347,9 @@ impl Work {
     /// The endpoint URLs the command works on.
     fn urls(&self) -> Vec<&str> {
         match self {
-            Work::Single { src, dsts } => std::iter::once(src.as_str())
+            Work::Single { src, dsts, via } => std::iter::once(src.as_str())
                 .chain(dsts.iter().map(String::as_str))
+                .chain(via.as_deref())
                 .collect(),
             Work::Many(jobs) => jobs
                 .iter()
@@ -310,7 +368,11 @@ impl Cmd {
     /// was given.
     fn work(&self) -> anyhow::Result<Work> {
         Ok(match self {
-            Cmd::Cp { target, urls, .. } if target.is_empty() => {
+            Cmd::Cp {
+                target,
+                urls,
+                batch,
+            } if target.is_empty() => {
                 if urls.len() < 2 {
                     anyhow::bail!(
                         "cp needs a source and at least one target \
@@ -320,7 +382,11 @@ impl Cmd {
                 Work::Single {
                     src: urls[0].clone(),
                     dsts: urls[1..].to_vec(),
+                    via: batch.via().map(String::from),
                 }
+            }
+            Cmd::Cp { batch, .. } | Cmd::Batch { batch, .. } if batch.via().is_some() => {
+                anyhow::bail!("--via takes one source and its targets: `cp --via <URL> SRC DST…`");
             }
             Cmd::Cp { target, urls, .. } => Work::Many(
                 urls.iter()
@@ -363,10 +429,14 @@ impl Cmd {
         }
     }
 
-    /// `mpt serve`: Ctrl-C drains rather than stops.
+    /// `mpt serve` and `mpt relay --listen`: Ctrl-C drains rather than stops.
     fn is_serve(&self) -> bool {
         #[cfg(feature = "server")]
         if matches!(self, Cmd::Serve(_)) {
+            return true;
+        }
+        #[cfg(feature = "relay")]
+        if matches!(self, Cmd::Relay(a) if a.listen.is_some()) {
             return true;
         }
         false
@@ -480,14 +550,17 @@ impl Settings {
 
 // Exit codes, so a script can tell the cases apart without reading messages.
 // clap already uses 2 for a malformed command line, which is why a bad URL or
-// configuration joins it there.
+// configuration joins it there. `mpt::Error::exit_code` maps the library's
+// errors onto them.
 /// At least one target failed.
 const FAILED: u8 = 1;
 /// The command, a URL or the configuration is wrong.
 const USAGE: u8 = 2;
 /// A checksum did not match, or a signature was missing or not trusted.
+#[cfg(test)]
 const UNTRUSTED: u8 = 3;
 /// Authentication failed.
+#[cfg(test)]
 const DENIED: u8 = 4;
 /// Terminated by Ctrl-C, as the shell convention has it.
 const INTERRUPTED: u8 = 130;
@@ -510,17 +583,7 @@ fn exit_code(err: &anyhow::Error) -> u8 {
 
 /// The exit code a library error stands for.
 fn code_of(e: &mpt::Error) -> u8 {
-    match e {
-        mpt::Error::ChecksumMismatch { .. } | mpt::Error::Signature(_) => UNTRUSTED,
-        mpt::Error::Auth(_) => DENIED,
-        mpt::Error::Cancelled => INTERRUPTED,
-        mpt::Error::Config(_)
-        | mpt::Error::InvalidUrl(_)
-        | mpt::Error::InvalidOption { .. }
-        | mpt::Error::UnsupportedScheme(_)
-        | mpt::Error::UnsupportedOperation { .. } => USAGE,
-        _ => FAILED,
-    }
+    e.exit_code()
 }
 
 /// The exit code of a batch: what every failed job agrees on, else 1.
@@ -546,6 +609,26 @@ impl std::fmt::Display for ExitWith {
 }
 
 impl std::error::Error for ExitWith {}
+
+/// A wrong command line, told with exit code 2 like clap's own complaints.
+fn usage(msg: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(ExitWith {
+        code: USAGE,
+        msg: msg.into(),
+    })
+}
+
+/// An exit code whose reason was already told (a relay's JSON line).
+#[derive(Debug)]
+struct Silent(u8);
+
+impl std::fmt::Display for Silent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "exit {}", self.0)
+    }
+}
+
+impl std::error::Error for Silent {}
 
 /// Marks a run that was stopped with Ctrl-C, so `main` can exit with 130.
 #[derive(Debug)]
@@ -611,6 +694,9 @@ async fn main() -> ExitCode {
     match run(cli, settings, work).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
+            if let Some(Silent(code)) = e.downcast_ref::<Silent>() {
+                return ExitCode::from(*code);
+            }
             anstream::eprintln!("{FAIL}error:{FAIL:#} {e:#}");
             ExitCode::from(exit_code(&e))
         }
@@ -826,16 +912,33 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
     // is any source with -r, since it may turn out to be a directory.
     let recursive = cli.cmd.batch_args().is_some_and(|b| b.recursive);
     let work = match work {
-        Work::Single { src, dsts }
-            if recursive || mpt::batch::expand::has_pattern(&locate(&src)?) =>
-        {
+        Work::Single { via: Some(_), .. } if recursive => {
+            return Err(usage(
+                "--recursive is not available with --via: a relay takes one file",
+            ));
+        }
+        Work::Single {
+            src,
+            dsts,
+            via: None,
+        } if recursive || mpt::batch::expand::has_pattern(&locate(&src)?) => {
             Work::Many(vec![JobSpec { src, dsts }])
         }
         w => w,
     };
     match &cli.cmd {
         Cmd::Cp { batch, .. } | Cmd::Batch { batch, .. } => match work {
-            Work::Single { src, dsts } => {
+            #[cfg(feature = "relay")]
+            Work::Single {
+                src,
+                dsts,
+                via: Some(via),
+            } => do_via(&via, &src, &dsts, &locate, &opts, &settings, &cli, cancel).await,
+            #[cfg(not(feature = "relay"))]
+            Work::Single { via: Some(_), .. } => {
+                anyhow::bail!("--via needs the 'relay' feature, which this build lacks")
+            }
+            Work::Single { src, dsts, .. } => {
                 let targets = dsts
                     .iter()
                     .map(|d| open(d))
@@ -984,6 +1087,57 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
             };
             mpt::server::serve(server, rt, cancel, abort).await?;
             Ok(())
+        }
+        #[cfg(feature = "relay")]
+        Cmd::Relay(args) => {
+            // What only this side could do is refused up front, so a
+            // header cannot switch it on either.
+            for (flag, set) in [
+                ("--check", opts.check),
+                ("--delete-source", opts.delete_source),
+                ("--resume", opts.resume),
+            ] {
+                if set {
+                    anyhow::bail!("{flag} has no meaning for a relay: its source is the upload");
+                }
+            }
+            let mut base = opts;
+            base.cancel = None;
+            base.progress = None;
+            let section = &mpt::config::global().relay;
+            let rules = rules.clone();
+            let relay = mpt::relay::Relay {
+                copy: base,
+                cache_limit: settings.cache_limit,
+                locate: std::sync::Arc::new(move |url, o: &mpt::options::JobOptions| {
+                    rules.locate(url, o.timeout)
+                }),
+                max_size: match (args.max_size, &section.max_size) {
+                    (Some(n), _) => n,
+                    (None, Some(v)) => mpt::config::parse_size(v)
+                        .map_err(|e| anyhow::anyhow!("[relay] max_size: {e}"))?,
+                    (None, None) => 0,
+                },
+                cancel: cancel.clone(),
+            };
+            match &args.listen {
+                Some(addr) => {
+                    let listener = relay_listener(addr, args, section)?;
+                    mpt::relay::sshd::serve(listener, std::sync::Arc::new(relay), cancel, abort)
+                        .await?;
+                    Ok(())
+                }
+                None => {
+                    let code =
+                        mpt::relay::run(&relay, tokio::io::stdin(), tokio::io::stdout()).await;
+                    if code == 0 {
+                        Ok(())
+                    } else {
+                        // The outcome went to stdout as JSON already.
+                        Err(anyhow::Error::new(Silent(code)))
+                    }
+                }
+            }
         }
         Cmd::Schemes => {
             anstream::println!(
@@ -1764,6 +1918,314 @@ async fn server_config(
     Ok(out)
 }
 
+/// What `mpt relay --listen` needs, from the flags and `[relay]`.
+#[cfg(feature = "relay")]
+fn relay_listener(
+    addr: &str,
+    args: &RelayArgs,
+    section: &mpt::config::RelaySection,
+) -> anyhow::Result<mpt::relay::sshd::Listener> {
+    let listen = addr
+        .parse()
+        .with_context(|| format!("listen address '{addr}' (expected host:port)"))?;
+    let host_key = args
+        .host_key
+        .clone()
+        .or_else(|| mpt::config::path(&section.host_key))
+        .unwrap_or_else(|| {
+            dirs::state_dir()
+                .or_else(dirs::data_local_dir)
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("mpt")
+                .join("relay_host_key")
+        });
+    let authorized_keys = args
+        .authorized_keys
+        .clone()
+        .or_else(|| mpt::config::path(&section.authorized_keys))
+        .or_else(|| {
+            mpt::config::Config::default_path().map(|p| p.with_file_name("authorized_keys"))
+        })
+        .context("no home directory to look for authorized_keys in: give --authorized-keys")?;
+    let parallel = match args.parallel.or(section.parallel).unwrap_or(4) {
+        0 => anyhow::bail!("parallel must be at least 1"),
+        n => n,
+    };
+    let grace = match (args.grace, section.grace.as_deref()) {
+        (Some(secs), _) => Duration::from_secs(secs),
+        (None, Some(v)) => {
+            mpt::config::parse_duration(v).map_err(|e| anyhow::anyhow!("[relay] grace: {e}"))?
+        }
+        (None, None) => Duration::from_secs(30),
+    };
+    Ok(mpt::relay::sshd::Listener {
+        listen,
+        host_key,
+        authorized_keys,
+        parallel,
+        grace,
+        port_file: args.port_file.clone(),
+    })
+}
+
+/// `cp --via`: send the source once to a relay and let it deliver. The
+/// targets are resolved here, credentials included, so the relay needs no
+/// configuration of its own; the report comes back with them named as
+/// they were given.
+#[cfg(feature = "relay")]
+#[allow(clippy::too_many_arguments)]
+async fn do_via(
+    via: &str,
+    src: &str,
+    dsts: &[String],
+    locate: &dyn Fn(&str) -> anyhow::Result<mpt::Location>,
+    opts: &CopyOptions,
+    settings: &Settings,
+    cli: &Cli,
+    cancel: tokio_util::sync::CancellationToken,
+) -> anyhow::Result<()> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    for (flag, set) in [
+        ("--check", opts.check),
+        ("--delete-source", opts.delete_source),
+        ("--resume", opts.resume),
+        ("--sign", opts.sign.is_some()),
+    ] {
+        if set {
+            return Err(usage(format!(
+                "{flag} is not available with --via: it needs what only this side has \
+                 (the checksum file, the source, the key)"
+            )));
+        }
+    }
+    let relay = locate(via)?;
+    if relay.scheme() != Scheme::Ssh {
+        return Err(usage(format!(
+            "--via needs an ssh:// URL (or a profile with one), not {relay}"
+        )));
+    }
+    // The relay, named without its options: those are for connecting.
+    let label = format!(
+        "ssh://{}{}:{}",
+        relay
+            .username()
+            .map(|u| format!("{u}@"))
+            .unwrap_or_default(),
+        relay.host().unwrap_or(""),
+        relay.port_or_default()
+    );
+    let source = locate(src)?;
+    if mpt::batch::expand::has_pattern(&source) {
+        return Err(usage(
+            "a pattern is not available with --via: name one file",
+        ));
+    }
+    let name = source
+        .filename()
+        .ok_or_else(|| anyhow::anyhow!("the source {source} has no file name"))?
+        .to_string();
+    // The targets as the relay must see them, and how to show them again.
+    let mut shown: Vec<(String, String)> = Vec::new();
+    let mut dst = Vec::new();
+    for given in dsts {
+        let loc = locate(given)?;
+        for opt in ["key", "cert", "passphrase"] {
+            if loc.opt(opt).is_some() {
+                return Err(usage(format!(
+                    "{given}: ?{opt}= names a file on this machine, which the relay cannot \
+                     read; give the target a password, or put the key on the relay"
+                )));
+            }
+        }
+        shown.push((loc.to_string(), given.clone()));
+        dst.push(loc.unmasked());
+    }
+    let source = mpt::protocols::open(source)?;
+    let receiver = source.receiver()?;
+    let size = receiver.size().await?;
+    let stream = receiver
+        .receive()
+        .await
+        .with_context(|| format!("reading {}", source.location()))?;
+    let (stream, size) = match size {
+        Some(n) => (stream, n),
+        None => {
+            tracing::warn!("the source's size is unknown: spooling it to a temporary file first");
+            let (file, n) = mpt::stream::spool_to_tempfile(stream).await?;
+            (mpt::stream::boxed(file), n)
+        }
+    };
+    let header = mpt::relay::Header {
+        v: mpt::relay::VERSION,
+        name,
+        size,
+        dst,
+        options: mpt::options::JobOptions {
+            hash: opts.hash.map(|h| h.name().to_string()),
+            atomic: (!opts.atomic).then_some(false),
+            skip_existing: opts.skip_existing.then_some(true),
+            cache: matches!(opts.cache, CacheMode::Memory { .. }).then_some(true),
+            retries: (opts.retries > 0).then_some(opts.retries),
+            timeout: Some(settings.timeout),
+            ..Default::default()
+        },
+    };
+    let uploaded = Arc::new(AtomicU64::new(0));
+    let relayed = Arc::new(AtomicU64::new(0));
+    let body = mpt::stream::boxed(mpt::stream::Counted::with_counter(
+        stream,
+        Arc::clone(&uploaded),
+    ));
+    let bar = show_progress(cli, settings).then(|| {
+        let (uploaded, relayed) = (Arc::clone(&uploaded), Arc::clone(&relayed));
+        spawn_progress_line(move |secs| {
+            let up = uploaded.load(Ordering::Relaxed);
+            let rate = human_size((up as f64 / secs) as u64);
+            format!(
+                "{} / {} ({:>3.0}%) sent, {} delivered  {rate}/s",
+                human_size(up),
+                human_size(size),
+                if size > 0 {
+                    up as f64 * 100.0 / size as f64
+                } else {
+                    100.0
+                },
+                human_size(relayed.load(Ordering::Relaxed))
+            )
+        })
+    });
+    let outcome = mpt::relay::client::send(&relay, &header, body, &cancel, |line| {
+        if let Some(n) = line["progress"]["read"].as_u64() {
+            relayed.store(n, Ordering::Relaxed);
+        }
+    })
+    .await;
+    clear_progress(bar);
+    let outcome = match outcome {
+        Ok(o) => o,
+        Err(mpt::Error::Cancelled) => {
+            return Err(anyhow::Error::new(Interrupted).context("upload stopped"));
+        }
+        Err(e) => return Err(anyhow::Error::new(e).context(format!("relay {label}"))),
+    };
+    for line in outcome.stderr.lines().filter(|l| !l.trim().is_empty()) {
+        anstream::eprintln!("{DIM}relay: {line}{DIM:#}");
+    }
+    if let Some(err) = &outcome.error {
+        let msg = err["message"].as_str().unwrap_or("refused");
+        return Err(anyhow::Error::new(ExitWith {
+            code: outcome.exit.max(FAILED),
+            msg: format!("relay: {msg}"),
+        }));
+    }
+    let Some(report) = outcome.report else {
+        anyhow::bail!("the relay ended with exit {} and no report", outcome.exit);
+    };
+    let report = with_given_names(report, &shown);
+    if settings.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    }
+    print_relay_report(&report, &label);
+    match outcome.exit {
+        0 => Ok(()),
+        INTERRUPTED => Err(anyhow::Error::new(Interrupted).context("the relay was stopped")),
+        code => {
+            let targets = report["targets"].as_array().map_or(0, Vec::len);
+            let failed = report["targets"]
+                .as_array()
+                .map_or(0, |t| t.iter().filter(|t| t["ok"] != true).count());
+            Err(anyhow::Error::new(ExitWith {
+                code,
+                msg: format!("{failed} of {targets} targets failed"),
+            }))
+        }
+    }
+}
+
+/// The relay's report with every target (and its checksum and signature
+/// files) named as it was given here, not as the relay resolved it.
+#[cfg(feature = "relay")]
+fn with_given_names(
+    mut report: serde_json::Value,
+    shown: &[(String, String)],
+) -> serde_json::Value {
+    let rename = |v: &mut serde_json::Value| {
+        if let Some(text) = v.as_str() {
+            for (resolved, given) in shown {
+                if let Some(rest) = text.strip_prefix(resolved.as_str()) {
+                    *v = serde_json::Value::String(format!("{given}{rest}"));
+                    return;
+                }
+            }
+        }
+    };
+    if let Some(targets) = report["targets"].as_array_mut() {
+        for t in targets {
+            rename(&mut t["target"]);
+            rename(&mut t["sidecar"]);
+            rename(&mut t["signature"]);
+        }
+    }
+    report
+}
+
+/// The relay's report the way `cp` prints its own: one line per target,
+/// the digests, a summary naming the relay.
+#[cfg(feature = "relay")]
+fn print_relay_report(report: &serde_json::Value, relay: &str) {
+    let ms = |v: &serde_json::Value| Duration::from_millis(v.as_u64().unwrap_or(0));
+    let targets = report["targets"].as_array().cloned().unwrap_or_default();
+    let mut failed = 0;
+    for t in &targets {
+        let target = t["target"].as_str().unwrap_or("?");
+        if t["skipped"] == true {
+            anstream::eprintln!(
+                "{DIM}skip  {:>14}  {:>9}  {target}{DIM:#}",
+                "already there",
+                ""
+            );
+        } else if t["ok"] == true {
+            anstream::eprintln!(
+                "{OK}ok    {OK:#}  {NUM}{:>12}{NUM:#} bytes  {NUM}{:>9.2?}{NUM:#}  {DIM}{target}{DIM:#}",
+                t["bytes"].as_u64().unwrap_or(0),
+                ms(&t["elapsed_ms"])
+            );
+            for extra in [&t["sidecar"], &t["signature"]] {
+                if let Some(path) = extra.as_str() {
+                    anstream::eprintln!("{DIM}        + {path}{DIM:#}");
+                }
+            }
+        } else {
+            failed += 1;
+            anstream::eprintln!(
+                "{FAIL}FAILED{FAIL:#}  {NUM}{:>12}{NUM:#} bytes  {NUM}{:>9.2?}{NUM:#}  {DIM}{target}{DIM:#}: {FAIL}{}{FAIL:#}",
+                t["bytes"].as_u64().unwrap_or(0),
+                ms(&t["elapsed_ms"]),
+                t["error"].as_str().unwrap_or("failed")
+            );
+        }
+    }
+    let summary = if failed == 0 { OK } else { WARN };
+    anstream::eprintln!(
+        "{DIM}{} via {relay}{DIM:#}: {NUM}{}{NUM:#} bytes sent, {summary}{}/{} targets ok{summary:#} in {NUM}{:.2?}{NUM:#}",
+        report["source"].as_str().unwrap_or("?"),
+        report["bytes_read"].as_u64().unwrap_or(0),
+        targets.len() - failed,
+        targets.len(),
+        ms(&report["elapsed_ms"])
+    );
+    if let Some(digests) = report["digests"].as_object() {
+        for (algo, hex) in digests {
+            anstream::eprintln!(
+                "{HEAD}{algo:<7}{HEAD:#} {NUM}{}{NUM:#}",
+                hex.as_str().unwrap_or("")
+            );
+        }
+    }
+}
+
 /// `mpt profiles`: the named targets and what they resolve to.
 fn show_profiles(cfg: &mpt::Config) {
     if cfg.profiles.is_empty() {
@@ -1866,6 +2328,11 @@ fn show_config(cfg: &mpt::Config) {
         "server".allow_delete = cfg.server.allow_delete,
         "server".max_transfers = cfg.server.max_transfers,
         "server".max_queued = cfg.server.max_queued,
+        "relay".host_key = cfg.relay.host_key,
+        "relay".authorized_keys = cfg.relay.authorized_keys,
+        "relay".parallel = cfg.relay.parallel,
+        "relay".grace = cfg.relay.grace,
+        "relay".max_size = cfg.relay.max_size,
     );
     if !cfg.server.profiles.is_empty() {
         rows.push(("[server] profiles".into(), cfg.server.profiles.join(", ")));
@@ -1993,7 +2460,7 @@ mod tests {
         );
 
         let cli = Cli::parse_from(["mpt", "cp", "a", "b", "c"]);
-        let Work::Single { src, dsts } = cli.cmd.work().unwrap() else {
+        let Work::Single { src, dsts, .. } = cli.cmd.work().unwrap() else {
             panic!("expected a single copy");
         };
         assert_eq!(src, "a");

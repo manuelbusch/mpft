@@ -59,6 +59,10 @@ pub fn open(mut loc: Location) -> Result<Box<dyn Endpoint>> {
         Scheme::Sftp => Ok(Box::new(ssh::sftp::SftpEndpoint::new(loc)?)),
         #[cfg(feature = "ssh")]
         Scheme::Scp => Ok(Box::new(ssh::scp::ScpEndpoint::new(loc)?)),
+        Scheme::Ssh => Err(Error::UnsupportedOperation {
+            scheme: "ssh".into(),
+            op: "hold files (it names a relay for `cp --via`; sftp:// or scp:// reach its files)",
+        }),
 
         #[cfg(feature = "ftp")]
         Scheme::Ftp | Scheme::Ftps => Ok(Box::new(ftp::FtpEndpoint::new(loc)?)),

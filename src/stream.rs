@@ -720,3 +720,150 @@ mod idle_tests {
         assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
     }
 }
+
+// ---------------------------------------------------------------------------
+// A reader as a source: a relay's stdin, a pipe.
+// ---------------------------------------------------------------------------
+
+/// Something read once, of a size known up front, as the source of a copy:
+/// what a relay gets on its stdin. `copy_many` takes it like any other
+/// endpoint; it cannot be listed, and nothing can be sent to it.
+pub struct ReaderEndpoint {
+    location: crate::Location,
+    size: u64,
+    reader: std::sync::Mutex<Option<ByteStream>>,
+}
+
+impl ReaderEndpoint {
+    /// `name` is what the targets call the file (reduced to a single path
+    /// component); `size` is how many bytes the reader must yield —
+    /// fewer are an error, so a source that ends early fails the copy.
+    pub fn new(
+        name: &str,
+        size: u64,
+        reader: impl AsyncRead + Send + 'static,
+    ) -> Result<ReaderEndpoint> {
+        let name = crate::location::safe_name(name)?;
+        Ok(ReaderEndpoint {
+            location: crate::Location::parse(&name)?,
+            size,
+            reader: std::sync::Mutex::new(Some(boxed(reader))),
+        })
+    }
+}
+
+impl crate::Endpoint for ReaderEndpoint {
+    fn location(&self) -> &crate::Location {
+        &self.location
+    }
+
+    fn as_receiver(&self) -> Option<&dyn crate::Receiver> {
+        Some(self)
+    }
+
+    fn as_sender(&self) -> Option<&dyn crate::Sender> {
+        None
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::Receiver for ReaderEndpoint {
+    async fn receive(&self) -> Result<ByteStream> {
+        let reader = self
+            .reader
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .ok_or_else(|| {
+                crate::Error::Io(std::io::Error::other("the source can only be read once"))
+            })?;
+        Ok(boxed(Exact {
+            inner: reader.take(self.size),
+            size: self.size,
+            got: 0,
+        }))
+    }
+
+    async fn list(&self) -> Result<Vec<crate::Entry>> {
+        Err(crate::Error::UnsupportedOperation {
+            scheme: "reader".into(),
+            op: "list",
+        })
+    }
+
+    async fn size(&self) -> Result<Option<u64>> {
+        Ok(Some(self.size))
+    }
+}
+
+/// Exactly `size` bytes of a reader: an EOF before that is an error, so a
+/// sender does not finish a short file as if it were whole.
+struct Exact<R> {
+    inner: tokio::io::Take<R>,
+    size: u64,
+    got: u64,
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for Exact<R> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let res = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let std::task::Poll::Ready(Ok(())) = &res {
+            let n = (buf.filled().len() - before) as u64;
+            self.got += n;
+            if n == 0 && self.got < self.size {
+                return std::task::Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    format!("the source ended after {} of {} bytes", self.got, self.size),
+                )));
+            }
+        }
+        res
+    }
+}
+
+#[cfg(test)]
+mod reader_endpoint_tests {
+    use super::*;
+    use crate::Receiver;
+
+    #[tokio::test]
+    async fn yields_exactly_the_size_and_reads_once() {
+        let ep = ReaderEndpoint::new(
+            "../x/report.pdf",
+            5,
+            std::io::Cursor::new(b"hello world".to_vec()),
+        )
+        .unwrap();
+        assert_eq!(ep.location.filename(), Some("report.pdf"));
+        assert_eq!(ep.size().await.unwrap(), Some(5));
+        let mut out = Vec::new();
+        ep.receive()
+            .await
+            .unwrap()
+            .read_to_end(&mut out)
+            .await
+            .unwrap();
+        assert_eq!(out, b"hello");
+        assert!(ep.receive().await.is_err(), "a second read is refused");
+    }
+
+    #[tokio::test]
+    async fn a_short_source_is_an_error() {
+        let ep = ReaderEndpoint::new("f", 10, std::io::Cursor::new(b"hello".to_vec())).unwrap();
+        let mut out = Vec::new();
+        let err = ep
+            .receive()
+            .await
+            .unwrap()
+            .read_to_end(&mut out)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(err.to_string().contains("5 of 10"), "{err}");
+    }
+}

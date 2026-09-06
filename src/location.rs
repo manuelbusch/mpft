@@ -15,6 +15,9 @@ pub enum Scheme {
     File,
     Sftp,
     Scp,
+    /// An SSH host as such: where `cp --via` runs the relay. Nothing is
+    /// read from or written to it.
+    Ssh,
     Ftp,
     Ftps,
     Http,
@@ -70,6 +73,16 @@ impl Scheme {
             default_port: Some(22),
             options: "key=<file>, known_hosts=strict|accept-new|off, hostkey=SHA256:…",
             feature: "ssh",
+        },
+        SchemeInfo {
+            scheme: Scheme::Ssh,
+            prefix: "ssh://",
+            description: "an SSH host running `mpt relay` (cp --via)",
+            can_receive: false,
+            can_send: false,
+            default_port: Some(22),
+            options: "key=<file>, known_hosts=strict|accept-new|off, hostkey=SHA256:…",
+            feature: "relay",
         },
         SchemeInfo {
             scheme: Scheme::Ftp,
@@ -168,6 +181,7 @@ impl Scheme {
             "file" => Scheme::File,
             "sftp" => Scheme::Sftp,
             "scp" => Scheme::Scp,
+            "ssh" => Scheme::Ssh,
             "ftp" => Scheme::Ftp,
             "ftps" => Scheme::Ftps,
             "http" => Scheme::Http,
@@ -626,7 +640,99 @@ impl Location {
     pub fn masked(&self) -> String {
         self.to_string()
     }
+
+    /// The URL with the password in it and every part encoded, so that
+    /// [`Location::parse`] reads it back as it is: for handing an endpoint
+    /// to another process (a relay), never for a log.
+    pub fn unmasked(&self) -> String {
+        use percent_encoding::utf8_percent_encode as enc;
+        let mut out = String::new();
+        match self.scheme {
+            Scheme::File => return self.path.clone(),
+            Scheme::Mailto => {
+                out.push_str("mailto:");
+                out.push_str(&enc(&self.path, PATH_SET).to_string());
+            }
+            Scheme::S3 => {
+                out.push_str("s3://");
+                out.push_str(&enc(&self.path, PATH_SET).to_string());
+            }
+            _ => {
+                out.push_str(&format!("{}://", self.scheme));
+                if let Some(u) = &self.username {
+                    out.push_str(&enc(u, USERINFO_SET).to_string());
+                    if let Some(p) = &self.password {
+                        out.push(':');
+                        out.push_str(&enc(p.expose_secret(), USERINFO_SET).to_string());
+                    }
+                    out.push('@');
+                }
+                if let Some(h) = &self.host {
+                    if h.contains(':') {
+                        out.push_str(&format!("[{h}]"));
+                    } else {
+                        out.push_str(h);
+                    }
+                }
+                if let Some(p) = self.port {
+                    out.push_str(&format!(":{p}"));
+                }
+                if self.scheme == Scheme::Smtp {
+                    out.push('/');
+                }
+                out.push_str(&enc(&self.path, PATH_SET).to_string());
+            }
+        }
+        if !self.options.is_empty() {
+            let q: Vec<String> = self
+                .options
+                .iter()
+                .map(|(k, v)| format!("{}={}", enc(k, QUERY_SET), enc(v, QUERY_SET)))
+                .collect();
+            out.push('?');
+            out.push_str(&q.join("&"));
+        }
+        out
+    }
 }
+
+/// What [`Location::unmasked`] encodes in the user name and password.
+const USERINFO_SET: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'/')
+    .add(b':')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'@')
+    .add(b'[')
+    .add(b'\\')
+    .add(b']')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}');
+
+/// What [`Location::unmasked`] encodes in the path: what would end it or
+/// be decoded on the way back.
+const PATH_SET: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'`')
+    .add(b'{')
+    .add(b'}');
+
+/// What [`Location::unmasked`] encodes in an option's key and value.
+const QUERY_SET: &percent_encoding::AsciiSet = &PATH_SET.add(b'&').add(b'=').add(b'+');
 
 impl fmt::Display for Location {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1158,5 +1264,31 @@ mod tests {
         l.set_password("from-env");
         assert_eq!(l.password(), Some("from-env"));
         assert!(l.to_string().contains("u:***@"));
+    }
+
+    #[test]
+    fn unmasked_round_trips_through_parse() {
+        for raw in [
+            "sftp://u%40x:p%25%3Ass@h:2222/a%20b/c%3Fd?key=/x/y&hostkey=SHA256:ab%2Bc%3D",
+            "ftps://u@[::1]:21/in/",
+            "s3://bucket/some%20key?endpoint=https://minio:9000",
+            "smtp://u:pw@mail/a@x.y,b@x.y?tls=starttls",
+            "mailto:a@x.y?subject=hi%20there",
+            "/tmp/plain path",
+        ] {
+            let loc = Location::parse(raw).unwrap();
+            let again = Location::parse(&loc.unmasked()).unwrap();
+            assert_eq!(again.scheme(), loc.scheme(), "{raw}");
+            assert_eq!(again.username(), loc.username(), "{raw}");
+            assert_eq!(again.password(), loc.password(), "{raw}");
+            assert_eq!(again.host(), loc.host(), "{raw}");
+            assert_eq!(again.port(), loc.port(), "{raw}");
+            assert_eq!(again.path(), loc.path(), "{raw}");
+            assert_eq!(again.options(), loc.options(), "{raw}");
+            assert_eq!(again.is_dir_target(), loc.is_dir_target(), "{raw}");
+        }
+        let loc = Location::parse("sftp://u:secret@h/x").unwrap();
+        assert!(loc.unmasked().contains("secret"));
+        assert!(!loc.to_string().contains("secret"));
     }
 }

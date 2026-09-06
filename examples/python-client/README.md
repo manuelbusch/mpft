@@ -89,6 +89,12 @@ the status, the kind and, for a `429`, the server's `Retry-After`. A
 `max_transfers`; the same kind on a *failed* job means a pattern or a tree
 turned out that large.
 
+**Relay.** `mpt relay` is the other way in: one upload over SSH that the
+relay fans out itself (see "Relay" in the main README). It is not an HTTP
+route — a client for it opens an SSH session, runs `mpt relay`, writes one
+JSON header line and the bytes, and reads JSON lines back; `asyncssh`
+would do, and `mpt cp --via` already does.
+
 ## Development
 
 ```

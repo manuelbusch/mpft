@@ -3002,6 +3002,7 @@ dependencies = [
  "csv",
  "dirs",
  "futures",
+ "getrandom 0.4.3",
  "glob",
  "hex",
  "keyring",
