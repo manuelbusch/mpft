@@ -68,6 +68,7 @@ Priority: URL > environment > default. Passwords are masked in all log output.
 mpt cp <SRC_URL> <DST_URL>...    copy from one endpoint to one or more targets
 mpt cp -t <DST_URL> <SRC_URL>... copy every source into a directory target (-t repeatable)
 mpt batch <FILE|->               run a job list: lines, JSON Lines or CSV (see below)
+mpt batch - --follow             run jobs as their lines arrive on stdin
 mpt ls <URL>                     list a directory
 mpt schemes                      print the table above
 mpt profiles                     list the named targets from the configuration
@@ -334,6 +335,16 @@ guessed from the first line, and `--format lines|jsonl|csv` settles it.
 | lines | `/data/a.bin sftp://srv/in/ s3://bucket/in/` | shell quoting for names with spaces, `#` comments |
 | JSON Lines | `{"src": "/data/a.bin", "dst": ["sftp://srv/in/", "s3://bucket/in/"]}` | `dst` is a string or a list |
 | CSV / TSV | header `src,dst,dst`, one row per job | extra columns are ignored, empty `dst` cells too |
+
+`batch - --follow` does not wait for the end of the input: every line is
+run as soon as it is complete, and the batch ends when the input does. That
+turns a pipe into a queue, `inotifywait -m … | mpt batch - --follow` say, or
+a script that decides job by job. Credentials for endpoints that first
+appear in a later line are fetched when that line arrives. A line that
+cannot be read, resolved or would write a file an earlier job already
+writes is reported (`line 7: …`) and skipped; the rest carry on. The line
+form and JSON Lines work as they do from a file; CSV needs its header row
+first.
 
 URLs in a list are what you would type on the command line: `mpt://profile/`
 names work, and the credentials of every endpoint in the list are fetched

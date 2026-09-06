@@ -176,6 +176,10 @@ enum Cmd {
         /// line when not given
         #[arg(long, value_name = "FORMAT")]
         format: Option<Format>,
+        /// Run each job as its line arrives instead of reading the whole
+        /// list first (only from stdin); the batch ends with the input
+        #[arg(long)]
+        follow: bool,
         #[command(flatten)]
         batch: BatchArgs,
     },
@@ -232,6 +236,8 @@ enum Work {
     Single { src: String, dsts: Vec<String> },
     /// A list of jobs: `cp -t` or `batch`.
     Many(Vec<JobSpec>),
+    /// Jobs read from stdin as they come: `batch - --follow`.
+    Follow,
     /// Any other URLs the command names.
     Urls(Vec<String>),
 }
@@ -250,6 +256,7 @@ impl Work {
                 })
                 .collect(),
             Work::Urls(urls) => urls.iter().map(String::as_str).collect(),
+            Work::Follow => Vec::new(),
         }
     }
 }
@@ -279,6 +286,12 @@ impl Cmd {
                     })
                     .collect(),
             ),
+            Cmd::Batch { file, follow, .. } if *follow => {
+                if file.as_os_str() != "-" {
+                    anyhow::bail!("--follow reads standard input: use `batch - --follow`");
+                }
+                Work::Follow
+            }
             Cmd::Batch { file, format, .. } => {
                 let (text, name) = if file.as_os_str() == "-" {
                     let mut text = String::new();
@@ -755,6 +768,26 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                     .map(|_| mpt::batch::BatchProgress::new());
                 do_batch(jobs, &locate, opts, &settings, batch, progress).await
             }
+            Work::Follow => {
+                let Cmd::Batch { format, .. } = &cli.cmd else {
+                    unreachable!("only batch follows");
+                };
+                let mut opts = opts;
+                let progress = opts
+                    .progress
+                    .take()
+                    .map(|_| mpt::batch::BatchProgress::new());
+                do_follow(
+                    &locate,
+                    opts,
+                    &settings,
+                    batch,
+                    *format,
+                    cli.sign.is_some(),
+                    progress,
+                )
+                .await
+            }
             Work::Urls(_) => unreachable!("cp and batch always have work"),
         },
         Cmd::Ls { url } => {
@@ -1023,31 +1056,10 @@ async fn do_batch(
     let jobs = specs
         .iter()
         .enumerate()
-        .map(|(i, spec)| {
-            let job = || -> anyhow::Result<mpt::Job> {
-                Ok(mpt::Job {
-                    src: locate(&spec.src)?,
-                    dsts: spec
-                        .dsts
-                        .iter()
-                        .map(|d| locate(d))
-                        .collect::<anyhow::Result<Vec<_>>>()?,
-                })
-            };
-            job().with_context(|| format!("job {}", i + 1))
-        })
+        .map(|(i, spec)| locate_job(spec, locate).with_context(|| format!("job {}", i + 1)))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let open = |loc: &mpt::Location| mpt::protocols::open(loc.clone());
-    let jobs = mpt::batch::expand::expand(jobs, &open, args.allow_empty).await?;
-    let jobs = if args.recursive {
-        let tree = mpt::batch::expand::recursive(jobs, &open).await?;
-        if !args.dry_run {
-            mpt::batch::expand::create_dirs(&tree.dirs, &open).await?;
-        }
-        tree.jobs
-    } else {
-        jobs
-    };
+    let jobs = prepare_jobs(jobs, &open, args).await?;
     let n = jobs.len();
     if n == 0 {
         anstream::eprintln!("{WARN}nothing to do{WARN:#}: the job list is empty");
@@ -1056,21 +1068,7 @@ async fn do_batch(
     mpt::batch::check_collisions(&jobs)?;
     if args.dry_run {
         for (i, job) in jobs.iter().enumerate() {
-            if settings.json {
-                let dst: Vec<String> = job.dsts.iter().map(|d| d.to_string()).collect();
-                println!(
-                    "{}",
-                    serde_json::json!({ "job": i + 1, "src": job.src.to_string(), "dst": dst })
-                );
-            } else {
-                let dsts: Vec<String> = job.dsts.iter().map(|d| d.to_string()).collect();
-                anstream::println!(
-                    "{DIM}[{}/{n}]{DIM:#} {} -> {}",
-                    i + 1,
-                    job.src,
-                    dsts.join(", ")
-                );
-            }
+            print_dry_run(job, i + 1, Some(n), settings.json);
         }
         return Ok(());
     }
@@ -1080,12 +1078,95 @@ async fn do_batch(
         fail_fast: args.fail_fast,
         progress,
     };
-    let mut codes: Vec<u8> = Vec::new();
-    let mut cancelled = false;
-    let json = settings.json;
-    let report = mpt::batch::run(jobs, &open, &opts, &batch_opts, |r| {
-        let prefix = format!("[{}/{n}] ", r.index + 1);
-        if json {
+    let mut out = BatchOutput::new(Some(n), settings.json);
+    let report = mpt::batch::run(jobs, &open, &opts, &batch_opts, |r| out.job_done(r, &opts)).await;
+    clear_progress(bar);
+    out.finish(&report)
+}
+
+/// The URLs of a job list entry as locations.
+fn locate_job(
+    spec: &JobSpec,
+    locate: &dyn Fn(&str) -> anyhow::Result<mpt::Location>,
+) -> anyhow::Result<mpt::Job> {
+    Ok(mpt::Job {
+        src: locate(&spec.src)?,
+        dsts: spec
+            .dsts
+            .iter()
+            .map(|d| locate(d))
+            .collect::<anyhow::Result<Vec<_>>>()?,
+    })
+}
+
+/// Patterns and trees turned into file jobs, directories created on the
+/// way (not on a dry run).
+async fn prepare_jobs(
+    jobs: Vec<mpt::Job>,
+    open: &(dyn Fn(&mpt::Location) -> mpt::Result<Box<dyn mpt::Endpoint>> + Sync),
+    args: &BatchArgs,
+) -> anyhow::Result<Vec<mpt::Job>> {
+    let jobs = mpt::batch::expand::expand(jobs, open, args.allow_empty).await?;
+    if !args.recursive {
+        return Ok(jobs);
+    }
+    let tree = mpt::batch::expand::recursive(jobs, open).await?;
+    if !args.dry_run {
+        mpt::batch::expand::create_dirs(&tree.dirs, open).await?;
+    }
+    Ok(tree.jobs)
+}
+
+fn print_dry_run(job: &mpt::Job, index: usize, total: Option<usize>, json: bool) {
+    let dsts: Vec<String> = job.dsts.iter().map(|d| d.to_string()).collect();
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "job": index, "src": job.src.to_string(), "dst": dsts })
+        );
+    } else {
+        anstream::println!(
+            "{DIM}[{}]{DIM:#} {} -> {}",
+            counter(index, total),
+            job.src,
+            dsts.join(", ")
+        );
+    }
+}
+
+/// `3/120`, or just `3` when the total is not known yet.
+fn counter(index: usize, total: Option<usize>) -> String {
+    match total {
+        Some(n) => format!("{index}/{n}"),
+        None => index.to_string(),
+    }
+}
+
+/// What the batch prints as jobs finish, and the verdict at the end.
+struct BatchOutput {
+    total: Option<usize>,
+    json: bool,
+    /// Exit code of every failed job (and every line that never became one).
+    codes: Vec<u8>,
+    cancelled: bool,
+    /// Lines that were not run at all: unreadable, or a target already taken.
+    rejected: usize,
+}
+
+impl BatchOutput {
+    fn new(total: Option<usize>, json: bool) -> Self {
+        BatchOutput {
+            total,
+            json,
+            codes: Vec::new(),
+            cancelled: false,
+            rejected: 0,
+        }
+    }
+
+    fn job_done(&mut self, r: &mpt::JobReport, opts: &CopyOptions) {
+        let prefix = format!("[{}] ", counter(r.index + 1, self.total));
+        if self.json {
             let mut line = match &r.result {
                 Ok(rep) => report_json(rep),
                 Err(e) => serde_json::json!({
@@ -1100,11 +1181,11 @@ async fn do_batch(
         }
         match &r.result {
             Ok(rep) => {
-                if let Some((code, msg)) = print_report(rep, &opts, &prefix) {
+                if let Some((code, msg)) = print_report(rep, opts, &prefix) {
                     if rep.targets.len() == 1 {
                         anstream::eprintln!("{prefix}{FAIL}FAILED{FAIL:#} {msg}");
                     }
-                    codes.push(code);
+                    self.codes.push(code);
                 }
             }
             Err(e) => {
@@ -1112,37 +1193,186 @@ async fn do_batch(
                     "{prefix}{FAIL}FAILED{FAIL:#} {}: {FAIL}{e}{FAIL:#}",
                     r.job.src
                 );
-                codes.push(code_of(e));
+                self.codes.push(code_of(e));
             }
         }
-        cancelled |= r.cancelled();
-    })
-    .await;
-    clear_progress(bar);
-    let failed = report.failures().count();
-    let summary = if failed == 0 { OK } else { WARN };
-    anstream::eprintln!(
-        "{summary}{}/{n} jobs ok{summary:#} in {NUM}{:.2?}{NUM:#}{}",
-        n - failed,
-        report.elapsed,
-        if report.stopped_early {
-            " (stopped after the first failure)"
-        } else {
-            ""
+        self.cancelled |= r.cancelled();
+    }
+
+    /// A line of input that never became a job.
+    fn rejected(&mut self, line: usize, err: &anyhow::Error) {
+        anstream::eprintln!("{FAIL}line {line}:{FAIL:#} {err:#}");
+        if self.json {
+            println!(
+                "{}",
+                serde_json::json!({ "line": line, "ok": false, "error": format!("{err:#}") })
+            );
         }
-    );
-    if cancelled {
-        return Err(
-            anyhow::Error::new(Interrupted).context(format!("{failed} of {n} jobs unfinished"))
+        self.codes.push(exit_code(err));
+        self.rejected += 1;
+    }
+
+    fn finish(self, report: &mpt::BatchReport) -> anyhow::Result<()> {
+        let n = report.jobs.len() + self.rejected;
+        let failed = report.failures().count() + self.rejected;
+        let summary = if failed == 0 { OK } else { WARN };
+        anstream::eprintln!(
+            "{summary}{}/{n} jobs ok{summary:#} in {NUM}{:.2?}{NUM:#}{}",
+            n - failed,
+            report.elapsed,
+            if report.stopped_early {
+                " (stopped after the first failure)"
+            } else {
+                ""
+            }
         );
+        if self.cancelled {
+            return Err(
+                anyhow::Error::new(Interrupted).context(format!("{failed} of {n} jobs unfinished"))
+            );
+        }
+        if failed > 0 {
+            return Err(anyhow::Error::new(ExitWith {
+                code: batch_code(&self.codes),
+                msg: format!("{failed} of {n} jobs failed"),
+            }));
+        }
+        Ok(())
     }
-    if failed > 0 {
-        return Err(anyhow::Error::new(ExitWith {
-            code: batch_code(&codes),
-            msg: format!("{failed} of {n} jobs failed"),
-        }));
+}
+
+/// Jobs from standard input, each run as soon as its line is complete.
+/// Credentials for endpoints that turn up along the way are fetched then.
+/// A line that cannot be read, resolved or would write a file an earlier
+/// job writes is reported and skipped; the rest carry on.
+async fn do_follow(
+    locate: &dyn Fn(&str) -> anyhow::Result<mpt::Location>,
+    opts: CopyOptions,
+    settings: &Settings,
+    args: &BatchArgs,
+    format: Option<Format>,
+    signing: bool,
+    progress: Option<std::sync::Arc<mpt::batch::BatchProgress>>,
+) -> anyhow::Result<()> {
+    use futures::StreamExt;
+    use tokio::io::AsyncBufReadExt;
+
+    let open = |loc: &mpt::Location| mpt::protocols::open(loc.clone());
+    let out = std::sync::Mutex::new(BatchOutput::new(None, settings.json));
+    let cancel = opts.cancel.clone();
+    let bar = progress.clone().map(spawn_batch_progress);
+    let batch_opts = mpt::BatchOptions {
+        parallel: settings.parallel,
+        fail_fast: args.fail_fast,
+        progress,
+    };
+
+    struct Reader {
+        lines: tokio::io::Lines<tokio::io::BufReader<tokio::io::Stdin>>,
+        format: Option<Format>,
+        /// The header row of a CSV list, put in front of every later row.
+        header: Option<String>,
+        line: usize,
+        index: usize,
+        targets: mpt::batch::Targets,
     }
-    Ok(())
+    let reader = Reader {
+        lines: tokio::io::BufReader::new(tokio::io::stdin()).lines(),
+        format,
+        header: None,
+        line: 0,
+        index: 0,
+        targets: mpt::batch::Targets::default(),
+    };
+    // One line in, zero or more jobs out (a pattern or a tree makes several).
+    let report = {
+        let jobs = futures::stream::unfold(reader, |mut r| async {
+            loop {
+                let next = match &cancel {
+                    Some(c) => tokio::select! {
+                        biased;
+                        () = c.cancelled() => return None,
+                        l = r.lines.next_line() => l,
+                    },
+                    None => r.lines.next_line().await,
+                };
+                let text = match next {
+                    Ok(Some(l)) => l,
+                    Ok(None) => return None,
+                    Err(e) => {
+                        out.lock()
+                            .unwrap()
+                            .rejected(r.line + 1, &anyhow::Error::new(e).context("reading stdin"));
+                        return None;
+                    }
+                };
+                r.line += 1;
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let format = *r
+                    .format
+                    .get_or_insert_with(|| mpt::batch::jobs::detect(None, &text));
+                let text = match (format, &r.header) {
+                    (Format::Csv, None) => {
+                        r.header = Some(text);
+                        continue;
+                    }
+                    (Format::Csv, Some(h)) => format!("{h}\n{text}"),
+                    _ => text,
+                };
+                let line = r.line;
+                let before = r.index;
+                let jobs = async {
+                    let specs = mpt::batch::jobs::parse(&text, format)?;
+                    let urls: Vec<&str> = specs
+                        .iter()
+                        .flat_map(|j| {
+                            std::iter::once(j.src.as_str()).chain(j.dsts.iter().map(String::as_str))
+                        })
+                        .collect();
+                    mpt::config::resolve_more(&urls, signing).await?;
+                    let jobs = specs
+                        .iter()
+                        .map(|s| locate_job(s, locate))
+                        .collect::<anyhow::Result<Vec<_>>>()?;
+                    let jobs = prepare_jobs(jobs, &open, args).await?;
+                    for job in &jobs {
+                        r.index += 1;
+                        r.targets.note(job, r.index)?;
+                    }
+                    anyhow::Ok(jobs)
+                }
+                .await;
+                match jobs {
+                    Ok(jobs) if args.dry_run => {
+                        for job in &jobs {
+                            print_dry_run(job, r.index, None, settings.json);
+                        }
+                    }
+                    Ok(jobs) => return Some((futures::stream::iter(jobs), r)),
+                    Err(e) => {
+                        // A rejected line takes no job numbers with it.
+                        r.index = before;
+                        out.lock().unwrap().rejected(line, &e);
+                    }
+                }
+            }
+        })
+        .flatten();
+        futures::pin_mut!(jobs);
+        mpt::batch::run_stream(jobs, &open, &opts, &batch_opts, |r| {
+            out.lock().unwrap().job_done(r, &opts)
+        })
+        .await
+    };
+    clear_progress(bar);
+    let out = out.into_inner().unwrap();
+    if report.jobs.is_empty() && out.rejected == 0 {
+        anstream::eprintln!("{WARN}nothing to do{WARN:#}: no jobs arrived");
+        return Ok(());
+    }
+    out.finish(&report)
 }
 
 /// Stop a progress task and wipe its line.
@@ -1196,9 +1426,8 @@ fn spawn_batch_progress(
             n => format!(", {n} failed"),
         };
         format!(
-            "{}/{} jobs{failed}, {}  {rate}",
-            progress.done(),
-            progress.total(),
+            "{} jobs{failed}, {}  {rate}",
+            counter(progress.done(), Some(progress.total()).filter(|t| *t > 0)),
             human_size(bytes)
         )
     })

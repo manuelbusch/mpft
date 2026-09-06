@@ -741,6 +741,41 @@ pub fn profile_name(url: &str) -> Option<&str> {
         .filter(|n| !n.is_empty())
 }
 
+impl Resolved {
+    /// How many secrets are in hand; enough to tell whether a resolution
+    /// pass found anything new.
+    fn count(&self) -> usize {
+        [
+            &self.ssh_passphrase,
+            &self.signing_passphrase,
+            &self.mail_password,
+            &self.http_token,
+            &self.s3_access_key_id,
+            &self.s3_secret_access_key,
+        ]
+        .iter()
+        .filter(|s| s.is_some())
+        .count()
+            + self.profile_passwords.len()
+    }
+}
+
+/// Fetch the secrets that `urls` need on top of what the installed
+/// configuration already has, and publish the result. For endpoints that
+/// turn up after the start (a job list read as it arrives); references
+/// already fetched come from the process-wide cache, so this is cheap when
+/// there is nothing new.
+pub async fn resolve_more(urls: &[&str], signing: bool) -> Result<()> {
+    let current = global();
+    let mut cfg = current.clone();
+    cfg.resolve_secrets(urls, signing).await?;
+    if cfg.resolved.count() > current.resolved.count() {
+        tracing::debug!("new credentials fetched, configuration republished");
+        install(cfg);
+    }
+    Ok(())
+}
+
 /// Publish the loaded configuration for the rest of the process, and install
 /// its `[policy]` section.
 pub fn install(cfg: Config) {

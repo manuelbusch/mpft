@@ -1438,3 +1438,64 @@ async fn delete_source_drains_a_remote_directory() {
         );
     }
 }
+
+/// `batch - --follow` runs each line as it arrives: the first job is done
+/// before the second line is even written. A bad line is reported and
+/// skipped, and the run ends with the input.
+#[tokio::test]
+async fn follow_runs_jobs_as_their_lines_arrive() {
+    let Some(sftp) = env("MPT_IT_SFTP") else {
+        eprintln!("skipping: MPT_IT_SFTP not set");
+        return;
+    };
+    mpt::init_crypto();
+    let tag = std::process::id();
+    let dir = tempfile::tempdir().unwrap();
+    let names: Vec<String> = (0..2).map(|i| format!("follow_{tag}_{i}.bin")).collect();
+    for (i, n) in names.iter().enumerate() {
+        std::fs::write(dir.path().join(n), format!("line {i}")).unwrap();
+    }
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .args(["batch", "-", "--follow", "--json"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("running mpt");
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let mut lines = std::io::BufRead::lines(std::io::BufReader::new(stdout));
+    let mut next_json = || -> serde_json::Value {
+        serde_json::from_str(&lines.next().expect("a JSON line").unwrap()).unwrap()
+    };
+
+    // Line one; its report must come back before line two is sent.
+    std::io::Write::write_all(
+        &mut stdin,
+        format!("'{}' '{sftp}'\n", dir.path().join(&names[0]).display()).as_bytes(),
+    )
+    .unwrap();
+    let first = next_json();
+    assert_eq!(first["job"], 1, "{first}");
+    assert_eq!(first["ok"], true, "{first}");
+    assert_eq!(fetch(&sftp, &names[0]).await, b"line 0");
+
+    // A line that is no job at all, then a good one.
+    std::io::Write::write_all(&mut stdin, b"'unbalanced\n").unwrap();
+    let bad = next_json();
+    assert_eq!(bad["line"], 2, "{bad}");
+    assert_eq!(bad["ok"], false, "{bad}");
+    std::io::Write::write_all(
+        &mut stdin,
+        format!("'{}' '{sftp}'\n", dir.path().join(&names[1]).display()).as_bytes(),
+    )
+    .unwrap();
+    let second = next_json();
+    assert_eq!(second["job"], 2, "{second}");
+    assert_eq!(second["ok"], true, "{second}");
+    drop(stdin);
+    let status = child.wait().unwrap();
+    // One rejected line: the run failed, with the usage code that line had.
+    assert_eq!(status.code(), Some(2));
+    assert_eq!(fetch(&sftp, &names[1]).await, b"line 1");
+}

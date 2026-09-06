@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -133,12 +133,19 @@ impl BatchReport {
     }
 }
 
-/// Refuse a list in which two jobs would write the same file: they would
-/// share a `.mpt-part` and destroy each other's upload. Mail targets are
-/// exempt, a mailbox can take the same attachment twice.
-pub fn check_collisions(jobs: &[Job]) -> Result<()> {
-    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for (i, job) in jobs.iter().enumerate() {
+/// The files a batch writes, to refuse a second job on any of them: two
+/// jobs on one file would share a `.mpt-part` and destroy each other's
+/// upload. Mail targets are exempt, a mailbox can take the same attachment
+/// twice.
+#[derive(Debug, Default)]
+pub struct Targets {
+    seen: std::collections::HashMap<String, usize>,
+}
+
+impl Targets {
+    /// Note the targets of job number `index` (1-based, for the message),
+    /// or say which earlier job already writes one of them.
+    pub fn note(&mut self, job: &Job, index: usize) -> Result<()> {
         for dst in &job.dsts {
             if dst.scheme().is_mail() {
                 continue;
@@ -151,16 +158,24 @@ pub fn check_collisions(jobs: &[Job]) -> Result<()> {
                 dst.port_or_default(),
                 path
             );
-            if let Some(first) = seen.insert(key, i + 1) {
+            if let Some(first) = self.seen.insert(key, index) {
                 return Err(Error::InvalidUrl(format!(
-                    "jobs {first} and {} write the same target {}",
-                    i + 1,
+                    "jobs {first} and {index} write the same target {}",
                     dst.sibling(job.src.filename().unwrap_or(""))
                         .map(|l| l.to_string())
                         .unwrap_or_else(|_| dst.to_string())
                 )));
             }
         }
+        Ok(())
+    }
+}
+
+/// Refuse a list in which two jobs would write the same file.
+pub fn check_collisions(jobs: &[Job]) -> Result<()> {
+    let mut targets = Targets::default();
+    for (i, job) in jobs.iter().enumerate() {
+        targets.note(job, i + 1)?;
     }
     Ok(())
 }
@@ -176,12 +191,26 @@ pub async fn run(
     open: &(dyn Fn(&Location) -> Result<Box<dyn Endpoint>> + Sync),
     copy: &CopyOptions,
     opts: &BatchOptions,
-    mut on_done: impl FnMut(&JobReport),
+    on_done: impl FnMut(&JobReport),
 ) -> BatchReport {
-    let started = Instant::now();
     if let Some(p) = &opts.progress {
         p.total.store(jobs.len(), Ordering::Relaxed);
     }
+    run_stream(futures::stream::iter(jobs), open, copy, opts, on_done).await
+}
+
+/// [`run`] for jobs that arrive while the batch runs (a list read from a
+/// pipe): each is started as soon as it is there and a slot is free, and
+/// the batch ends when the stream does and the last job is done. The
+/// progress total stays unknown (zero) unless the caller sets it.
+pub async fn run_stream(
+    jobs: impl Stream<Item = Job> + Unpin,
+    open: &(dyn Fn(&Location) -> Result<Box<dyn Endpoint>> + Sync),
+    copy: &CopyOptions,
+    opts: &BatchOptions,
+    mut on_done: impl FnMut(&JobReport),
+) -> BatchReport {
+    let started = Instant::now();
     // A token of the batch's own, under the caller's: Ctrl-C stops everything
     // through the parent, fail-fast through this one.
     let stop = match &copy.cancel {
@@ -190,10 +219,11 @@ pub async fn run(
     };
     let stopped_early = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let parallel = opts.parallel.max(1);
-    info!(jobs = jobs.len(), parallel, "batch");
+    info!(parallel, "batch");
 
-    let mut reports: Vec<Option<JobReport>> = (0..jobs.len()).map(|_| None).collect();
-    let mut running = futures::stream::iter(jobs.into_iter().enumerate())
+    let mut reports: Vec<JobReport> = Vec::new();
+    let mut running = jobs
+        .enumerate()
         .map(|(index, job)| {
             let stop = stop.clone();
             let stopped_early = Arc::clone(&stopped_early);
@@ -229,14 +259,11 @@ pub async fn run(
             }
         }
         on_done(&report);
-        let slot = &mut reports[report.index];
-        *slot = Some(report);
+        reports.push(report);
     }
+    reports.sort_by_key(|r| r.index);
     BatchReport {
-        jobs: reports
-            .into_iter()
-            .map(|r| r.expect("every job reports"))
-            .collect(),
+        jobs: reports,
         elapsed: started.elapsed(),
         stopped_early: stopped_early.load(Ordering::Relaxed),
     }
@@ -345,6 +372,44 @@ mod tests {
         for i in 0..10 {
             let got = std::fs::read(dir.path().join(format!("out{i}/src{i}.bin"))).unwrap();
             assert_eq!(got, format!("payload {i}").as_bytes());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stream_of_jobs_is_run_as_it_arrives() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = format!("{}/out/", dir.path().display());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Job>();
+        let feeder = {
+            let dir = dir.path().to_path_buf();
+            let out = out.clone();
+            tokio::spawn(async move {
+                for i in 0..5 {
+                    let src = dir.join(format!("s{i}.bin"));
+                    std::fs::write(&src, format!("{i}")).unwrap();
+                    tx.send(job(src.to_str().unwrap(), &[&out])).unwrap();
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+        };
+        let open = |l: &Location| crate::protocols::open(l.clone());
+        let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+        let report = run_stream(
+            stream,
+            &open,
+            &CopyOptions::default(),
+            &BatchOptions::default(),
+            |_| {},
+        )
+        .await;
+        feeder.await.unwrap();
+        assert_eq!(report.jobs.len(), 5);
+        assert!(report.all_ok());
+        for i in 0..5 {
+            assert_eq!(
+                std::fs::read(dir.path().join(format!("out/s{i}.bin"))).unwrap(),
+                format!("{i}").as_bytes()
+            );
         }
     }
 
