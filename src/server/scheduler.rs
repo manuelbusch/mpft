@@ -14,7 +14,9 @@ use tracing::{debug, info, warn};
 
 use super::AppState;
 use super::model::{ApiError, JobId, JobOptions, Submission, TransferState};
+use super::store::Prepared;
 use crate::batch::{self, Job, JobReport, PrepareOptions};
+use crate::config::PROFILE_PREFIX;
 use crate::{Error, Location, Result};
 
 /// Start the job's task.
@@ -40,8 +42,8 @@ async fn run(state: Arc<AppState>, id: JobId) {
     state.store.set_preparing(&id);
     let prepared = prepare(&state, &submission).await;
     drop(permit);
-    let jobs = match prepared {
-        Ok(jobs) => jobs,
+    let (jobs, refs) = match prepared {
+        Ok(p) => p,
         Err(e) => {
             warn!(%id, "not run: {}", e.message);
             state.store.fail(&id, e, journal(&state));
@@ -49,13 +51,18 @@ async fn run(state: Arc<AppState>, id: JobId) {
         }
     };
     if token.is_cancelled() {
-        release(&state, &jobs);
+        release(
+            &state,
+            &jobs.iter().map(|p| p.job.clone()).collect::<Vec<_>>(),
+        );
         state.store.finish(&id, journal(&state));
         return;
     }
     let n = jobs.len();
     info!(%id, transfers = n, "running");
-    let counters = state.store.start(&id, jobs.clone());
+    let plain: Vec<Job> = jobs.iter().map(|p| p.job.clone()).collect();
+    let counters = state.store.start(&id, jobs);
+    let jobs = plain;
     let per_job = submission
         .options
         .parallel
@@ -70,6 +77,7 @@ async fn run(state: Arc<AppState>, id: JobId) {
         let token = token.clone();
         let job_slots = Arc::clone(&job_slots);
         let options = submission.options.clone();
+        let refs = Arc::clone(&refs);
         tasks.spawn(async move {
             // The job's own slot first, then one of the server's: a big
             // batch must not hold server slots while waiting on its own.
@@ -104,7 +112,12 @@ async fn run(state: Arc<AppState>, id: JobId) {
                     JobReport { index, job, result }
                 }
             };
-            let outcome = state.store.transfer_done(&id, &report);
+            let json = report
+                .result
+                .as_ref()
+                .ok()
+                .map(|r| shown_report(crate::report::fanout_json(r), &refs));
+            let outcome = state.store.transfer_done(&id, &report, json);
             debug!(%id, index, ?outcome, "transfer over");
             if fail_fast && outcome == TransferState::Failed && !token.is_cancelled() {
                 warn!(%id, index, "failed, stopping the job");
@@ -142,7 +155,7 @@ fn release(state: &AppState, jobs: &[Job]) {
 async fn prepare(
     state: &AppState,
     submission: &Submission,
-) -> std::result::Result<Vec<Job>, ApiError> {
+) -> std::result::Result<(Vec<Prepared>, Arc<Refs>), ApiError> {
     crate::config::resolve_more(&submission.urls(), state.rt.signing).await?;
     let jobs = submission
         .specs
@@ -159,6 +172,17 @@ async fn prepare(
         recursive: submission.options.recursive.unwrap_or(false),
         no_mkdir: false,
     };
+    // What was submitted, next to what it resolved to, so an expanded
+    // file can be shown by its reference.
+    let refs: Refs = submission
+        .specs
+        .iter()
+        .zip(&jobs)
+        .flat_map(|(spec, job)| {
+            std::iter::once((spec.src.clone(), job.src.clone()))
+                .chain(spec.dsts.iter().cloned().zip(job.dsts.iter().cloned()))
+        })
+        .collect();
     let jobs = batch::prepare(jobs, &open, &opts).await?;
     let mut targets = state.targets.lock().unwrap_or_else(|e| e.into_inner());
     for (i, job) in jobs.iter().enumerate() {
@@ -172,7 +196,81 @@ async fn prepare(
             ));
         }
     }
-    Ok(jobs)
+    let prepared = jobs
+        .into_iter()
+        .map(|job| Prepared {
+            src: shown(&job.src, &refs),
+            dsts: job.dsts.iter().map(|d| shown(d, &refs)).collect(),
+            job,
+        })
+        .collect();
+    Ok((prepared, Arc::new(refs)))
+}
+
+/// The URLs a job was submitted with, each next to what it resolved to.
+type Refs = Vec<(String, Location)>;
+
+/// How a resolved location is shown to clients: as the `mpt://` reference
+/// it came from, with the file a pattern or a tree put in place of the
+/// pattern (`mpt://in/*.csv` → `mpt://in/a.csv`), or — for a URL given in
+/// full — as the location with its password masked.
+fn shown(loc: &Location, refs: &[(String, Location)]) -> String {
+    let same_endpoint = |base: &Location| {
+        base.scheme() == loc.scheme()
+            && base.host() == loc.host()
+            && base.port_or_default() == loc.port_or_default()
+    };
+    let mpt_refs = refs
+        .iter()
+        .filter(|(url, _)| url.starts_with(PROFILE_PREFIX));
+    // The reference itself, unexpanded.
+    for (url, base) in mpt_refs.clone() {
+        if same_endpoint(base) && base.path() == loc.path() {
+            return url.clone();
+        }
+    }
+    // A file under the directory the reference names.
+    for (url, base) in mpt_refs {
+        if !same_endpoint(base) || base.scheme().is_mail() {
+            continue;
+        }
+        let head = url.split('?').next().unwrap_or(url);
+        let (dir, head) = if base.is_dir_target() {
+            (base.path(), head)
+        } else {
+            match (base.path().rsplit_once('/'), head.rsplit_once('/')) {
+                (Some((d, _)), Some((h, _))) => (&base.path()[..d.len() + 1], &head[..h.len() + 1]),
+                _ => continue,
+            }
+        };
+        if !dir.is_empty()
+            && let Some(rest) = loc.path().strip_prefix(dir)
+        {
+            return format!("{head}{rest}");
+        }
+    }
+    loc.to_string()
+}
+
+/// A copy's report with its endpoints (source, targets, the checksum and
+/// signature files next to them) named as [`shown`] names them.
+fn shown_report(mut report: serde_json::Value, refs: &[(String, Location)]) -> serde_json::Value {
+    let fix = |v: &mut serde_json::Value| {
+        if let Some(text) = v.as_str()
+            && let Ok(loc) = Location::parse(text)
+        {
+            *v = serde_json::Value::String(shown(&loc, refs));
+        }
+    };
+    fix(&mut report["source"]);
+    if let Some(targets) = report["targets"].as_array_mut() {
+        for t in targets {
+            fix(&mut t["target"]);
+            fix(&mut t["sidecar"]);
+            fix(&mut t["signature"]);
+        }
+    }
+    report
 }
 
 fn locate_spec(
@@ -233,6 +331,54 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("job {id} never finished");
+    }
+
+    #[test]
+    fn transfers_are_shown_by_their_reference() {
+        let loc = |s: &str| Location::parse(s).unwrap();
+        let refs = vec![
+            ("mpt://in/*.csv".to_string(), loc("sftp://h/data/in/*.csv")),
+            ("mpt://out/".to_string(), loc("/srv/out/")),
+            ("sftp://u:pw@h/raw/".to_string(), loc("sftp://u:pw@h/raw/")),
+            ("mpt://mail".to_string(), loc("mailto:a@example.com")),
+        ];
+        assert_eq!(
+            shown(&loc("sftp://h/data/in/a.csv"), &refs),
+            "mpt://in/a.csv"
+        );
+        assert_eq!(
+            shown(&loc("sftp://h/data/in/*.csv"), &refs),
+            "mpt://in/*.csv"
+        );
+        assert_eq!(shown(&loc("/srv/out/"), &refs), "mpt://out/");
+        assert_eq!(shown(&loc("/srv/out/sub/"), &refs), "mpt://out/sub/");
+        assert_eq!(shown(&loc("mailto:a@example.com"), &refs), "mpt://mail");
+        // Another host, or a raw URL: the location, password masked.
+        assert_eq!(
+            shown(&loc("sftp://other/data/in/a.csv"), &refs),
+            "sftp://other/data/in/a.csv"
+        );
+        assert_eq!(
+            shown(&loc("sftp://u:pw@h/raw/x"), &refs),
+            "sftp://u:***@h/raw/x"
+        );
+        assert_eq!(shown(&loc("/elsewhere/x"), &refs), "/elsewhere/x");
+
+        let report = shown_report(
+            serde_json::json!({
+                "source": "sftp://h/data/in/a.csv",
+                "targets": [
+                    {"target": "/srv/out/", "sidecar": "/srv/out/a.csv.sha256", "signature": null},
+                    {"target": "sftp://u:***@h/raw/", "sidecar": null, "signature": null},
+                ],
+            }),
+            &refs,
+        );
+        assert_eq!(report["source"], "mpt://in/a.csv");
+        assert_eq!(report["targets"][0]["target"], "mpt://out/");
+        assert_eq!(report["targets"][0]["sidecar"], "mpt://out/a.csv.sha256");
+        assert_eq!(report["targets"][0]["signature"], serde_json::Value::Null);
+        assert_eq!(report["targets"][1]["target"], "sftp://u:***@h/raw/");
     }
 
     #[tokio::test]

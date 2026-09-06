@@ -41,8 +41,19 @@ struct JobEntry {
     cancel: CancellationToken,
 }
 
+/// A transfer ready to run, with its endpoints as clients see them: the
+/// `mpt://` reference that was submitted where there was one, else the
+/// location with its password masked.
+#[derive(Debug, Clone)]
+pub struct Prepared {
+    pub job: Job,
+    pub src: String,
+    pub dsts: Vec<String>,
+}
+
 struct TransferEntry {
-    job: Job,
+    src: String,
+    dsts: Vec<String>,
     state: TransferState,
     started_at: Option<SystemTime>,
     finished_at: Option<SystemTime>,
@@ -56,8 +67,8 @@ impl TransferEntry {
         TransferSnapshot {
             index,
             id: format!("{id}:{index}"),
-            src: self.job.src.to_string(),
-            dst: self.job.dsts.iter().map(|d| d.to_string()).collect(),
+            src: self.src.clone(),
+            dst: self.dsts.clone(),
             state: self.state,
             started_at: self.started_at.map(format_time),
             finished_at: self.finished_at.map(format_time),
@@ -252,7 +263,7 @@ impl Store {
 
     /// Preparation is over: these are the transfers. Their progress
     /// counters are handed back for the copies to feed.
-    pub fn start(&self, id: &JobId, jobs: Vec<Job>) -> Vec<Arc<Progress>> {
+    pub fn start(&self, id: &JobId, jobs: Vec<Prepared>) -> Vec<Arc<Progress>> {
         let mut inner = self.lock();
         let Some(j) = inner.jobs.get_mut(id) else {
             return Vec::new();
@@ -261,8 +272,9 @@ impl Store {
         j.started_at = Some(SystemTime::now());
         j.transfers = jobs
             .into_iter()
-            .map(|job| TransferEntry {
-                job,
+            .map(|p| TransferEntry {
+                src: p.src,
+                dsts: p.dsts,
                 state: TransferState::Queued,
                 started_at: None,
                 finished_at: None,
@@ -303,8 +315,15 @@ impl Store {
     }
 
     /// A transfer is over. The state comes from the report: cancelled beats
-    /// failed beats done.
-    pub fn transfer_done(&self, id: &JobId, report: &JobReport) -> TransferState {
+    /// failed beats done. `json` is the report as clients see it (see
+    /// [`crate::report::fanout_json`]), rendered by the caller so that it
+    /// can name the endpoints as they were submitted.
+    pub fn transfer_done(
+        &self,
+        id: &JobId,
+        report: &JobReport,
+        json: Option<serde_json::Value>,
+    ) -> TransferState {
         let state = if report.cancelled() {
             TransferState::Cancelled
         } else if report.ok() {
@@ -340,7 +359,7 @@ impl Store {
         };
         t.state = state;
         t.finished_at = Some(SystemTime::now());
-        t.report = report.result.as_ref().ok().map(crate::report::fanout_json);
+        t.report = json;
         t.error = error;
         let snapshot = t.snapshot(id, report.index);
         drop(inner);
@@ -737,6 +756,14 @@ mod tests {
         }
     }
 
+    fn prepared(src: &str, dst: &str) -> Prepared {
+        Prepared {
+            job: job(src, dst),
+            src: src.into(),
+            dsts: vec![dst.into()],
+        }
+    }
+
     fn ok_report(index: usize, job: Job) -> JobReport {
         JobReport {
             index,
@@ -774,7 +801,10 @@ mod tests {
         store.set_preparing(&id);
         let counters = store.start(
             &id,
-            vec![job("/tmp/a", "/tmp/out/"), job("/tmp/b", "/tmp/out/")],
+            vec![
+                prepared("/tmp/a", "/tmp/out/"),
+                prepared("/tmp/b", "/tmp/out/"),
+            ],
         );
         assert_eq!(counters.len(), 2);
         let snap = store.snapshot(&id, true).unwrap();
@@ -784,7 +814,11 @@ mod tests {
 
         store.transfer_started(&id, 0);
         assert_eq!(
-            store.transfer_done(&id, &ok_report(0, job("/tmp/a", "/tmp/out/"))),
+            store.transfer_done(
+                &id,
+                &ok_report(0, job("/tmp/a", "/tmp/out/")),
+                Some(serde_json::json!({"ok": true}))
+            ),
             TransferState::Done
         );
         let failed = JobReport {
@@ -792,7 +826,10 @@ mod tests {
             job: job("/tmp/b", "/tmp/out/"),
             result: Err(Error::Remote("gone".into())),
         };
-        assert_eq!(store.transfer_done(&id, &failed), TransferState::Failed);
+        assert_eq!(
+            store.transfer_done(&id, &failed, None),
+            TransferState::Failed
+        );
         assert_eq!(store.finish(&id, true), Some(JobState::Failed));
         assert_eq!(store.unfinished(), 0);
         let snap = store.snapshot(&id, true).unwrap();
@@ -833,7 +870,7 @@ mod tests {
         let id = store
             .submit(submission("/tmp/a", "/tmp/out/"), token.clone())
             .unwrap();
-        store.start(&id, vec![job("/tmp/a", "/tmp/out/")]);
+        store.start(&id, vec![prepared("/tmp/a", "/tmp/out/")]);
         assert_eq!(store.cancel(&id), Some(JobState::Running));
         assert!(token.is_cancelled());
         assert_eq!(store.finish(&id, true), Some(JobState::Cancelled));

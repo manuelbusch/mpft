@@ -434,7 +434,10 @@ running → done | failed | cancelled`; `preparing` resolves the URLs, expands
 patterns and trees and refuses a target another running job is writing.
 A job that fails there has an `error` and no transfers; otherwise each
 transfer carries its own `state`, `progress: {read, total}`, `error` and,
-once it is over, the same `report` that `--json` prints. Errors come as
+once it is over, the same `report` that `--json` prints. Transfers and
+their reports name endpoints as they were submitted (`mpt://inbox/report.pdf`,
+or `mpt://inbox/a.csv` for a file a pattern matched), not by what a profile
+resolves to; a URL given in full is shown with its password masked. Errors come as
 `{"error": {"kind", "message"}}` with 400, 401, 404, 409 (a target taken
 twice), 413, 415 or 503.
 

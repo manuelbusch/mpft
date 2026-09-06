@@ -353,9 +353,11 @@ pub struct TransferSnapshot {
     pub index: usize,
     /// `<job id>:<index>`.
     pub id: String,
-    /// The source, password masked.
+    /// The source as it was submitted: the `mpt://` reference (with the
+    /// matched file in place of a pattern), or a full URL with its
+    /// password masked.
     pub src: String,
-    /// The targets, passwords masked.
+    /// The targets, likewise.
     pub dst: Vec<String>,
     pub state: TransferState,
     #[serde(skip_serializing_if = "Option::is_none")]

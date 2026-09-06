@@ -211,12 +211,19 @@ async fn a_job_is_run_and_can_be_polled() {
     );
     assert!(server.path().join("dst/a.bin.sha256").exists());
 
-    // The reference to the profile is what the client sent; the transfer
-    // shows the resolved location.
+    // The transfer is shown by the reference the client sent, not by the
+    // path behind the profile.
     let (status, t) = server.get(&format!("{url}/transfers/0")).await;
     assert_eq!(status, 200);
     assert_eq!(t["state"], "done");
-    assert!(t["src"].as_str().unwrap().ends_with("/src/a.bin"), "{t}");
+    assert_eq!(t["src"], "mpt://src/a.bin", "{t}");
+    assert_eq!(t["dst"][0], "mpt://dst/", "{t}");
+    assert_eq!(t["report"]["source"], "mpt://src/a.bin", "{t}");
+    assert_eq!(t["report"]["targets"][0]["target"], "mpt://dst/", "{t}");
+    assert_eq!(
+        t["report"]["targets"][0]["sidecar"], "mpt://dst/a.bin.sha256",
+        "{t}"
+    );
 }
 
 #[tokio::test]
