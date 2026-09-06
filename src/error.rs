@@ -111,6 +111,25 @@ impl Error {
         )
     }
 
+    /// A short, stable name of the variant, for machine-readable output:
+    /// `io`, `auth`, `cancelled`, …
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Error::InvalidUrl(_) => "invalid_url",
+            Error::UnsupportedScheme(_) => "unsupported_scheme",
+            Error::UnsupportedOperation { .. } => "unsupported_operation",
+            Error::Config(_) => "config",
+            Error::InvalidOption { .. } => "invalid_option",
+            Error::Auth(_) => "auth",
+            Error::Remote(_) => "remote",
+            Error::Signature(_) => "signature",
+            Error::ChecksumMismatch { .. } => "checksum_mismatch",
+            Error::Io(_) => "io",
+            Error::Cancelled => "cancelled",
+            Error::Transport { .. } => "transport",
+        }
+    }
+
     pub fn transport<E>(protocol: &'static str, source: E) -> Self
     where
         E: std::error::Error + Send + Sync + 'static,

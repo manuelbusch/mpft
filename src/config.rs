@@ -53,6 +53,8 @@ pub struct Config {
     pub s3: S3Section,
     #[serde(default)]
     pub http: HttpSection,
+    #[serde(default)]
+    pub server: ServerSection,
     /// Named targets, addressed as `mpt://<name>/<path>`.
     #[serde(default)]
     pub profiles: BTreeMap<String, Profile>,
@@ -177,6 +179,56 @@ pub struct MailSection {
 pub struct HttpSection {
     /// OAuth2 bearer token, sent as `Authorization: Bearer …`.
     pub token: Option<Secret>,
+}
+
+/// `[server]` — settings for `mpt serve`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerSection {
+    /// Address to listen on, `127.0.0.1:7788` by default.
+    pub bind: Option<String>,
+    /// The bearer token every request must carry. Without one, only a
+    /// loopback address may be bound.
+    pub token: Option<Secret>,
+    /// JSONL file that records submitted jobs, so those still open when
+    /// the server stops are run again after a restart.
+    pub journal: Option<String>,
+    /// How long finished jobs stay available: `24h`, `7d`, `0` for until
+    /// the server stops.
+    pub retention: Option<String>,
+    /// Transfers in flight at once, over all jobs.
+    pub parallel: Option<usize>,
+    /// Largest request body, with a unit: `8M`.
+    pub max_body: Option<String>,
+    /// How long a shutdown waits for running jobs before cancelling them.
+    pub grace: Option<String>,
+    /// Which URLs a job may name: `profiles` (only `mpt://<profile>/…`,
+    /// the default) or `any`.
+    pub urls: Option<UrlRule>,
+    /// With `urls = "profiles"`: only these profiles; empty means all.
+    #[serde(default, deserialize_with = "string_or_list")]
+    pub profiles: Vec<String>,
+}
+
+/// Which URLs the server accepts in a job.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UrlRule {
+    /// Only `mpt://<profile>/…`: the configuration decides what the API
+    /// can reach, and no credential travels in a URL.
+    #[default]
+    Profiles,
+    /// Any URL the command line would take.
+    Any,
+}
+
+impl std::fmt::Display for UrlRule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            UrlRule::Profiles => "profiles",
+            UrlRule::Any => "any",
+        })
+    }
 }
 
 /// `[s3]` — defaults for `s3://`.
@@ -484,6 +536,29 @@ impl Config {
         if token.is_some() {
             out.push("http");
         }
+        let ServerSection {
+            bind,
+            token,
+            journal,
+            retention,
+            parallel,
+            max_body,
+            grace,
+            urls,
+            profiles,
+        } = &self.server;
+        if bind.is_some()
+            || token.is_some()
+            || journal.is_some()
+            || retention.is_some()
+            || parallel.is_some()
+            || max_body.is_some()
+            || grace.is_some()
+            || urls.is_some()
+            || !profiles.is_empty()
+        {
+            out.push("server");
+        }
         if !self.profiles.is_empty() {
             out.push("profiles");
         }
@@ -511,6 +586,20 @@ impl Config {
         let cfg = Config::deserialize(value).map_err(|e| e.to_string())?;
         if let Some(v) = &cfg.policy.max_signature_age {
             parse_duration(v).map_err(|e| format!("[policy] max_signature_age: {e}"))?;
+        }
+        for (what, v) in [
+            ("retention", &cfg.server.retention),
+            ("grace", &cfg.server.grace),
+        ] {
+            if let Some(v) = v {
+                parse_duration(v).map_err(|e| format!("[server] {what}: {e}"))?;
+            }
+        }
+        if let Some(v) = &cfg.server.max_body {
+            parse_size(v).map_err(|e| format!("[server] max_body: {e}"))?;
+        }
+        if cfg.server.parallel == Some(0) {
+            return Err("[server] parallel must be at least 1".into());
         }
         Ok(cfg)
     }
@@ -647,6 +736,7 @@ impl Config {
     /// permissions are judged.
     fn holds_credentials(&self) -> bool {
         self.http.token.is_some()
+            || self.server.token.is_some()
             || self.ssh.passphrase.is_some()
             || self.signing.passphrase.is_some()
             || self.mail.password.is_some()
@@ -1224,6 +1314,7 @@ mod tests {
             ("mail", "[mail]\nfrom = \"a@b.c\"\n"),
             ("s3", "[s3]\nendpoint = \"https://x\"\n"),
             ("http", "[http]\ntoken = { env = \"T\" }\n"),
+            ("server", "[server]\nbind = \"0.0.0.0:80\"\n"),
             ("profiles", "[profiles.p]\nurl = \"sftp://h/\"\n"),
         ] {
             let (_dir, cfg) = local(text);
@@ -1237,6 +1328,24 @@ mod tests {
                 cfg.warnings
             );
         }
+    }
+
+    #[test]
+    fn the_server_section_is_read_and_checked() {
+        let cfg = Config::parse(
+            "[server]\nbind = \"127.0.0.1:1\"\ntoken = { env = \"T\" }\nretention = \"7d\"\n\
+             urls = \"any\"\nprofiles = \"prod\"\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.server.bind.as_deref(), Some("127.0.0.1:1"));
+        assert_eq!(cfg.server.urls, Some(UrlRule::Any));
+        assert_eq!(cfg.server.profiles, vec!["prod"]);
+        assert!(cfg.holds_credentials());
+        assert!(Config::parse("[server]\nurls = \"some\"\n").is_err());
+        let err = Config::parse("[server]\nretention = \"soon\"\n").unwrap_err();
+        assert!(err.contains("[server] retention"), "{err}");
+        assert!(Config::parse("[server]\nparallel = 0\n").is_err());
+        assert!(Config::parse("[server]\nmax_body = \"big\"\n").is_err());
     }
 
     #[test]

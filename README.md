@@ -379,6 +379,90 @@ of its files; the directories stay.
 mpt cp -r --skip-existing --delete-source sftp://srv/outbox/ /data/inbox/   # drain a remote outbox
 ```
 
+## Server
+
+`mpt serve` (feature `server`, not in the default build) takes jobs over
+HTTP and runs them through the same pipeline as `cp` and `batch`. A job is
+one transfer (a source and its targets) or a batch of them; every transfer
+has its own progress, which a client polls with `GET` or follows over a
+WebSocket.
+
+```
+cargo build --release --features server
+MPT_API_TOKEN=… mpt serve                                  # 127.0.0.1:7788
+curl -H "Authorization: Bearer $MPT_API_TOKEN" \
+     -d '{"src": "mpt://inbox/report.pdf", "dst": ["mpt://prod/", "mpt://archive/"]}' \
+     localhost:7788/v1/jobs
+```
+
+```toml
+[server]
+token     = { env = "MPT_API_TOKEN" }   # any credential provider works here
+bind      = "127.0.0.1:7788"            # anything but loopback needs a token
+journal   = "~/.local/state/mpt/jobs.jsonl"
+retention = "24h"                       # finished jobs stay this long; 0 = until restart
+parallel  = 4                           # transfers in flight, over all jobs
+grace     = "30s"                       # a shutdown waits this long for running jobs
+urls      = "profiles"                  # or "any"
+profiles  = ["inbox", "prod", "archive"] # optional: only these
+```
+
+Every flag of `mpt serve` (`--bind`, `--token-env`, `--journal`,
+`--retention`, `--parallel`, `--grace`, `--allow-any-url`, `--port-file`)
+wins over its key in `[server]`. The global flags apply to every job the
+server runs: `--sign`, `--check`, `--cache`, `--timeout`, `--insecure` and
+the rest set the server's defaults, and a job may override the ones listed
+under `options` below.
+
+| Route | What it does |
+|---|---|
+| `POST /v1/jobs` | one transfer: `{"src": …, "dst": … \| […], "options": {…}}` → `202 {"id", "url", "state"}` |
+| `POST /v1/batches` | many: `{"jobs": [{"src", "dst"}, …], "options": {…}}` as JSON, or a job list as `application/x-ndjson`, `text/csv` or `text/plain` (the forms of `mpt batch`) with the options in the query, `?parallel=2&fail_fast=true` |
+| `GET /v1/jobs?state=running&limit=50` | summaries, newest first |
+| `GET /v1/jobs/{id}` | the job with every transfer: state, bytes, size, report |
+| `GET /v1/jobs/{id}/transfers/{n}` | one transfer |
+| `DELETE /v1/jobs/{id}` | cancel; partial files are removed as with Ctrl-C |
+| `GET /v1/jobs/{id}/events` | WebSocket: a `snapshot`, then the job's events until `done` |
+| `GET /v1/events` | WebSocket: every job's events |
+| `GET /v1/healthz` | no token needed; `503` while shutting down |
+
+`options` per job: `parallel` (transfers of this batch in flight, capped by
+the server's), `fail_fast`, `hash`, `check`, `skip_existing`,
+`delete_source`, `atomic`, `resume`, `cache`, `retries` (needs `cache`),
+`timeout`, `allow_empty`, `recursive`. A job goes `queued → preparing →
+running → done | failed | cancelled`; `preparing` resolves the URLs, expands
+patterns and trees and refuses a target another running job is writing.
+A job that fails there has an `error` and no transfers; otherwise each
+transfer carries its own `state`, `progress: {read, total}`, `error` and,
+once it is over, the same `report` that `--json` prints. Errors come as
+`{"error": {"kind", "message"}}` with 400, 401, 404, 409 (a target taken
+twice), 413, 415 or 503.
+
+The WebSocket carries one JSON object per frame: `snapshot`, `queued`,
+`started`, `transfer_started`, `progress` (bytes, four times a second while
+they change), `transfer_done` and `done`. A client that falls behind gets
+a fresh `snapshot` in place of what it missed. The token goes in the
+`Authorization` header here too; there is no `?token=`.
+
+By default a job may only name `mpt://<profile>/…` endpoints, so the
+configuration decides which hosts, options and credentials the API can
+reach, and no password ever travels in a request or lands in the journal;
+a local directory is a profile with a local `url`. `urls = "any"` (or
+`--allow-any-url`) lets a job name any URL, as on the command line. Whoever
+has the token can use every allowed profile, including its credential
+providers. There is no TLS: put a reverse proxy in front for anything
+beyond the local machine.
+
+With a `journal`, every accepted job is appended to a JSONL file (mode
+`0600`) and closed there when it is over. After a restart, jobs left open
+run again with `attempt` raised by one — also those the shutdown cancelled
+after `grace` ran out — so a target that cannot take a file twice (mail)
+may get it twice, and a `delete_source` job whose source is already gone
+fails on the second run; file targets are safe, since a transfer either
+finished or left only a `.mpt-part`. Finished jobs do not survive a restart.
+Ctrl-C stops taking jobs, waits `grace` for the running ones and exits 0;
+a second Ctrl-C cancels them at once.
+
 ## Single sign-on
 
 Long-lived keys in a file are what SSO replaces. Where a protocol has an
@@ -754,11 +838,14 @@ intermediate buffering, except where a protocol forces it (mail; SCP when the
 source size is unknown).
 
 Cargo features select protocols: `ssh`, `ftp`, `http`, `webdav`, `s3`, `mail`
-(default: all).
+(default: all). `server` adds `mpt::server`: `serve()` runs the API on its
+own, `router()` hands the routes to an axum application of your own.
 
 ## Testing
 
-Unit tests: `cargo test`.
+Unit tests: `cargo test` (`cargo test --features server` adds the server's,
+including `tests/server.rs`, which starts the binary and moves local files
+over HTTP and WebSocket).
 
 End-to-end tests in `tests/integration.rs` run against real servers and are
 skipped unless the corresponding `MPT_IT_*` variable is set. A Docker-free local

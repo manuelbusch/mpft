@@ -14,6 +14,9 @@ pub mod hash;
 pub mod location;
 pub mod policy;
 pub mod protocols;
+pub mod report;
+#[cfg(feature = "server")]
+pub mod server;
 pub mod sign;
 pub mod stream;
 #[cfg(feature = "ftp")]

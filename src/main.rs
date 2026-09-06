@@ -204,6 +204,41 @@ enum Cmd {
         #[command(subcommand)]
         action: ConfigCmd,
     },
+    /// Take jobs over HTTP and run them; progress by GET or WebSocket
+    #[cfg(feature = "server")]
+    Serve(ServeArgs),
+}
+
+/// Flags of `mpt serve`; each one wins over its `[server]` key.
+#[cfg(feature = "server")]
+#[derive(clap::Args, Debug, Clone)]
+struct ServeArgs {
+    /// Address to listen on (127.0.0.1:7788). Anything but loopback needs
+    /// a token
+    #[arg(long, value_name = "ADDR")]
+    bind: Option<String>,
+    /// Take any URL in a job, not only mpt://<profile>/ ones
+    #[arg(long)]
+    allow_any_url: bool,
+    /// Environment variable that holds the bearer token clients must send
+    #[arg(long, value_name = "VAR")]
+    token_env: Option<String>,
+    /// JSONL journal of jobs; those left open are run again after a restart
+    #[arg(long, value_name = "PATH")]
+    journal: Option<PathBuf>,
+    /// How long finished jobs stay available (24h; 0 keeps them until the
+    /// server stops)
+    #[arg(long, value_name = "SPAN")]
+    retention: Option<String>,
+    /// Transfers in flight at once, over all jobs (4)
+    #[arg(long, value_name = "N")]
+    parallel: Option<usize>,
+    /// Write the port actually bound to this file (for --bind 127.0.0.1:0)
+    #[arg(long, value_name = "PATH")]
+    port_file: Option<PathBuf>,
+    /// Seconds a shutdown waits for running jobs before cancelling them (30)
+    #[arg(long, value_name = "SECONDS")]
+    grace: Option<u64>,
 }
 
 /// Options shared by `cp -t` and `batch`.
@@ -317,6 +352,15 @@ impl Cmd {
             Cmd::Cp { batch, .. } | Cmd::Batch { batch, .. } => Some(batch),
             _ => None,
         }
+    }
+
+    /// `mpt serve`: Ctrl-C drains rather than stops.
+    fn is_serve(&self) -> bool {
+        #[cfg(feature = "server")]
+        if matches!(self, Cmd::Serve(_)) {
+            return true;
+        }
+        false
     }
 }
 
@@ -613,6 +657,43 @@ fn read_password(cli: &Cli) -> anyhow::Result<Option<secrecy::SecretString>> {
     Ok(cli.password.clone().map(secrecy::SecretString::from))
 }
 
+/// What the command adds to every URL it opens: the flags that apply to
+/// all endpoints, and the password when the URL has none.
+#[derive(Clone)]
+struct LocateRules {
+    insecure: bool,
+    timeout: u64,
+    retries: u32,
+    password: Option<secrecy::SecretString>,
+}
+
+impl LocateRules {
+    /// A URL as a location, `mpt://` profiles resolved. `timeout` is a
+    /// per-job override of the flag (the server's jobs may set one).
+    fn locate(&self, url: &str, timeout: Option<u64>) -> mpt::Result<mpt::Location> {
+        let mut loc = mpt::config::locate(url)?;
+        if self.insecure {
+            loc.set_option("insecure", "true");
+        }
+        // --timeout is the default; ?timeout= in the URL wins.
+        if loc.opt("timeout").is_none() {
+            loc.set_option("timeout", timeout.unwrap_or(self.timeout).to_string());
+        }
+        if self.retries > 0 && loc.opt("connect_retries").is_none() {
+            loc.set_option("connect_retries", self.retries.to_string());
+        }
+        // A password in the URL stays; one from a profile gives way to the flag.
+        if let Some(pw) = &self.password
+            && !loc.password_in_url()
+            && loc.scheme() != Scheme::File
+        {
+            use secrecy::ExposeSecret;
+            loc.set_password(pw.expose_secret());
+        }
+        Ok(loc)
+    }
+}
+
 async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
     if cli.refuse_plaintext_auth {
         mpt::policy::set_refuse_plaintext_auth(true);
@@ -643,39 +724,39 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
     }
     let settings = settings;
     let timeout = (settings.timeout > 0).then(|| Duration::from_secs(settings.timeout));
-    // Ctrl-C stops the transfer, removes partial files and leaves the rest alone.
+    // Ctrl-C stops the transfer, removes partial files and leaves the rest
+    // alone. A server finishes its running jobs first; a second Ctrl-C
+    // cancels them too.
     let cancel = tokio_util::sync::CancellationToken::new();
+    let abort = tokio_util::sync::CancellationToken::new();
     {
         let cancel = cancel.clone();
+        let abort = abort.clone();
+        let serving = cli.cmd.is_serve();
         tokio::spawn(async move {
             if tokio::signal::ctrl_c().await.is_ok() {
-                anstream::eprintln!("{WARN}interrupted{WARN:#}, stopping and cleaning up…");
+                if serving {
+                    anstream::eprintln!(
+                        "{WARN}interrupted{WARN:#}, finishing the running jobs (Ctrl-C again cancels them)…"
+                    );
+                } else {
+                    anstream::eprintln!("{WARN}interrupted{WARN:#}, stopping and cleaning up…");
+                }
                 cancel.cancel();
+                if serving && tokio::signal::ctrl_c().await.is_ok() {
+                    anstream::eprintln!("{WARN}interrupted again{WARN:#}, cancelling the jobs…");
+                    abort.cancel();
+                }
             }
         });
     }
-    let locate = |url: &str| -> anyhow::Result<mpt::Location> {
-        let mut loc = mpt::config::locate(url)?;
-        if cli.insecure {
-            loc.set_option("insecure", "true");
-        }
-        // --timeout is the default; ?timeout= in the URL wins.
-        if loc.opt("timeout").is_none() {
-            loc.set_option("timeout", settings.timeout.to_string());
-        }
-        if settings.retries > 0 && loc.opt("connect_retries").is_none() {
-            loc.set_option("connect_retries", settings.retries.to_string());
-        }
-        // A password in the URL stays; one from a profile gives way to the flag.
-        if let Some(pw) = &password
-            && !loc.password_in_url()
-            && loc.scheme() != Scheme::File
-        {
-            use secrecy::ExposeSecret;
-            loc.set_password(pw.expose_secret());
-        }
-        Ok(loc)
+    let rules = LocateRules {
+        insecure: cli.insecure,
+        timeout: settings.timeout,
+        retries: settings.retries,
+        password,
     };
+    let locate = |url: &str| -> anyhow::Result<mpt::Location> { Ok(rules.locate(url, None)?) };
     let open = |url: &str| -> anyhow::Result<Box<dyn mpt::Endpoint>> {
         Ok(mpt::protocols::open(locate(url)?)?)
     };
@@ -867,6 +948,28 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
             show_config(mpt::config::global());
             Ok(())
         }
+        #[cfg(feature = "server")]
+        Cmd::Serve(args) => {
+            let server = server_config(args, mpt::config::global()).await?;
+            // Ctrl-C is the drain signal here, not the copies' cancel: a
+            // running job finishes (or is cancelled by the server's grace
+            // timer), and there is no terminal to draw progress on.
+            let mut base = opts;
+            base.cancel = None;
+            base.progress = None;
+            let rules = rules.clone();
+            let rt = mpt::server::Runtime {
+                copy: base,
+                cache_limit: settings.cache_limit,
+                locate: std::sync::Arc::new(move |url, o: &mpt::server::model::JobOptions| {
+                    rules.locate(url, o.timeout)
+                }),
+                signing: cli.sign.is_some(),
+                parallel: settings.parallel,
+            };
+            mpt::server::serve(server, rt, cancel, abort).await?;
+            Ok(())
+        }
         Cmd::Schemes => {
             anstream::println!(
                 "{HEAD}{:<11} {:<5} {:<5} {:<7} {:<9} options{HEAD:#}",
@@ -924,7 +1027,10 @@ async fn do_copy(
         .await
         .with_context(|| format!("copy {}", src.location()))?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&report_json(&report))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&mpt::report::fanout_json(&report))?
+        );
     }
     match print_report(&report, opts, "") {
         None => Ok(()),
@@ -1106,15 +1212,12 @@ async fn prepare_jobs(
     open: &(dyn Fn(&mpt::Location) -> mpt::Result<Box<dyn mpt::Endpoint>> + Sync),
     args: &BatchArgs,
 ) -> anyhow::Result<Vec<mpt::Job>> {
-    let jobs = mpt::batch::expand::expand(jobs, open, args.allow_empty).await?;
-    if !args.recursive {
-        return Ok(jobs);
-    }
-    let tree = mpt::batch::expand::recursive(jobs, open).await?;
-    if !args.dry_run {
-        mpt::batch::expand::create_dirs(&tree.dirs, open).await?;
-    }
-    Ok(tree.jobs)
+    let opts = mpt::batch::PrepareOptions {
+        allow_empty: args.allow_empty,
+        recursive: args.recursive,
+        no_mkdir: args.dry_run,
+    };
+    Ok(mpt::batch::prepare(jobs, open, &opts).await?)
 }
 
 fn print_dry_run(job: &mpt::Job, index: usize, total: Option<usize>, json: bool) {
@@ -1168,7 +1271,7 @@ impl BatchOutput {
         let prefix = format!("[{}] ", counter(r.index + 1, self.total));
         if self.json {
             let mut line = match &r.result {
-                Ok(rep) => report_json(rep),
+                Ok(rep) => mpt::report::fanout_json(rep),
                 Err(e) => serde_json::json!({
                     "source": r.job.src.to_string(),
                     "ok": false,
@@ -1473,54 +1576,6 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
-/// The whole outcome as JSON, for scripts: what was read, what each target
-/// did, the digests and the `--check` verdict.
-fn report_json(report: &mpt::FanoutReport) -> serde_json::Value {
-    let targets: Vec<serde_json::Value> = report
-        .targets
-        .iter()
-        .map(|t| {
-            serde_json::json!({
-                "target": t.target,
-                "bytes": t.bytes,
-                "elapsed_ms": t.elapsed.as_millis() as u64,
-                "attempts": t.attempts,
-                "ok": t.result.is_ok(),
-                "error": t.result.as_ref().err().map(|e| e.to_string()),
-                "cancelled": matches!(t.result, Err(mpt::Error::Cancelled)),
-                "sidecar": t.sidecar,
-                "signature": t.signature,
-                "skipped": t.skipped,
-            })
-        })
-        .collect();
-    let digests: serde_json::Map<String, serde_json::Value> = report
-        .digests
-        .iter()
-        .map(|(algo, hex)| (algo.name().to_string(), hex.as_str().into()))
-        .collect();
-    let check = report.checked.as_ref().map(|c| {
-        serde_json::json!({
-            "algo": c.algo.name(),
-            "ok": c.ok(),
-            "expected": c.expected,
-            "actual": c.actual,
-            "signer": c.signer,
-        })
-    });
-    serde_json::json!({
-        "source": report.source,
-        "bytes_read": report.bytes_read,
-        "elapsed_ms": report.elapsed.as_millis() as u64,
-        "ok": report.all_ok() && report.checked.as_ref().is_none_or(|c| c.ok()),
-        "targets": targets,
-        "digests": digests,
-        "check": check,
-        "source_removed": report.source_removed.as_ref().map(|r| r.is_ok()),
-        "remove_error": report.source_removed.as_ref().and_then(|r| r.as_ref().err().map(|e| e.to_string())),
-    })
-}
-
 /// Print computed digests and the `--check` verdict; a mismatch is an error.
 fn print_checksums(
     report: &mpt::FanoutReport,
@@ -1630,6 +1685,62 @@ fn verify_spec(cli: &Cli) -> anyhow::Result<Option<VerifySpec>> {
     )
 }
 
+/// The server's settings: the flags of `mpt serve`, then `[server]`, then
+/// the built-in values. The token is fetched here, once.
+#[cfg(feature = "server")]
+async fn server_config(
+    args: &ServeArgs,
+    cfg: &mpt::Config,
+) -> anyhow::Result<mpt::server::ServerConfig> {
+    use mpt::credentials::{Secret, SecretRef};
+    let s = &cfg.server;
+    let mut out = mpt::server::ServerConfig::default();
+    if let Some(bind) = args.bind.as_deref().or(s.bind.as_deref()) {
+        out.bind = bind
+            .parse()
+            .with_context(|| format!("bind address '{bind}' (expected host:port)"))?;
+    }
+    let token = match &args.token_env {
+        Some(var) => Some(Secret::Reference(SecretRef::Env(var.clone()))),
+        None => s.token.clone(),
+    };
+    if let Some(t) = token {
+        out.token = Some(t.resolve("[server] token").await?);
+    }
+    out.journal = args
+        .journal
+        .clone()
+        .or_else(|| mpt::config::path(&s.journal));
+    if let Some(v) = args.retention.as_deref().or(s.retention.as_deref()) {
+        out.retention =
+            mpt::config::parse_duration(v).map_err(|e| anyhow::anyhow!("retention: {e}"))?;
+    }
+    if let Some(n) = args.parallel.or(s.parallel) {
+        out.parallel = n;
+    }
+    if let Some(v) = &s.max_body {
+        out.max_body = mpt::config::parse_size(v)
+            .map_err(|e| anyhow::anyhow!("[server] max_body: {e}"))?
+            as usize;
+    }
+    match (args.grace, s.grace.as_deref()) {
+        (Some(secs), _) => out.grace = Duration::from_secs(secs),
+        (None, Some(v)) => {
+            out.grace = mpt::config::parse_duration(v)
+                .map_err(|e| anyhow::anyhow!("[server] grace: {e}"))?;
+        }
+        (None, None) => {}
+    }
+    out.port_file = args.port_file.clone();
+    out.urls = if args.allow_any_url {
+        mpt::config::UrlRule::Any
+    } else {
+        s.urls.unwrap_or_default()
+    };
+    out.profiles = s.profiles.clone();
+    Ok(out)
+}
+
 /// `mpt profiles`: the named targets and what they resolve to.
 fn show_profiles(cfg: &mpt::Config) {
     if cfg.profiles.is_empty() {
@@ -1721,7 +1832,18 @@ fn show_config(cfg: &mpt::Config) {
         "s3".region = cfg.s3.region,
         "s3".path_style = cfg.s3.path_style,
         "s3".profile = cfg.s3.profile,
+        "server".bind = cfg.server.bind,
+        "server".token = cfg.server.token.as_ref().map(|_| "(reference)"),
+        "server".journal = cfg.server.journal,
+        "server".retention = cfg.server.retention,
+        "server".parallel = cfg.server.parallel,
+        "server".max_body = cfg.server.max_body,
+        "server".grace = cfg.server.grace,
+        "server".urls = cfg.server.urls,
     );
+    if !cfg.server.profiles.is_empty() {
+        rows.push(("[server] profiles".into(), cfg.server.profiles.join(", ")));
+    }
     if !cfg.ssh.hostkey.is_empty() {
         rows.push(("[ssh] hostkey".into(), cfg.ssh.hostkey.join(", ")));
     }
@@ -1927,7 +2049,7 @@ mod tests {
             checked: None,
             source_removed: None,
         };
-        let j = report_json(&report);
+        let j = mpt::report::fanout_json(&report);
         assert_eq!(j["ok"], false, "one target failed");
         assert_eq!(j["bytes_read"], 8);
         assert_eq!(j["elapsed_ms"], 1200);

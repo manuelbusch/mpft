@@ -31,6 +31,8 @@ sign-pgp = ["dep:pgp", "dep:rand"]
 s3-aws-auth = ["s3", "dep:aws-config", "dep:aws-credential-types"]
 keyring = ["dep:keyring"]
 vault = ["dep:reqwest", "reqwest/json"]
+# `mpt serve`: jobs over HTTP, progress over WebSocket
+server = ["dep:axum", "dep:rand", "dep:subtle"]
 
 [dependencies]
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "fs", "io-std", "io-util", "net", "process", "signal", "sync", "time"] }
@@ -93,6 +95,10 @@ secrecy = "0.10.3"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 
+# `mpt serve`
+axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "json", "tokio", "ws", "query"] }
+subtle = { version = "2", optional = true }
+
 # job lists for `mpt batch`: shell-style quoting and CSV
 shlex = "1.3"
 csv = "1.3"
@@ -113,3 +119,6 @@ tempfile = "3"
 tokio-stream = "0.1"
 # start_paused for tests that would otherwise wait out a retry backoff
 tokio = { version = "1.53", features = ["test-util"] }
+# the server's tests: in-process requests and a WebSocket client
+tower = { version = "0.5", features = ["util"] }
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect"] }

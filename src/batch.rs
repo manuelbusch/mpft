@@ -147,17 +147,9 @@ impl Targets {
     /// or say which earlier job already writes one of them.
     pub fn note(&mut self, job: &Job, index: usize) -> Result<()> {
         for dst in &job.dsts {
-            if dst.scheme().is_mail() {
+            let Some(key) = key(dst, &job.src)? else {
                 continue;
-            }
-            let path = dst.target_path(job.src.filename())?;
-            let key = format!(
-                "{}|{}|{}|{}",
-                dst.scheme(),
-                dst.host().unwrap_or(""),
-                dst.port_or_default(),
-                path
-            );
+            };
             if let Some(first) = self.seen.insert(key, index) {
                 return Err(Error::InvalidUrl(format!(
                     "jobs {first} and {index} write the same target {}",
@@ -169,6 +161,62 @@ impl Targets {
         }
         Ok(())
     }
+
+    /// Forget the targets of a job that is over, so a later job may write
+    /// them again (a server that runs jobs as they come in).
+    pub fn release(&mut self, job: &Job) {
+        for dst in &job.dsts {
+            if let Ok(Some(key)) = key(dst, &job.src) {
+                self.seen.remove(&key);
+            }
+        }
+    }
+}
+
+/// What identifies the file a target writes: scheme, host, port and the
+/// final path. `None` for a mail target, which is exempt.
+fn key(dst: &Location, src: &Location) -> Result<Option<String>> {
+    if dst.scheme().is_mail() {
+        return Ok(None);
+    }
+    let path = dst.target_path(src.filename())?;
+    Ok(Some(format!(
+        "{}|{}|{}|{}",
+        dst.scheme(),
+        dst.host().unwrap_or(""),
+        dst.port_or_default(),
+        path
+    )))
+}
+
+/// How [`prepare`] turns a job list into file jobs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PrepareOptions {
+    /// A source pattern that matches nothing contributes no jobs instead
+    /// of being an error.
+    pub allow_empty: bool,
+    /// A directory source stands for every file below it.
+    pub recursive: bool,
+    /// Leave the directories a tree needs uncreated (a dry run).
+    pub no_mkdir: bool,
+}
+
+/// Patterns and trees turned into file jobs, and the directories a tree
+/// needs created on the way. Jobs that are plain files pass through.
+pub async fn prepare(
+    jobs: Vec<Job>,
+    open: &(dyn Fn(&Location) -> Result<Box<dyn Endpoint>> + Sync),
+    opts: &PrepareOptions,
+) -> Result<Vec<Job>> {
+    let jobs = expand::expand(jobs, open, opts.allow_empty).await?;
+    if !opts.recursive {
+        return Ok(jobs);
+    }
+    let tree = expand::recursive(jobs, open).await?;
+    if !opts.no_mkdir {
+        expand::create_dirs(&tree.dirs, open).await?;
+    }
+    Ok(tree.jobs)
 }
 
 /// Refuse a list in which two jobs would write the same file.
@@ -269,7 +317,9 @@ pub async fn run_stream(
     }
 }
 
-async fn run_job(
+/// Run one job: open its endpoints and copy. This is what [`run`] does per
+/// job; on its own it is for a caller that schedules jobs itself.
+pub async fn run_job(
     job: &Job,
     open: &(dyn Fn(&Location) -> Result<Box<dyn Endpoint>> + Sync),
     copy: &CopyOptions,
@@ -301,6 +351,17 @@ mod tests {
         let err = check_collisions(&jobs).unwrap_err().to_string();
         assert!(err.contains("jobs 1 and 3"), "{err}");
         assert!(err.contains("sftp://h/in/x.bin"), "{err}");
+    }
+
+    #[test]
+    fn a_released_target_can_be_written_again() {
+        let a = job("/tmp/a/x.bin", &["sftp://h/in/"]);
+        let b = job("/tmp/b/x.bin", &["sftp://h/in/"]);
+        let mut targets = Targets::default();
+        targets.note(&a, 1).unwrap();
+        assert!(targets.note(&b, 2).is_err());
+        targets.release(&a);
+        targets.note(&b, 2).unwrap();
     }
 
     #[test]

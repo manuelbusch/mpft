@@ -4,12 +4,12 @@
 //! (still strings, so `mpt://` profiles and passwords are resolved later,
 //! with the rest of the command's endpoints).
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
 
 /// A job as written in a list: URLs, not yet parsed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobSpec {
     pub src: String,
     pub dsts: Vec<String>,
@@ -124,19 +124,52 @@ fn parse_lines(text: &str) -> Result<Vec<JobSpec>> {
     Ok(out)
 }
 
-#[derive(Deserialize)]
+/// `"dst": "…"` or `"dst": ["…", "…"]`.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
-enum OneOrMany {
+pub enum OneOrMany {
     One(String),
     Many(Vec<String>),
 }
 
-#[derive(Deserialize)]
+impl OneOrMany {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            OneOrMany::One(d) => vec![d],
+            OneOrMany::Many(d) => d,
+        }
+    }
+}
+
+/// A job in its JSON form: `{"src": "…", "dst": "…" | ["…", …]}`.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct JsonJob {
-    src: String,
+pub struct JsonJob {
+    pub src: String,
     #[serde(alias = "dsts")]
-    dst: OneOrMany,
+    pub dst: OneOrMany,
+}
+
+impl JsonJob {
+    /// The job as a spec, refusing an empty source or no target at all.
+    pub fn into_spec(self) -> std::result::Result<JobSpec, &'static str> {
+        let dsts: Vec<String> = self
+            .dst
+            .into_vec()
+            .into_iter()
+            .filter(|d| !d.is_empty())
+            .collect();
+        if self.src.is_empty() {
+            return Err("empty src");
+        }
+        if dsts.is_empty() {
+            return Err("a source needs at least one target");
+        }
+        Ok(JobSpec {
+            src: self.src,
+            dsts,
+        })
+    }
 }
 
 fn parse_jsonl(text: &str) -> Result<Vec<JobSpec>> {
@@ -148,18 +181,7 @@ fn parse_jsonl(text: &str) -> Result<Vec<JobSpec>> {
             continue;
         }
         let job: JsonJob = serde_json::from_str(trimmed).map_err(|e| bad(n, e))?;
-        let dsts = match job.dst {
-            OneOrMany::One(d) => vec![d],
-            OneOrMany::Many(d) => d,
-        };
-        let dsts: Vec<String> = dsts.into_iter().filter(|d| !d.is_empty()).collect();
-        if job.src.is_empty() {
-            return Err(bad(n, "empty src"));
-        }
-        if dsts.is_empty() {
-            return Err(bad(n, "a source needs at least one target"));
-        }
-        out.push(JobSpec { src: job.src, dsts });
+        out.push(job.into_spec().map_err(|e| bad(n, e))?);
     }
     Ok(out)
 }
