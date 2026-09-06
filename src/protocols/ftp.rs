@@ -473,4 +473,27 @@ impl Sender for FtpEndpoint {
         let _ = tokio::time::timeout(self.timeout, ftp.quit()).await;
         res
     }
+
+    fn supports_mkdir(&self) -> bool {
+        true
+    }
+
+    async fn mkdir_all(&self) -> Result<()> {
+        let dir = self.loc.parent()?.path().to_string();
+        let mut ftp = self.connect().await?;
+        // MKD one component at a time; a failure usually means it is there
+        // already, which CWD at the end settles either way.
+        let mut path = String::new();
+        for part in dir.split('/').filter(|p| !p.is_empty()) {
+            path.push('/');
+            path.push_str(part);
+            let _ = self.ctl("MKD", ftp.mkdir(path.as_str())).await;
+        }
+        let res = self
+            .ctl("CWD", ftp.cwd(dir.as_str()))
+            .await
+            .map_err(|e| Error::Remote(format!("ftp: cannot create {dir}: {e}")));
+        let _ = tokio::time::timeout(self.timeout, ftp.quit()).await;
+        res
+    }
 }

@@ -208,6 +208,10 @@ struct BatchArgs {
     /// A source pattern (`*.csv`) that matches nothing is not an error
     #[arg(long)]
     allow_empty: bool,
+    /// Copy directories with everything below them: `dir/` copies its
+    /// contents into the target, `dir` the directory itself
+    #[arg(short = 'r', long)]
+    recursive: bool,
 }
 
 /// What the command is going to touch, worked out before anything connects
@@ -699,9 +703,13 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
         tracing::info!(signer = %s.identity(), "signing checksum files");
     }
 
-    // A pattern as the source of a plain `cp` is a batch of one line.
+    // A pattern as the source of a plain `cp` is a batch of one line, and so
+    // is any source with -r, since it may turn out to be a directory.
+    let recursive = cli.cmd.batch_args().is_some_and(|b| b.recursive);
     let work = match work {
-        Work::Single { src, dsts } if mpt::batch::expand::has_pattern(&locate(&src)?) => {
+        Work::Single { src, dsts }
+            if recursive || mpt::batch::expand::has_pattern(&locate(&src)?) =>
+        {
             Work::Many(vec![JobSpec { src, dsts }])
         }
         w => w,
@@ -996,6 +1004,15 @@ async fn do_batch(
         .collect::<anyhow::Result<Vec<_>>>()?;
     let open = |loc: &mpt::Location| mpt::protocols::open(loc.clone());
     let jobs = mpt::batch::expand::expand(jobs, &open, args.allow_empty).await?;
+    let jobs = if args.recursive {
+        let tree = mpt::batch::expand::recursive(jobs, &open).await?;
+        if !args.dry_run {
+            mpt::batch::expand::create_dirs(&tree.dirs, &open).await?;
+        }
+        tree.jobs
+    } else {
+        jobs
+    };
     let n = jobs.len();
     if n == 0 {
         anstream::eprintln!("{WARN}nothing to do{WARN:#}: the job list is empty");

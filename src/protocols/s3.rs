@@ -330,4 +330,13 @@ impl Sender for S3Endpoint {
         }
         Ok(())
     }
+
+    /// Keys are flat; a "directory" appears with its first object.
+    fn supports_mkdir(&self) -> bool {
+        true
+    }
+
+    async fn mkdir_all(&self) -> Result<()> {
+        Ok(())
+    }
 }

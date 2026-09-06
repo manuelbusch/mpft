@@ -196,4 +196,33 @@ impl Sender for SftpEndpoint {
         super::disconnect(&handle).await;
         res
     }
+
+    fn supports_mkdir(&self) -> bool {
+        true
+    }
+
+    async fn mkdir_all(&self) -> Result<()> {
+        let dir = strip_home(self.loc.parent()?.path());
+        let (handle, sftp) = self.session().await?;
+        let absolute = dir.starts_with('/');
+        let mut path = String::new();
+        let mut res = Ok(());
+        for part in dir.split('/').filter(|p| !p.is_empty()) {
+            if absolute || !path.is_empty() {
+                path.push('/');
+            }
+            path.push_str(part);
+            if sftp.metadata(path.clone()).await.is_ok() {
+                continue;
+            }
+            debug!(%path, "sftp mkdir");
+            if let Err(e) = sftp.create_dir(path.clone()).await {
+                res = Err(sftp_err(e));
+                break;
+            }
+        }
+        let _ = sftp.close().await;
+        super::disconnect(&handle).await;
+        res
+    }
 }

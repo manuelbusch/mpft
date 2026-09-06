@@ -146,4 +146,24 @@ impl Sender for WebDavEndpoint {
         debug!(%path, "webdav DELETE");
         self.client.delete(&path).await.map_err(dav_err)
     }
+
+    fn supports_mkdir(&self) -> bool {
+        true
+    }
+
+    async fn mkdir_all(&self) -> Result<()> {
+        let dir = self.loc.parent()?.path().to_string();
+        // MKCOL one collection at a time; one that exists is left alone.
+        let mut path = String::new();
+        for part in dir.split('/').filter(|p| !p.is_empty()) {
+            path.push('/');
+            path.push_str(part);
+            if self.client.list(&path, Depth::Number(0)).await.is_ok() {
+                continue;
+            }
+            debug!(%path, "webdav MKCOL");
+            self.client.mkcol(&path).await.map_err(dav_err)?;
+        }
+        Ok(())
+    }
 }

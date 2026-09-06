@@ -133,6 +133,19 @@ impl Sender for FileEndpoint {
         Ok(fs::rename(self.sibling_path(from)?, self.sibling_path(to)?).await?)
     }
 
+    fn supports_mkdir(&self) -> bool {
+        true
+    }
+
+    async fn mkdir_all(&self) -> Result<()> {
+        let dir = self.loc.parent()?;
+        let path = std::path::Path::new(dir.path());
+        if path.as_os_str().is_empty() {
+            return Ok(());
+        }
+        Ok(fs::create_dir_all(path).await?)
+    }
+
     async fn remove(&self, name: &str) -> Result<()> {
         Ok(fs::remove_file(self.sibling_path(name)?).await?)
     }

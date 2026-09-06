@@ -86,7 +86,7 @@ mpt man                          the manual page in roff (mpt man | man -l -)
   --no-atomic                    write straight to the target name (see below)
   --resume                       continue an interrupted transfer from its .mpt-part file
   --hash <ALGO>  --check        checksums (see below)     --sign <SPEC>  --verify-signers/--verify-keyring <FILE>
-  --parallel <N>  --fail-fast  --dry-run  --allow-empty   for cp -t and batch (see "Many files")
+  -r  --parallel <N>  --fail-fast  --dry-run  --allow-empty   for cp and batch (see "Many files")
 ```
 
 Ctrl-C stops a running copy: open connections are dropped, partial files are
@@ -302,7 +302,18 @@ mpt batch jobs.txt --parallel 8
 find /export -name '*.pdf' -printf '%p sftp://srv/in/\n' | mpt batch -
 mpt batch jobs.csv --dry-run                              # list the jobs, send nothing
 mpt cp 'sftp://srv/out/*.csv' /data/incoming/            # every matching remote file
+mpt cp -r /data/export/ sftp://srv/in/export/             # a whole tree
 ```
+
+`-r` copies a directory with everything below it, as `rsync` reads the
+slash: `dir/` puts the contents into the target, `dir` the directory itself.
+Directories are created on the target first (the empty ones too), then
+every file is a job of its own, so `--parallel` applies to a tree just as it
+does to a list. That needs a target with directories to create: file, sftp,
+scp, ftp, webdav, and S3 (where keys make their own "directories"); an HTTP
+target refuses a tree, and a source has to be able to list, which rules out
+`scp://` and `http://` as tree sources. Links are whatever the source's
+listing says they are.
 
 A source whose file name holds `*` or `[…]` stands for every file in that
 directory whose name matches (a listing, filtered; dotfiles only when the

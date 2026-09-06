@@ -153,6 +153,22 @@ pub trait Sender: Send + Sync {
             op: "append",
         })
     }
+
+    /// Whether the target has directories that must exist before a file can
+    /// be written into them (and can create them), or gets by without.
+    fn supports_mkdir(&self) -> bool {
+        false
+    }
+
+    /// Make sure the directory of this endpoint's location exists, creating
+    /// it and its parents as needed. Nothing to do on a store without
+    /// directories (S3).
+    async fn mkdir_all(&self) -> Result<()> {
+        Err(crate::Error::UnsupportedOperation {
+            scheme: String::new(),
+            op: "create directories",
+        })
+    }
 }
 
 /// A parsed, ready-to-use endpoint. Direction support is optional per protocol.

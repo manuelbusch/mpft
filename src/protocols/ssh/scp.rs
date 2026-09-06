@@ -352,6 +352,23 @@ impl Sender for ScpEndpoint {
         let path = self.sibling_path(name)?;
         self.run(&format!("rm -f {}", shell_quote(&path))).await
     }
+
+    fn supports_mkdir(&self) -> bool {
+        true
+    }
+
+    async fn mkdir_all(&self) -> Result<()> {
+        let dir = self.loc.parent()?;
+        let path = dir
+            .path()
+            .strip_prefix("/~/")
+            .unwrap_or(dir.path())
+            .to_string();
+        if path.is_empty() {
+            return Ok(());
+        }
+        self.run(&format!("mkdir -p {}", shell_quote(&path))).await
+    }
 }
 
 #[cfg(test)]

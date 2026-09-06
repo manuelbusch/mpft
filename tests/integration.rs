@@ -1184,3 +1184,107 @@ async fn a_source_pattern_expands_on_a_remote_directory() {
         String::from_utf8_lossy(&run.stderr)
     );
 }
+
+/// `-r` copies a tree: directories are created on the way, and every file
+/// lands where it belongs, on each protocol that can hold directories.
+#[tokio::test]
+async fn recursive_copy_creates_directories_on_every_protocol() {
+    let remotes: Vec<(&str, String)> = [
+        "MPT_IT_SFTP",
+        "MPT_IT_SCP",
+        "MPT_IT_FTP",
+        "MPT_IT_WEBDAV",
+        "MPT_IT_S3",
+    ]
+    .iter()
+    .filter_map(|v| env(v).map(|u| (*v, u)))
+    .collect();
+    if remotes.is_empty() {
+        eprintln!("skipping: no MPT_IT_* directory URL set");
+        return;
+    }
+    mpt::init_crypto();
+    let tag = std::process::id();
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("tree");
+    std::fs::create_dir_all(src.join("a/deep")).unwrap();
+    std::fs::create_dir_all(src.join("empty")).unwrap();
+    std::fs::write(src.join("top.txt"), "top").unwrap();
+    std::fs::write(src.join("a/one.txt"), "one").unwrap();
+    std::fs::write(src.join("a/deep/two.txt"), "two").unwrap();
+
+    for (var, base) in &remotes {
+        // `tree` without a slash: the directory itself, under a unique name.
+        let target = dir_url(base, &format!("/rtree_{tag}/"));
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+            .args(["cp", "-r", src.to_str().unwrap(), &target])
+            .output()
+            .expect("running mpt");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{var}: {stderr}");
+        assert!(stderr.contains("3/3 jobs ok"), "{var}: {stderr}");
+        let root = dir_url(base, &format!("/rtree_{tag}/tree"));
+        assert_eq!(fetch(&root, "top.txt").await, b"top", "{var}");
+        assert_eq!(fetch(&root, "a/one.txt").await, b"one", "{var}");
+        assert_eq!(fetch(&root, "a/deep/two.txt").await, b"two", "{var}");
+        if *var != "MPT_IT_S3" && *var != "MPT_IT_SCP" {
+            // An empty directory travels too (S3 has no such thing, and
+            // SCP cannot list to show it).
+            let listing = mpt::open(&dir_url(&root, "/"))
+                .unwrap()
+                .receiver()
+                .unwrap()
+                .list()
+                .await
+                .unwrap();
+            assert!(
+                listing.iter().any(|e| e.name == "empty" && e.is_dir),
+                "{var}: {listing:?}"
+            );
+        }
+    }
+
+    // And back: the sftp tree's contents (trailing slash) into a local dir.
+    if let Some(sftp) = env("MPT_IT_SFTP") {
+        let back = dir.path().join("back");
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+            .args([
+                "cp",
+                "-r",
+                &dir_url(&sftp, &format!("/rtree_{tag}/tree/")),
+                &format!("{}/", back.display()),
+            ])
+            .output()
+            .expect("running mpt");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(std::fs::read(back.join("a/deep/two.txt")).unwrap(), b"two");
+        assert!(back.join("empty").is_dir());
+        assert!(!back.join("tree").exists());
+    }
+
+    // A dry run creates nothing.
+    if let Some(sftp) = env("MPT_IT_SFTP") {
+        let target = dir_url(&sftp, &format!("/rtree_dry_{tag}/"));
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+            .args(["cp", "-r", "--dry-run", src.to_str().unwrap(), &target])
+            .output()
+            .expect("running mpt");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let listing = mpt::open(&sftp)
+            .unwrap()
+            .receiver()
+            .unwrap()
+            .list()
+            .await
+            .unwrap();
+        assert!(listing.iter().all(|e| e.name != format!("rtree_dry_{tag}")));
+    }
+}

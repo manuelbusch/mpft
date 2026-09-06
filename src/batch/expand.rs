@@ -1,8 +1,9 @@
 //! Turning one job into many: a pattern in the source's file name stands
-//! for every file in that directory whose name matches.
+//! for every file in that directory whose name matches, and with
+//! [`recursive`] a directory stands for every file below it.
 
 use glob::{MatchOptions, Pattern};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::{Endpoint, Error, Location, Result};
 
@@ -87,6 +88,139 @@ async fn matching_files(
     }
     info!(pattern = %pattern, matches = found.len(), "expanded");
     Ok(found)
+}
+
+/// Directories are not followed deeper than this; a sane tree is nowhere
+/// near it, a listing that loops (a symlink cycle, say) would be.
+const MAX_DEPTH: usize = 64;
+
+/// The outcome of [`recursive`]: the file jobs, and the directories that
+/// have to exist on the targets before they run, shallowest first.
+#[derive(Debug, Default)]
+pub struct Tree {
+    pub jobs: Vec<Job>,
+    pub dirs: Vec<Location>,
+}
+
+/// Expand every job whose source is a directory into one job per file
+/// below it. A source ending in `/` copies its contents into the target,
+/// one without copies the directory itself, as `rsync` has it. Jobs whose
+/// source is a file pass through unchanged.
+///
+/// Targets must be directories. Listing is depth-first in name order, and
+/// symbolic links are whatever the listing says they are (a file's content
+/// is copied, a directory is descended into, up to a depth limit).
+pub async fn recursive(
+    jobs: Vec<Job>,
+    open: &(dyn Fn(&Location) -> Result<Box<dyn Endpoint>> + Sync),
+) -> Result<Tree> {
+    let mut tree = Tree::default();
+    for job in jobs {
+        let src = &job.src;
+        if src.scheme().is_mail() {
+            return Err(Error::InvalidUrl(format!("{src} cannot be a source")));
+        }
+        for dst in &job.dsts {
+            if !dst.is_dir_target() && !dst.scheme().is_mail() {
+                return Err(Error::InvalidUrl(format!(
+                    "copying a tree into {dst} needs a directory target (end it with /)"
+                )));
+            }
+        }
+        // A file source is a job as it is. `size()` says whether it is one;
+        // a directory answers `None` (and so does anything unreachable,
+        // which the listing below will then complain about properly).
+        let ep = open(src)?;
+        if !src.is_dir_target() && ep.receiver()?.size().await?.is_some() {
+            tree.jobs.push(job);
+            continue;
+        }
+        let (root, base) = if src.is_dir_target() {
+            (src.clone(), String::new())
+        } else {
+            // `a/b` goes to `<dst>/b/…`.
+            let name = src
+                .filename()
+                .ok_or_else(|| Error::InvalidUrl(format!("{src} has no directory name")))?;
+            (src.join("/")?, format!("{name}/"))
+        };
+        if !base.is_empty() {
+            for dst in &job.dsts {
+                if !dst.scheme().is_mail() {
+                    tree.dirs.push(dst.join(&base)?);
+                }
+            }
+        }
+        let mut stack = vec![(root, base, 0usize)];
+        while let Some((dir, rel, depth)) = stack.pop() {
+            let entries = open(&dir)?.receiver()?.list().await?;
+            let mut subdirs = Vec::new();
+            for e in entries {
+                if e.is_dir {
+                    if depth >= MAX_DEPTH {
+                        warn!(%dir, name = %e.name, "too deep, not descending");
+                        continue;
+                    }
+                    let sub_rel = format!("{rel}{}/", e.name);
+                    match dir.join(&format!("{}/", e.name)) {
+                        Ok(sub) => {
+                            for dst in &job.dsts {
+                                if !dst.scheme().is_mail() {
+                                    tree.dirs.push(dst.join(&sub_rel)?);
+                                }
+                            }
+                            subdirs.push((sub, sub_rel, depth + 1));
+                        }
+                        Err(err) => debug!(name = %e.name, "skipping unsafe name: {err}"),
+                    }
+                    continue;
+                }
+                match dir.join(&e.name) {
+                    Ok(file) => tree.jobs.push(Job {
+                        src: file,
+                        dsts: job
+                            .dsts
+                            .iter()
+                            .map(|d| {
+                                if d.scheme().is_mail() {
+                                    Ok(d.clone())
+                                } else {
+                                    d.join(&rel)
+                                }
+                            })
+                            .collect::<Result<Vec<_>>>()?,
+                    }),
+                    Err(err) => debug!(name = %e.name, "skipping unsafe name: {err}"),
+                }
+            }
+            // Pushed in reverse so the listing order comes back out.
+            stack.extend(subdirs.into_iter().rev());
+        }
+        info!(source = %src, files = tree.jobs.len(), dirs = tree.dirs.len(), "expanded a tree");
+    }
+    Ok(tree)
+}
+
+/// Create the directories a tree copy needs, in the order given. A target
+/// that has no directories to speak of (S3) does nothing; one that cannot
+/// create them (HTTP) is an error.
+pub async fn create_dirs(
+    dirs: &[Location],
+    open: &(dyn Fn(&Location) -> Result<Box<dyn Endpoint>> + Sync),
+) -> Result<()> {
+    for dir in dirs {
+        let ep = open(dir)?;
+        let sender = ep.sender()?;
+        if !sender.supports_mkdir() {
+            return Err(Error::UnsupportedOperation {
+                scheme: dir.scheme().to_string(),
+                op: "create directories (copy a tree elsewhere, or files one by one)",
+            });
+        }
+        debug!(%dir, "creating");
+        sender.mkdir_all().await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -184,5 +318,119 @@ mod tests {
         let out = expand(jobs, &open, false).await.unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].src.path(), "/nonexistent/plain.bin");
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+
+    fn loc(s: &str) -> Location {
+        Location::parse(s).unwrap()
+    }
+
+    fn make_tree(root: &std::path::Path) {
+        std::fs::create_dir_all(root.join("a/deep")).unwrap();
+        std::fs::create_dir_all(root.join("empty")).unwrap();
+        std::fs::write(root.join("top.txt"), "top").unwrap();
+        std::fs::write(root.join("a/one.txt"), "one").unwrap();
+        std::fs::write(root.join("a/deep/two.txt"), "two").unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_directory_source_becomes_a_job_per_file_plus_the_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        make_tree(&src);
+        let out = format!("{}/out/", dir.path().display());
+        let open = |l: &Location| crate::protocols::open(l.clone());
+
+        // Contents of `src/` into `out/`.
+        let tree = recursive(
+            vec![Job {
+                src: loc(&format!("{}/", src.display())),
+                dsts: vec![loc(&out)],
+            }],
+            &open,
+        )
+        .await
+        .unwrap();
+        let mut files: Vec<(String, String)> = tree
+            .jobs
+            .iter()
+            .map(|j| (j.src.path().to_string(), j.dsts[0].path().to_string()))
+            .collect();
+        files.sort();
+        assert_eq!(
+            files,
+            vec![
+                (
+                    format!("{}/a/deep/two.txt", src.display()),
+                    format!("{out}a/deep/")
+                ),
+                (format!("{}/a/one.txt", src.display()), format!("{out}a/")),
+                (format!("{}/top.txt", src.display()), out.clone()),
+            ]
+        );
+        let dirs: Vec<String> = tree.dirs.iter().map(|d| d.path().to_string()).collect();
+        assert_eq!(
+            dirs,
+            vec![
+                format!("{out}a/"),
+                format!("{out}empty/"),
+                format!("{out}a/deep/")
+            ]
+        );
+
+        create_dirs(&tree.dirs, &open).await.unwrap();
+        assert!(dir.path().join("out/a/deep").is_dir());
+        assert!(dir.path().join("out/empty").is_dir());
+
+        // `src` without a slash goes to `out/src/…`.
+        let tree = recursive(
+            vec![Job {
+                src: loc(src.to_str().unwrap()),
+                dsts: vec![loc(&out)],
+            }],
+            &open,
+        )
+        .await
+        .unwrap();
+        assert_eq!(tree.dirs[0].path(), format!("{out}src/"));
+        assert!(
+            tree.jobs
+                .iter()
+                .all(|j| j.dsts[0].path().starts_with(&format!("{out}src/")))
+        );
+        assert_eq!(tree.jobs.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_file_source_passes_through_and_targets_must_be_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "f").unwrap();
+        let open = |l: &Location| crate::protocols::open(l.clone());
+        let file = loc(dir.path().join("f.txt").to_str().unwrap());
+        let tree = recursive(
+            vec![Job {
+                src: file.clone(),
+                dsts: vec![loc("/tmp/out/")],
+            }],
+            &open,
+        )
+        .await
+        .unwrap();
+        assert_eq!(tree.jobs.len(), 1);
+        assert!(tree.dirs.is_empty());
+        let err = recursive(
+            vec![Job {
+                src: file,
+                dsts: vec![loc("/tmp/out/one.txt")],
+            }],
+            &open,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("directory target"), "{err}");
     }
 }
