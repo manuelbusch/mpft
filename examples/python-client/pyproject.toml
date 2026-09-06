@@ -1,0 +1,36 @@
+[project]
+name = "mpt-client"
+version = "0.1.0"
+description = "Talk to `mpt serve`: submit jobs and follow their progress over WebSocket"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT OR Apache-2.0"
+dependencies = [
+    "httpx>=0.27",
+    "websockets>=13",
+]
+
+[project.scripts]
+mpt-client = "mpt_client.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mpt_client"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]

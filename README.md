@@ -487,6 +487,11 @@ a second Ctrl-C cancels them at once.
 With `-v` the log names job ids, sizes and outcomes but no hosts or paths;
 `-vv` adds them, along with everything else at debug level.
 
+`examples/python-client` is a small Python project (uv, httpx, websockets)
+that submits jobs, follows their progress over the WebSocket and lists and
+cancels them; its `demo.sh` starts a server on temporary directories and
+runs the client against it.
+
 ## Single sign-on
 
 Long-lived keys in a file are what SSO replaces. Where a protocol has an
