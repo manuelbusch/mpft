@@ -219,7 +219,7 @@ async fn prepare(
             return Err(fail(
                 ApiError::new(
                     "conflict",
-                    format!("a target is already being written: {e}"),
+                    format!("a target is already being written: {}", conflict_text(&e)),
                 ),
                 &refs,
             ));
@@ -286,7 +286,7 @@ fn shown(loc: &Location, refs: &[(String, Location)]) -> String {
 /// nothing, of a target that refused, of two jobs on one file. Longest
 /// locations first, so a file under a directory reference is rewritten
 /// as a whole and not just its directory part.
-fn redact(mut error: ApiError, refs: &[(String, Location)]) -> ApiError {
+pub(super) fn redact(mut error: ApiError, refs: &[(String, Location)]) -> ApiError {
     let mut pairs: Vec<(String, &String)> = refs
         .iter()
         .filter(|(url, _)| url.starts_with(PROFILE_PREFIX))
@@ -299,6 +299,15 @@ fn redact(mut error: ApiError, refs: &[(String, Location)]) -> ApiError {
         }
     }
     error
+}
+
+/// The words of a collision error: `Targets::note` files it as an invalid
+/// URL, whose prefix says nothing to an API client.
+pub(super) fn conflict_text(e: &Error) -> String {
+    match e {
+        Error::InvalidUrl(m) => m.clone(),
+        other => other.to_string(),
+    }
 }
 
 /// A copy's report with its endpoints (source, targets, the checksum and

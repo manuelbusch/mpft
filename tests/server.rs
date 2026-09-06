@@ -387,6 +387,37 @@ async fn raw_urls_need_allow_any_url() {
 }
 
 #[tokio::test]
+async fn a_conflict_is_worded_in_the_clients_terms() {
+    let server = Server::start(&[]);
+    for name in ["a", "b"] {
+        std::fs::write(server.path().join("src").join(name), b"x").unwrap();
+    }
+    // Two jobs on one file target, and two on one file under a directory
+    // target: the answer names the reference, not the path behind it.
+    for (body, target) in [
+        (
+            r#"{"jobs": [{"src": "mpt://src/a", "dst": "mpt://dst/x"}, {"src": "mpt://src/b", "dst": "mpt://dst/x"}]}"#,
+            "mpt://dst/x",
+        ),
+        (
+            r#"{"jobs": [{"src": "mpt://src/a", "dst": "mpt://dst/"}, {"src": "mpt://src/a", "dst": "mpt://dst/"}]}"#,
+            "mpt://dst/a",
+        ),
+    ] {
+        let (status, resp) = server
+            .post("/v1/batches", "application/json", body.into())
+            .await;
+        assert_eq!(status, 409, "{resp}");
+        assert_eq!(resp["error"]["kind"], "conflict");
+        assert_eq!(
+            resp["error"]["message"],
+            format!("jobs 1 and 2 write the same target {target}"),
+            "{resp}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_job_left_in_the_journal_runs_again() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("src")).unwrap();

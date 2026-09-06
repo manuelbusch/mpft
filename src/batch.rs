@@ -152,11 +152,17 @@ impl Targets {
                 continue;
             };
             if let Some(first) = self.seen.insert(key, index) {
-                return Err(Error::InvalidUrl(format!(
-                    "jobs {first} and {index} write the same target {}",
+                // The file itself: under a directory target, the source's
+                // name; a file target is the file.
+                let file = if dst.is_dir_target() {
                     dst.sibling(job.src.filename().unwrap_or(""))
                         .map(|l| l.to_string())
                         .unwrap_or_else(|_| dst.to_string())
+                } else {
+                    dst.to_string()
+                };
+                return Err(Error::InvalidUrl(format!(
+                    "jobs {first} and {index} write the same target {file}"
                 )));
             }
         }

@@ -25,7 +25,7 @@ use tracing::debug;
 use super::model::{
     ApiError, JobId, JobKind, JobOptions, JobState, Submission, SubmitBatch, SubmitJob, specs_of,
 };
-use super::{AppState, ws};
+use super::{AppState, scheduler, ws};
 use crate::Error;
 use crate::batch::jobs::{Format, JobSpec, JsonJob};
 
@@ -382,6 +382,9 @@ fn accept(state: &Arc<AppState>, submission: Submission) -> Result<Response, Rej
         return Ok(resp);
     }
     let mut jobs = Vec::with_capacity(submission.specs.len());
+    // What was submitted next to what it resolved to, so a refusal can be
+    // worded in the client's terms.
+    let mut refs: Vec<(String, crate::Location)> = Vec::new();
     for spec in &submission.specs {
         let locate = |url: &str| -> Result<crate::Location, Reject> {
             state.cfg.allow_url(url)?;
@@ -403,6 +406,10 @@ fn accept(state: &Arc<AppState>, submission: Submission) -> Result<Response, Rej
             .iter()
             .map(|d| locate(d))
             .collect::<Result<Vec<_>, _>>()?;
+        refs.push((spec.src.clone(), src.clone()));
+        for (url, loc) in spec.dsts.iter().zip(&dsts) {
+            refs.push((url.clone(), loc.clone()));
+        }
         jobs.push(crate::batch::Job { src, dsts });
     }
     // Two jobs on one file can be told apart now unless a pattern or a
@@ -412,7 +419,11 @@ fn accept(state: &Arc<AppState>, submission: Submission) -> Result<Response, Rej
             .iter()
             .any(|j| crate::batch::expand::has_pattern(&j.src));
     if !expands && let Err(e) = crate::batch::check_collisions(&jobs) {
-        return Err(Reject::new(StatusCode::CONFLICT, "conflict", e));
+        let error = ApiError::new("conflict", scheduler::conflict_text(&e));
+        return Err(Reject {
+            status: StatusCode::CONFLICT,
+            error: scheduler::redact(error, &refs),
+        });
     }
     let transfers = submission.specs.len();
     let id = state.submit(submission).map_err(|e| {

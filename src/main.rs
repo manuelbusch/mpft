@@ -840,7 +840,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
         let abort = abort.clone();
         let serving = cli.cmd.is_serve();
         tokio::spawn(async move {
-            if tokio::signal::ctrl_c().await.is_ok() {
+            if interrupted().await {
                 if serving {
                     anstream::eprintln!(
                         "{WARN}interrupted{WARN:#}, finishing the running jobs (Ctrl-C again cancels them)…"
@@ -849,7 +849,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                     anstream::eprintln!("{WARN}interrupted{WARN:#}, stopping and cleaning up…");
                 }
                 cancel.cancel();
-                if serving && tokio::signal::ctrl_c().await.is_ok() {
+                if serving && interrupted().await {
                     anstream::eprintln!("{WARN}interrupted again{WARN:#}, cancelling the jobs…");
                     abort.cancel();
                 }
@@ -2138,7 +2138,31 @@ impl Via {
                 outcome.exit
             ))
         })?;
-        mpt::report::fanout_from_json(&report)
+        let mut report = mpt::report::fanout_from_json(&report)?;
+        // The relay knows the file by name only; here it is what was given.
+        report.source = job.src.to_string();
+        Ok(report)
+    }
+}
+
+/// Ctrl-C, or SIGTERM where there is one: what systemd's `stop` and
+/// `docker stop` send. Both mean the same here, so a service is drained
+/// rather than killed.
+async fn interrupted() -> bool {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let Ok(mut term) = signal(SignalKind::terminate()) else {
+            return tokio::signal::ctrl_c().await.is_ok();
+        };
+        tokio::select! {
+            r = tokio::signal::ctrl_c() => r.is_ok(),
+            _ = term.recv() => true,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await.is_ok()
     }
 }
 

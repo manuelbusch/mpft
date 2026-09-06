@@ -482,8 +482,9 @@ after `grace` ran out — so a target that cannot take a file twice (mail)
 may get it twice, and a `delete_source` job whose source is already gone
 fails on the second run; file targets are safe, since a transfer either
 finished or left only a `.mpt-part`. Finished jobs do not survive a restart.
-Ctrl-C stops taking jobs, waits `grace` for the running ones and exits 0;
-a second Ctrl-C cancels them at once.
+Ctrl-C, or SIGTERM as systemd's `stop` sends it, stops taking jobs, waits
+`grace` for the running ones and exits 0; a second signal cancels them at
+once.
 
 With `-v` the log names job ids, sizes and outcomes but no hosts or paths;
 `-vv` adds them, along with everything else at debug level.
@@ -551,7 +552,7 @@ re-read when it changes) with a host key it generates on the first start
 is in the log). It answers `exec "mpt relay"` and the subsystem `mpt`, and
 nothing else: no shell, no pty, no forwarding, no sftp. `--parallel` bounds
 the relays running at once (further sessions wait), `--max-size` refuses
-larger uploads, and Ctrl-C stops accepting and waits `--grace` for the
+larger uploads, and Ctrl-C or SIGTERM stops accepting and waits `--grace` for the
 running relays before cancelling them. The same keys go under `[relay]`
 in the configuration; the flags of the process (`--timeout`, `--cache`,
 `--hash`, `[defaults]`) apply to every relay it runs, as they do for
