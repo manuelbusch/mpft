@@ -71,12 +71,15 @@ mpt schemes                      print the table above
 mpt profiles                     list the named targets from the configuration
 mpt credentials set|get|delete   manage OS key store entries (feature "keyring")
 mpt config check                 read the configuration file and print what it sets
+mpt completions <shell>          completion script for bash, zsh, fish, elvish or powershell
+mpt man                          the manual page in roff (mpt man | man -l -)
   -v / -vv / -vvv   log level    --insecure   disable TLS verification    --password <pw>
   --config <PATH>                configuration file (see below)
   --color auto|always|never      colored output (auto: only on a terminal, honours NO_COLOR)
   --password-file <PATH>  --password-stdin   read the password without putting it in argv
   --refuse-plaintext-auth        make unencrypted credentials an error instead of a warning
   --json                         print the result as JSON on stdout (see below)
+  --progress auto|always|never   progress line (auto: only on a terminal, and not with --json)
   --timeout <SECONDS>            inactivity timeout, 30 by default, 0 disables it
   --no-atomic                    write straight to the target name (see below)
   --hash <ALGO>  --check        checksums (see below)     --sign <SPEC>  --verify-signers/--verify-keyring <FILE>
@@ -367,6 +370,27 @@ The object has `source`, `bytes_read`, `elapsed_ms`, `ok` (every target
 succeeded and `--check` agreed), `targets`, `digests` (algorithm → hex) and
 `check` (`algo`, `ok`, `expected`, `actual`, `signer`). `mpt --json ls <url>`
 prints the listing the same way, with `modified` in RFC 3339.
+
+## While it runs
+
+On a terminal a copy shows one line that redraws itself:
+
+```
+26.9 MiB / 38.1 MiB ( 70%)  107.4 MiB/s
+```
+
+It appears only where someone is watching — a terminal on stderr, and not
+with `--json` — and the percentage only when the source could say how large it
+is. `--progress always|never` decides instead of guessing; with `always` and no
+terminal each reading gets its own line, so it can go into a log.
+
+`mpt completions <shell>` prints a completion script (bash, zsh, fish, elvish,
+powershell) and `mpt man` the manual page:
+
+```
+mpt completions zsh > ~/.zfunc/_mpt
+mpt man > /usr/local/share/man/man1/mpt.1
+```
 
 ## Connections
 

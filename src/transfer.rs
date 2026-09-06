@@ -23,6 +23,55 @@ pub enum CacheMode {
     Memory { limit: u64 },
 }
 
+/// Live counters of a running copy, so a caller can show progress without
+/// the pipeline having to know what a terminal is.
+#[derive(Debug)]
+pub struct Progress {
+    /// The very counter the source stream feeds, shared rather than copied.
+    read: Arc<std::sync::atomic::AtomicU64>,
+    /// `u64::MAX` until the size is known, and if it cannot be known.
+    total: std::sync::atomic::AtomicU64,
+}
+
+impl Default for Progress {
+    fn default() -> Self {
+        Progress {
+            read: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            total: std::sync::atomic::AtomicU64::new(u64::MAX),
+        }
+    }
+}
+
+impl Progress {
+    pub fn new() -> Arc<Progress> {
+        Arc::new(Progress::default())
+    }
+
+    /// Bytes read from the source so far.
+    pub fn read(&self) -> u64 {
+        self.read.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn counter(&self) -> Arc<std::sync::atomic::AtomicU64> {
+        Arc::clone(&self.read)
+    }
+
+    /// Total size, once the source has been asked for it.
+    pub fn total(&self) -> Option<u64> {
+        match self.total.load(std::sync::atomic::Ordering::Relaxed) {
+            u64::MAX => None,
+            v => Some(v),
+        }
+    }
+
+    fn set_total(&self, size: Option<u64>) {
+        self.total.store(
+            size.unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+}
+
 /// Options for [`copy_many`].
 #[derive(Clone)]
 pub struct CopyOptions {
@@ -49,6 +98,8 @@ pub struct CopyOptions {
     /// Stops the transfer when it fires: running sends are dropped, partial
     /// files are removed and every unfinished target reports [`Error::Cancelled`].
     pub cancel: Option<CancellationToken>,
+    /// Filled in while the source is read, for a progress display.
+    pub progress: Option<Arc<Progress>>,
 }
 
 impl std::fmt::Debug for CopyOptions {
@@ -77,6 +128,7 @@ impl Default for CopyOptions {
             verify: None,
             atomic: true,
             cancel: None,
+            progress: None,
         }
     }
 }
@@ -218,6 +270,9 @@ pub async fn copy_many(
 
     let started = Instant::now();
     let size = receiver.size().await?;
+    if let Some(p) = &opts.progress {
+        p.set_total(size);
+    }
     let mut meta = SendMeta {
         size,
         ..Default::default()
@@ -241,7 +296,12 @@ pub async fn copy_many(
     }
 
     let body = receiver.receive().await?;
-    let (body, read_count) = Counted::new(body);
+    // With a progress display the read counter *is* its counter: one atomic,
+    // watched from outside while the copy runs.
+    let (body, read_count) = match &opts.progress {
+        Some(p) => (Counted::with_counter(body, p.counter()), p.counter()),
+        None => Counted::new(body),
+    };
     let (body, handles) = hashing(body, &algos);
     let body: crate::ByteStream = Box::pin(body);
     if let Some(algo) = opts.hash {

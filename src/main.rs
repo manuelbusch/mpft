@@ -88,6 +88,11 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
+    /// Progress line while copying: auto (only on a terminal, and only with
+    /// --json off), always, never
+    #[arg(long, global = true, value_name = "WHEN")]
+    progress: Option<ColorChoice>,
+
     /// Write straight to the target name instead of uploading to
     /// <name>.mpt-part and renaming it into place when the transfer is done
     #[arg(long, global = true)]
@@ -142,6 +147,10 @@ enum Cmd {
     Ls { url: String },
     /// Show supported URL schemes and their options
     Schemes,
+    /// Print a completion script for a shell (bash, zsh, fish, elvish, powershell)
+    Completions { shell: clap_complete::Shell },
+    /// Print the manual page in roff format (`mpt man | man -l -`)
+    Man,
     /// List the profiles the configuration defines
     Profiles,
     /// Manage secrets in the OS key store, for { keyring = "<service>/<user>" }
@@ -502,6 +511,7 @@ async fn run(cli: Cli, settings: Settings) -> anyhow::Result<()> {
         },
         atomic: settings.atomic,
         cancel: Some(cancel.clone()),
+        progress: show_progress(&cli, &settings).then(mpt::transfer::Progress::new),
         hash: settings.hash.or(sign.as_ref().map(|_| HashAlgo::Sha256)),
         check,
         sign: match &sign {
@@ -523,7 +533,18 @@ async fn run(cli: Cli, settings: Settings) -> anyhow::Result<()> {
                 .iter()
                 .map(|d| open(d))
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            do_copy(open(src)?, targets, &opts, settings.json).await
+            let src = open(src)?;
+            // The bar watches the counters the copy fills in; it draws only
+            // while the copy runs and wipes its line when it is done.
+            let bar = opts.progress.clone().map(spawn_progress);
+            let outcome = do_copy(src, targets, &opts, settings.json).await;
+            if let Some(bar) = bar {
+                bar.abort();
+                if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+                    anstream::eprint!("\r\u{1b}[2K");
+                }
+            }
+            outcome
         }
         Cmd::Ls { url } => {
             let ep = open(url)?;
@@ -579,6 +600,18 @@ async fn run(cli: Cli, settings: Settings) -> anyhow::Result<()> {
                     anstream::eprintln!("{OK}deleted{OK:#} {entry}");
                 }
             }
+            Ok(())
+        }
+        Cmd::Completions { shell } => {
+            let mut cmd = <Cli as clap::CommandFactory>::command();
+            let name = cmd.get_name().to_string();
+            clap_complete::generate(*shell, &mut cmd, name, &mut std::io::stdout());
+            Ok(())
+        }
+        Cmd::Man => {
+            clap_mangen::Man::new(<Cli as clap::CommandFactory>::command())
+                .render(&mut std::io::stdout())
+                .context("writing the manual page")?;
             Ok(())
         }
         Cmd::Profiles => {
@@ -726,6 +759,66 @@ async fn do_copy(
         anyhow::bail!("{failed} of {} targets failed", report.targets.len());
     }
     Ok(())
+}
+
+/// Whether to draw a progress line: `auto` means a terminal on stderr and no
+/// JSON on stdout, because a progress line is for a person to watch.
+fn show_progress(cli: &Cli, settings: &Settings) -> bool {
+    match cli.progress.unwrap_or(ColorChoice::Auto) {
+        ColorChoice::Always => true,
+        ColorChoice::Never => false,
+        ColorChoice::Auto => !settings.json && std::io::IsTerminal::is_terminal(&std::io::stderr()),
+    }
+}
+
+/// Redraw the progress line four times a second until the task is dropped.
+fn spawn_progress(
+    progress: std::sync::Arc<mpt::transfer::Progress>,
+) -> tokio::task::JoinHandle<()> {
+    // Redrawing in place needs a terminal; anywhere else (a log file, because
+    // --progress always was asked for) each reading gets its own line.
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
+    tokio::spawn(async move {
+        let started = std::time::Instant::now();
+        let mut tick = tokio::time::interval(Duration::from_millis(250));
+        loop {
+            tick.tick().await;
+            let read = progress.read();
+            let secs = started.elapsed().as_secs_f64().max(0.001);
+            let rate = format!("{}/s", human_size((read as f64 / secs) as u64));
+            let line = match progress.total() {
+                Some(total) if total > 0 => format!(
+                    "{} / {} ({:>3.0}%)  {rate}",
+                    human_size(read),
+                    human_size(total),
+                    read as f64 * 100.0 / total as f64
+                ),
+                _ => format!("{}  {rate}", human_size(read)),
+            };
+            if tty {
+                // \r and "erase to end of line": one line, redrawn in place.
+                anstream::eprint!("\r\u{1b}[2K{DIM}{line}{DIM:#}");
+            } else {
+                anstream::eprintln!("{line}");
+            }
+        }
+    })
+}
+
+/// Sizes as a person reads them: 1.4 MiB rather than 1468006.
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 /// The whole outcome as JSON, for scripts: what was read, what each target
@@ -1004,6 +1097,15 @@ mod tests {
         let s = Settings::resolve(&cli(&["--no-atomic", "--hash", "sha512"]), &config("")).unwrap();
         assert!(!s.atomic);
         assert_eq!(s.hash, Some(HashAlgo::Sha512));
+    }
+
+    #[test]
+    fn sizes_are_readable() {
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(999), "999 B");
+        assert_eq!(human_size(1024), "1.0 KiB");
+        assert_eq!(human_size(40_000_000), "38.1 MiB");
+        assert_eq!(human_size(5 << 30), "5.0 GiB");
     }
 
     #[test]

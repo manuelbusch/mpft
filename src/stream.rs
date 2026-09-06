@@ -90,13 +90,13 @@ pub struct Counted<R> {
 impl<R> Counted<R> {
     pub fn new(inner: R) -> (Self, std::sync::Arc<std::sync::atomic::AtomicU64>) {
         let count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        (
-            Counted {
-                inner,
-                count: count.clone(),
-            },
-            count,
-        )
+        (Counted::with_counter(inner, count.clone()), count)
+    }
+
+    /// Count into a counter someone else already holds — a progress display,
+    /// for instance, which watches it while the stream runs.
+    pub fn with_counter(inner: R, count: std::sync::Arc<std::sync::atomic::AtomicU64>) -> Self {
+        Counted { inner, count }
     }
 }
 
