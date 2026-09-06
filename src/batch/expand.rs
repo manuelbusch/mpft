@@ -27,10 +27,12 @@ pub async fn expand(
     jobs: Vec<Job>,
     open: &(dyn Fn(&Location) -> Result<Box<dyn Endpoint>> + Sync),
     allow_empty: bool,
+    limit: Option<usize>,
 ) -> Result<Vec<Job>> {
     let mut out = Vec::with_capacity(jobs.len());
     for job in jobs {
         if !has_pattern(&job.src) {
+            check_limit(out.len() + 1, limit, &job.src)?;
             out.push(job);
             continue;
         }
@@ -54,9 +56,23 @@ pub async fn expand(
                 src,
                 dsts: job.dsts.clone(),
             });
+            check_limit(out.len(), limit, &job.src)?;
         }
     }
     Ok(out)
+}
+
+/// The text a job list over the limit is refused with; a server maps it
+/// to its own error kind by this prefix.
+pub const OVER_LIMIT: &str = "more files than the limit allows";
+
+fn check_limit(count: usize, limit: Option<usize>, source: &Location) -> Result<()> {
+    match limit {
+        Some(max) if count > max => Err(Error::InvalidUrl(format!(
+            "{OVER_LIMIT} ({max}) at {source}"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// The files in the directory of `pattern` whose names match it, as
@@ -86,7 +102,8 @@ async fn matching_files(
             Err(err) => debug!(name = %e.name, "skipping unsafe name: {err}"),
         }
     }
-    info!(pattern = %pattern, matches = found.len(), "expanded");
+    info!(matches = found.len(), "pattern expanded");
+    debug!(%pattern, "pattern expanded");
     Ok(found)
 }
 
@@ -113,6 +130,7 @@ pub struct Tree {
 pub async fn recursive(
     jobs: Vec<Job>,
     open: &(dyn Fn(&Location) -> Result<Box<dyn Endpoint>> + Sync),
+    limit: Option<usize>,
 ) -> Result<Tree> {
     let mut tree = Tree::default();
     for job in jobs {
@@ -132,6 +150,7 @@ pub async fn recursive(
         // which the listing below will then complain about properly).
         let ep = open(src)?;
         if !src.is_dir_target() && ep.receiver()?.size().await?.is_some() {
+            check_limit(tree.jobs.len() + 1, limit, src)?;
             tree.jobs.push(job);
             continue;
         }
@@ -169,6 +188,7 @@ pub async fn recursive(
                                     tree.dirs.push(dst.join(&sub_rel)?);
                                 }
                             }
+                            check_limit(tree.dirs.len(), limit, src)?;
                             subdirs.push((sub, sub_rel, depth + 1));
                         }
                         Err(err) => debug!(name = %e.name, "skipping unsafe name: {err}"),
@@ -176,27 +196,35 @@ pub async fn recursive(
                     continue;
                 }
                 match dir.join(&e.name) {
-                    Ok(file) => tree.jobs.push(Job {
-                        src: file,
-                        dsts: job
-                            .dsts
-                            .iter()
-                            .map(|d| {
-                                if d.scheme().is_mail() {
-                                    Ok(d.clone())
-                                } else {
-                                    d.join(&rel)
-                                }
-                            })
-                            .collect::<Result<Vec<_>>>()?,
-                    }),
+                    Ok(file) => {
+                        tree.jobs.push(Job {
+                            src: file,
+                            dsts: job
+                                .dsts
+                                .iter()
+                                .map(|d| {
+                                    if d.scheme().is_mail() {
+                                        Ok(d.clone())
+                                    } else {
+                                        d.join(&rel)
+                                    }
+                                })
+                                .collect::<Result<Vec<_>>>()?,
+                        });
+                        check_limit(tree.jobs.len(), limit, src)?;
+                    }
                     Err(err) => debug!(name = %e.name, "skipping unsafe name: {err}"),
                 }
             }
             // Pushed in reverse so the listing order comes back out.
             stack.extend(subdirs.into_iter().rev());
         }
-        info!(source = %src, files = tree.jobs.len(), dirs = tree.dirs.len(), "expanded a tree");
+        info!(
+            files = tree.jobs.len(),
+            dirs = tree.dirs.len(),
+            "tree expanded"
+        );
+        debug!(source = %src, "tree expanded");
     }
     Ok(tree)
 }
@@ -231,6 +259,32 @@ mod tests {
         Location::parse(s).unwrap()
     }
 
+    #[tokio::test]
+    async fn the_limit_stops_a_tree_early() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..4 {
+            std::fs::write(dir.path().join(format!("f{i}")), "x").unwrap();
+        }
+        let job = Job {
+            src: loc(&format!("{}/", dir.path().display())),
+            dsts: vec![loc("/tmp/out/")],
+        };
+        let open = |l: &Location| crate::protocols::open(l.clone());
+        let err = recursive(vec![job.clone()], &open, Some(2))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(OVER_LIMIT), "{err}");
+        assert_eq!(
+            recursive(vec![job], &open, Some(4))
+                .await
+                .unwrap()
+                .jobs
+                .len(),
+            4
+        );
+    }
+
     #[test]
     fn patterns_are_recognized_in_the_file_name_only() {
         assert!(has_pattern(&loc("sftp://h/in/*.csv")));
@@ -249,6 +303,7 @@ mod tests {
             }],
             &open,
             allow_empty,
+            None,
         )
         .await
     }
@@ -315,7 +370,7 @@ mod tests {
             src: loc("/nonexistent/plain.bin"),
             dsts: vec![loc("/tmp/out/")],
         }];
-        let out = expand(jobs, &open, false).await.unwrap();
+        let out = expand(jobs, &open, false, None).await.unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].src.path(), "/nonexistent/plain.bin");
     }
@@ -352,6 +407,7 @@ mod tree_tests {
                 dsts: vec![loc(&out)],
             }],
             &open,
+            None,
         )
         .await
         .unwrap();
@@ -393,6 +449,7 @@ mod tree_tests {
                 dsts: vec![loc(&out)],
             }],
             &open,
+            None,
         )
         .await
         .unwrap();
@@ -417,6 +474,7 @@ mod tree_tests {
                 dsts: vec![loc("/tmp/out/")],
             }],
             &open,
+            None,
         )
         .await
         .unwrap();
@@ -428,6 +486,7 @@ mod tree_tests {
                 dsts: vec![loc("/tmp/out/one.txt")],
             }],
             &open,
+            None,
         )
         .await
         .unwrap_err();

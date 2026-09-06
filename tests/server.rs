@@ -31,6 +31,11 @@ impl Server {
     }
 
     fn start_with(dir: tempfile::TempDir, extra: &[&str]) -> Server {
+        Server::start_with_profiles(dir, extra, "")
+    }
+
+    /// As [`Server::start_with`], with more configuration appended.
+    fn start_with_profiles(dir: tempfile::TempDir, extra: &[&str], more_toml: &str) -> Server {
         let d = dir.path();
         std::fs::create_dir_all(d.join("src")).unwrap();
         std::fs::create_dir_all(d.join("dst")).unwrap();
@@ -40,7 +45,7 @@ impl Server {
             format!(
                 "[server]\ntoken = {{ env = \"MPT_TEST_TOKEN\" }}\n\
                  [profiles.src]\nurl = \"{}/src/\"\n\
-                 [profiles.dst]\nurl = \"{}/dst/\"\n",
+                 [profiles.dst]\nurl = \"{}/dst/\"\n{more_toml}",
                 d.display(),
                 d.display()
             ),
@@ -426,6 +431,53 @@ async fn a_job_left_in_the_journal_runs_again() {
     assert_eq!(lines[1]["t"], "done");
     assert_eq!(lines[1]["id"], id);
     assert_eq!(lines[3]["t"], "done");
+}
+
+#[tokio::test]
+async fn a_misconfigured_profile_is_not_described_to_the_client() {
+    // A profile that points at another profile is the operator's mistake;
+    // the client is told which profile, the log what is wrong with it.
+    let server = Server::start_with_profiles(
+        tempfile::tempdir().unwrap(),
+        &[],
+        "[profiles.chain]\nurl = \"mpt://src/\"\n",
+    );
+    let (status, body) = server
+        .post(
+            "/v1/jobs",
+            "application/json",
+            r#"{"src": "mpt://chain/x", "dst": "mpt://dst/"}"#.into(),
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("profile 'chain'"), "{message}");
+    assert!(!message.contains("mpt://src/"), "{message}");
+    assert!(
+        server.log().contains("points at another profile"),
+        "{}",
+        server.log()
+    );
+}
+
+#[test]
+fn delete_source_needs_allow_delete() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .env_remove("MPT_CONFIG")
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .args(["--delete-source", "serve", "--bind", "127.0.0.1:0"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--allow-delete"), "{err}");
 }
 
 #[test]

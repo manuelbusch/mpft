@@ -63,6 +63,12 @@ pub struct ServerConfig {
     pub urls: UrlRule,
     /// With [`UrlRule::Profiles`]: only these; empty means every profile.
     pub profiles: Vec<String>,
+    /// Whether a job may set `delete_source`.
+    pub allow_delete: bool,
+    /// Transfers one job may hold after patterns and trees are expanded.
+    pub max_transfers: usize,
+    /// Jobs not yet finished before new ones are refused with 429.
+    pub max_queued: usize,
 }
 
 impl Default for ServerConfig {
@@ -78,6 +84,9 @@ impl Default for ServerConfig {
             port_file: None,
             urls: UrlRule::Profiles,
             profiles: Vec::new(),
+            allow_delete: false,
+            max_transfers: 10_000,
+            max_queued: 1000,
         }
     }
 }
@@ -93,8 +102,14 @@ impl ServerConfig {
                 self.bind
             )));
         }
-        if self.parallel == 0 {
-            return Err(Error::Config("[server] parallel must be at least 1".into()));
+        for (what, v) in [
+            ("parallel", self.parallel),
+            ("max_transfers", self.max_transfers),
+            ("max_queued", self.max_queued),
+        ] {
+            if v == 0 {
+                return Err(Error::Config(format!("[server] {what} must be at least 1")));
+            }
         }
         if self.urls == UrlRule::Any && self.journal.is_some() {
             warn!(

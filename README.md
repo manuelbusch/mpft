@@ -405,11 +405,15 @@ parallel  = 4                           # transfers in flight, over all jobs
 grace     = "30s"                       # a shutdown waits this long for running jobs
 urls      = "profiles"                  # or "any"
 profiles  = ["inbox", "prod", "archive"] # optional: only these
+allow_delete  = false                   # jobs may not set delete_source unless true
+max_transfers = 10000                   # per job, after patterns and trees are expanded
+max_queued    = 1000                    # open jobs before a POST gets 429
 ```
 
 Every flag of `mpt serve` (`--bind`, `--token-env`, `--journal`,
-`--retention`, `--parallel`, `--grace`, `--allow-any-url`, `--port-file`)
-wins over its key in `[server]`. The global flags apply to every job the
+`--retention`, `--parallel`, `--grace`, `--allow-any-url`, `--allow-delete`,
+`--max-transfers`, `--max-queued`, `--port-file`) wins over its key in
+`[server]`. The global flags apply to every job the
 server runs: `--sign`, `--check`, `--cache`, `--timeout`, `--insecure` and
 the rest set the server's defaults, and a job may override the ones listed
 under `options` below.
@@ -424,7 +428,7 @@ under `options` below.
 | `DELETE /v1/jobs/{id}` | cancel; partial files are removed as with Ctrl-C |
 | `GET /v1/jobs/{id}/events` | WebSocket: a `snapshot`, then the job's events until `done` |
 | `GET /v1/events` | WebSocket: every job's events |
-| `GET /v1/healthz` | no token needed; `503` while shutting down |
+| `GET /v1/healthz` | `{"ok": true}` without a token, `503` while shutting down; with the token also version and job counts |
 
 `options` per job: `parallel` (transfers of this batch in flight, capped by
 the server's), `fail_fast`, `hash`, `check`, `skip_existing`,
@@ -439,7 +443,11 @@ their reports name endpoints as they were submitted (`mpt://inbox/report.pdf`,
 or `mpt://inbox/a.csv` for a file a pattern matched), not by what a profile
 resolves to; a URL given in full is shown with its password masked. Errors come as
 `{"error": {"kind", "message"}}` with 400, 401, 404, 409 (a target taken
-twice), 413, 415 or 503.
+twice), 413, 415, 429 (`max_queued` open jobs, with `Retry-After`) or 503.
+A job with more than `max_transfers` transfers is refused at once when the
+list says so, and fails with `kind: "too_many_transfers"` when a pattern or
+a tree turns out that large — the listing stops there, so a huge tree does
+not fill the server's memory first.
 
 The WebSocket carries one JSON object per frame: `snapshot`, `queued`,
 `started`, `transfer_started`, `progress` (bytes, four times a second while
@@ -456,9 +464,12 @@ carry `?options` (they would replace the profile's: `?known_hosts=off`,
 were submitted. `urls = "any"` (or `--allow-any-url`) lets a job name any
 URL, as on the command line. Whoever has the token can use every allowed
 profile as the server's user, including its credential providers, and can
-read, write and — with `delete_source` — delete whatever those profiles
-reach, so a profile for the API should point at exactly the directories
-it is meant to serve. Requests that carry an `Origin` header (a browser
+read and write whatever those profiles reach — and delete, once
+`allow_delete` is set — so a profile for the API should point at exactly
+the directories it is meant to serve. A misconfigured profile or a failing
+credential provider is described in the server's log; the client only
+learns which profile to ask about. A wrong token is answered after a
+250 ms pause; limits per client address are a reverse proxy's job. Requests that carry an `Origin` header (a browser
 acting for a web page) are refused, so a page cannot drive a token-less
 server on loopback. There is no TLS: put a reverse proxy in front for
 anything beyond the local machine.
@@ -472,6 +483,9 @@ fails on the second run; file targets are safe, since a transfer either
 finished or left only a `.mpt-part`. Finished jobs do not survive a restart.
 Ctrl-C stops taking jobs, waits `grace` for the running ones and exits 0;
 a second Ctrl-C cancels them at once.
+
+With `-v` the log names job ids, sizes and outcomes but no hosts or paths;
+`-vv` adds them, along with everything else at debug level.
 
 ## Single sign-on
 

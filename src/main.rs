@@ -239,6 +239,15 @@ struct ServeArgs {
     /// Seconds a shutdown waits for running jobs before cancelling them (30)
     #[arg(long, value_name = "SECONDS")]
     grace: Option<u64>,
+    /// Let jobs delete their source (delete_source); off unless given
+    #[arg(long)]
+    allow_delete: bool,
+    /// Transfers one job may hold after patterns and trees are expanded (10000)
+    #[arg(long, value_name = "N")]
+    max_transfers: Option<usize>,
+    /// Jobs not yet finished before new ones are refused with 429 (1000)
+    #[arg(long, value_name = "N")]
+    max_queued: Option<usize>,
 }
 
 /// Options shared by `cp -t` and `batch`.
@@ -957,6 +966,12 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
             let mut base = opts;
             base.cancel = None;
             base.progress = None;
+            if base.delete_source && !server.allow_delete {
+                anyhow::bail!(
+                    "--delete-source would make every job delete its source; \
+                     add --allow-delete (or [server] allow_delete) if that is meant"
+                );
+            }
             let rules = rules.clone();
             let rt = mpt::server::Runtime {
                 copy: base,
@@ -1216,6 +1231,7 @@ async fn prepare_jobs(
         allow_empty: args.allow_empty,
         recursive: args.recursive,
         no_mkdir: args.dry_run,
+        limit: None,
     };
     Ok(mpt::batch::prepare(jobs, open, &opts).await?)
 }
@@ -1732,6 +1748,13 @@ async fn server_config(
         (None, None) => {}
     }
     out.port_file = args.port_file.clone();
+    out.allow_delete = args.allow_delete || s.allow_delete.unwrap_or(false);
+    if let Some(n) = args.max_transfers.or(s.max_transfers) {
+        out.max_transfers = n;
+    }
+    if let Some(n) = args.max_queued.or(s.max_queued) {
+        out.max_queued = n;
+    }
     out.urls = if args.allow_any_url {
         mpt::config::UrlRule::Any
     } else {
@@ -1840,6 +1863,9 @@ fn show_config(cfg: &mpt::Config) {
         "server".max_body = cfg.server.max_body,
         "server".grace = cfg.server.grace,
         "server".urls = cfg.server.urls,
+        "server".allow_delete = cfg.server.allow_delete,
+        "server".max_transfers = cfg.server.max_transfers,
+        "server".max_queued = cfg.server.max_queued,
     );
     if !cfg.server.profiles.is_empty() {
         rows.push(("[server] profiles".into(), cfg.server.profiles.join(", ")));

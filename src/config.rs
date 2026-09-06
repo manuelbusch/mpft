@@ -208,6 +208,13 @@ pub struct ServerSection {
     /// With `urls = "profiles"`: only these profiles; empty means all.
     #[serde(default, deserialize_with = "string_or_list")]
     pub profiles: Vec<String>,
+    /// Let jobs delete their source (`delete_source`). Off by default:
+    /// with a token alone one could empty every directory a profile reaches.
+    pub allow_delete: Option<bool>,
+    /// Transfers one job may hold after patterns and trees are expanded.
+    pub max_transfers: Option<usize>,
+    /// Jobs not yet finished before new ones are refused.
+    pub max_queued: Option<usize>,
 }
 
 /// Which URLs the server accepts in a job.
@@ -546,8 +553,14 @@ impl Config {
             grace,
             urls,
             profiles,
+            allow_delete,
+            max_transfers,
+            max_queued,
         } = &self.server;
         if bind.is_some()
+            || allow_delete.is_some()
+            || max_transfers.is_some()
+            || max_queued.is_some()
             || token.is_some()
             || journal.is_some()
             || retention.is_some()
@@ -598,8 +611,14 @@ impl Config {
         if let Some(v) = &cfg.server.max_body {
             parse_size(v).map_err(|e| format!("[server] max_body: {e}"))?;
         }
-        if cfg.server.parallel == Some(0) {
-            return Err("[server] parallel must be at least 1".into());
+        for (what, v) in [
+            ("parallel", cfg.server.parallel),
+            ("max_transfers", cfg.server.max_transfers),
+            ("max_queued", cfg.server.max_queued),
+        ] {
+            if v == Some(0) {
+                return Err(format!("[server] {what} must be at least 1"));
+            }
         }
         Ok(cfg)
     }
@@ -1345,6 +1364,11 @@ mod tests {
         let err = Config::parse("[server]\nretention = \"soon\"\n").unwrap_err();
         assert!(err.contains("[server] retention"), "{err}");
         assert!(Config::parse("[server]\nparallel = 0\n").is_err());
+        assert!(Config::parse("[server]\nmax_transfers = 0\n").is_err());
+        assert!(Config::parse("[server]\nmax_queued = 0\n").is_err());
+        let cfg = Config::parse("[server]\nallow_delete = true\nmax_queued = 5\n").unwrap();
+        assert_eq!(cfg.server.allow_delete, Some(true));
+        assert_eq!(cfg.server.max_queued, Some(5));
         assert!(Config::parse("[server]\nmax_body = \"big\"\n").is_err());
     }
 

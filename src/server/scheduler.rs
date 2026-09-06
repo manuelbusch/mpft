@@ -164,7 +164,13 @@ async fn prepare(
     let mut refs: Refs = Vec::new();
     let fail = |e: ApiError, refs: &Refs| (e, refs.clone());
     if let Err(e) = crate::config::resolve_more(&submission.urls(), state.rt.signing).await {
-        return Err(fail(e.into(), &refs));
+        // The message names a provider; the client learns the profile.
+        let url = submission
+            .urls()
+            .into_iter()
+            .find(|u| u.starts_with(PROFILE_PREFIX))
+            .unwrap_or("");
+        return Err(fail(ApiError::client_safe(&e, url), &refs));
     }
     let locate = state.rt.locate.as_ref();
     let mut jobs = Vec::with_capacity(submission.specs.len());
@@ -177,8 +183,9 @@ async fn prepare(
                 refs.extend(spec.dsts.iter().cloned().zip(job.dsts.iter().cloned()));
                 jobs.push(job);
             }
-            Err(e) => {
-                let e = ApiError::new(e.kind(), format!("job {}: {e}", i + 1));
+            Err((url, e)) => {
+                let safe = ApiError::client_safe(&e, url);
+                let e = ApiError::new(safe.kind, format!("job {}: {}", i + 1, safe.message));
                 return Err(fail(e, &refs));
             }
         }
@@ -188,10 +195,20 @@ async fn prepare(
         allow_empty: submission.options.allow_empty.unwrap_or(false),
         recursive: submission.options.recursive.unwrap_or(false),
         no_mkdir: false,
+        limit: Some(state.cfg.max_transfers),
     };
     let jobs = match batch::prepare(jobs, &open, &opts).await {
         Ok(jobs) => jobs,
-        Err(e) => return Err(fail(e.into(), &refs)),
+        Err(e) => {
+            // The expansion's own limit error gets a kind of its own.
+            let kind = match &e {
+                Error::InvalidUrl(m) if m.starts_with(batch::expand::OVER_LIMIT) => {
+                    "too_many_transfers"
+                }
+                other => other.kind(),
+            };
+            return Err(fail(ApiError::new(kind, &e), &refs));
+        }
     };
     let mut targets = state.targets.lock().unwrap_or_else(|e| e.into_inner());
     for (i, job) in jobs.iter().enumerate() {
@@ -305,18 +322,20 @@ fn shown_report(mut report: serde_json::Value, refs: &[(String, Location)]) -> s
     report
 }
 
-fn locate_spec(
-    spec: &crate::batch::jobs::JobSpec,
+/// The spec's URLs as locations; an error comes with the URL it was for.
+fn locate_spec<'a>(
+    spec: &'a crate::batch::jobs::JobSpec,
     locate: &(dyn Fn(&str, &JobOptions) -> Result<Location> + Send + Sync),
     options: &JobOptions,
-) -> Result<Job> {
+) -> std::result::Result<Job, (&'a str, Error)> {
+    let one = |url: &'a str| locate(url, options).map_err(|e| (url, e));
     Ok(Job {
-        src: locate(&spec.src, options)?,
+        src: one(&spec.src)?,
         dsts: spec
             .dsts
             .iter()
-            .map(|d| locate(d, options))
-            .collect::<Result<Vec<_>>>()?,
+            .map(|d| one(d))
+            .collect::<std::result::Result<Vec<_>, _>>()?,
     })
 }
 
@@ -512,6 +531,39 @@ mod tests {
         assert_eq!(error.kind, "invalid_url");
         assert!(error.message.contains("*.none"), "{}", error.message);
         assert!(snap.transfers.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_tree_over_the_limit_is_refused_before_it_is_listed_to_the_end() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("tree")).unwrap();
+        for i in 0..5 {
+            std::fs::write(dir.path().join(format!("tree/f{i}")), "x").unwrap();
+        }
+        std::fs::create_dir(dir.path().join("out")).unwrap();
+        let cfg = ServerConfig {
+            parallel: 2,
+            urls: UrlRule::Any,
+            max_transfers: 3,
+            ..Default::default()
+        };
+        let state = AppState::new(cfg, Runtime::new(CopyOptions::default())).unwrap();
+        let id = state
+            .submit(batch(
+                vec![(
+                    format!("{}/tree/", dir.path().display()),
+                    format!("{}/out/", dir.path().display()),
+                )],
+                JobOptions {
+                    recursive: Some(true),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        assert_eq!(wait_final(&state, &id).await, JobState::Failed);
+        let error = state.store.snapshot(&id, false).unwrap().error.unwrap();
+        assert_eq!(error.kind, "too_many_transfers");
+        assert!(error.message.contains("(3)"), "{}", error.message);
     }
 
     #[tokio::test]

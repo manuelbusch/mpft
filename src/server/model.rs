@@ -299,6 +299,35 @@ impl ApiError {
     }
 }
 
+impl ApiError {
+    /// An error as a client may see it. What a configuration error or a
+    /// credential provider says is for the operator (it names files,
+    /// profile URLs, commands): that goes to the log, and the client is
+    /// told which profile to ask about. `url` is what was being resolved.
+    pub fn client_safe(e: &Error, url: &str) -> ApiError {
+        let profile = crate::config::profile_name(url)
+            .map(|n| format!("profile '{n}'"))
+            .unwrap_or_else(|| "the endpoint".to_string());
+        match e {
+            Error::Config(_) => {
+                tracing::warn!(%url, "refused: {e}");
+                ApiError::new(
+                    e.kind(),
+                    format!("{profile} is misconfigured; see the server log"),
+                )
+            }
+            Error::Auth(_) => {
+                tracing::warn!(%url, "refused: {e}");
+                ApiError::new(
+                    e.kind(),
+                    format!("credentials for {profile} could not be fetched; see the server log"),
+                )
+            }
+            other => ApiError::from(other),
+        }
+    }
+}
+
 impl From<&Error> for ApiError {
     fn from(e: &Error) -> Self {
         ApiError::new(e.kind(), e)
@@ -541,6 +570,24 @@ mod tests {
         assert_eq!(s.urls(), vec!["a", "b", "c", "d", "e"]);
         let text = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<Submission>(&text).unwrap(), s);
+    }
+
+    #[test]
+    fn operator_errors_are_kept_from_the_client() {
+        let e = ApiError::client_safe(
+            &Error::Config("profile 'p' points at /secret/place".into()),
+            "mpt://p/x",
+        );
+        assert_eq!(e.kind, "config");
+        assert!(!e.message.contains("/secret"), "{}", e.message);
+        assert!(e.message.contains("profile 'p'"), "{}", e.message);
+        let e = ApiError::client_safe(
+            &Error::Auth("password of profile 'p': `op read x`".into()),
+            "mpt://p/",
+        );
+        assert!(!e.message.contains("op read"), "{}", e.message);
+        let e = ApiError::client_safe(&Error::Remote("gone".into()), "mpt://p/");
+        assert_eq!(e.message, "remote error: gone");
     }
 
     #[test]

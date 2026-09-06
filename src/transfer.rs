@@ -319,7 +319,10 @@ pub async fn copy_many(
     if let Some(name) = src.location().filename() {
         meta.set_filename(name)?;
     }
-    info!(source = %src.location(), targets = dsts.len(), size = ?size, cache = ?opts.cache, hash = ?opts.hash, check = opts.check, "copy");
+    // Where it goes is debug: an operator's log at info names sizes and
+    // outcomes, not hosts and paths.
+    info!(targets = dsts.len(), size = ?size, cache = ?opts.cache, hash = ?opts.hash, check = opts.check, "copy");
+    debug!(source = %src.location(), "copy");
 
     // Targets that already hold the file are left out of the copy; their
     // reports are put back in place at the end.
@@ -335,7 +338,8 @@ pub async fn copy_many(
             // to it will say what is wrong.
             let there = sender.existing_size(&name).await.ok().flatten();
             if there == size {
-                info!(target = %dst.location(), size = ?size, "already there, skipped");
+                info!(target = i, size = ?size, "already there, skipped");
+                debug!(target = %dst.location(), "already there, skipped");
                 skipped[i] = true;
             }
         }
@@ -607,7 +611,8 @@ async fn remove_source(src: &dyn Endpoint) -> Result<()> {
         .location()
         .filename()
         .ok_or_else(|| Error::InvalidUrl("the source has no file name to delete".into()))?;
-    info!(source = %src.location(), "deleting the source");
+    info!("deleting the source");
+    debug!(source = %src.location(), "deleting the source");
     src.sender()?.remove(name).await
 }
 
@@ -906,7 +911,8 @@ async fn find_source_checksum(
                 "check: {loc} is not a valid checksum file"
             )));
         };
-        info!(%loc, algo = %algo, "checksum file found");
+        info!(algo = %algo, "checksum file found");
+        debug!(%loc, "checksum file found");
         let mut signer = None;
         if let Some(v) = verifier {
             let sig_name = v.format().signature_name(&sidecar);

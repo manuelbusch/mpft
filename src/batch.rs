@@ -199,6 +199,10 @@ pub struct PrepareOptions {
     pub recursive: bool,
     /// Leave the directories a tree needs uncreated (a dry run).
     pub no_mkdir: bool,
+    /// At most this many file jobs after expansion; a pattern or a tree
+    /// that would produce more is refused as soon as that is clear, so a
+    /// large tree is not listed to the end first. `None` is no limit.
+    pub limit: Option<usize>,
 }
 
 /// Patterns and trees turned into file jobs, and the directories a tree
@@ -208,11 +212,11 @@ pub async fn prepare(
     open: &(dyn Fn(&Location) -> Result<Box<dyn Endpoint>> + Sync),
     opts: &PrepareOptions,
 ) -> Result<Vec<Job>> {
-    let jobs = expand::expand(jobs, open, opts.allow_empty).await?;
+    let jobs = expand::expand(jobs, open, opts.allow_empty, opts.limit).await?;
     if !opts.recursive {
         return Ok(jobs);
     }
-    let tree = expand::recursive(jobs, open).await?;
+    let tree = expand::recursive(jobs, open, opts.limit).await?;
     if !opts.no_mkdir {
         expand::create_dirs(&tree.dirs, open).await?;
     }

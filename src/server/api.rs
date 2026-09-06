@@ -105,11 +105,39 @@ async fn auth(State(state): State<Arc<AppState>>, req: Request, next: Next) -> R
         )
         .into_response();
     }
+    match bearer(&state, req.headers()) {
+        Bearer::Ok => next.run(req).await,
+        Bearer::Wrong => {
+            // Slow a guess down; four tries a second per connection is
+            // nothing against a random token, and costs a client with the
+            // right one nothing.
+            tokio::time::sleep(WRONG_TOKEN_DELAY).await;
+            Reject::new(StatusCode::UNAUTHORIZED, "unauthorized", "wrong token").into_response()
+        }
+        Bearer::Missing => Reject::new(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "send the token as `Authorization: Bearer <token>`",
+        )
+        .into_response(),
+    }
+}
+
+const WRONG_TOKEN_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
+
+enum Bearer {
+    Ok,
+    Wrong,
+    Missing,
+}
+
+/// Whether the request carries the token. Without one configured, every
+/// request is fine (the server is on loopback then).
+fn bearer(state: &AppState, headers: &HeaderMap) -> Bearer {
     let Some(expected) = &state.cfg.token else {
-        return next.run(req).await;
+        return Bearer::Ok;
     };
-    let given = req
-        .headers()
+    let given = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| {
@@ -117,16 +145,9 @@ async fn auth(State(state): State<Arc<AppState>>, req: Request, next: Next) -> R
             scheme.eq_ignore_ascii_case("bearer").then(|| token.trim())
         });
     match given {
-        Some(token) if token_matches(token, expected.expose_secret()) => next.run(req).await,
-        Some(_) => {
-            Reject::new(StatusCode::UNAUTHORIZED, "unauthorized", "wrong token").into_response()
-        }
-        None => Reject::new(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "send the token as `Authorization: Bearer <token>`",
-        )
-        .into_response(),
+        Some(token) if token_matches(token, expected.expose_secret()) => Bearer::Ok,
+        Some(_) => Bearer::Wrong,
+        None => Bearer::Missing,
     }
 }
 
@@ -140,15 +161,20 @@ async fn not_found() -> Reject {
     Reject::not_found("no such route")
 }
 
-async fn healthz(State(state): State<Arc<AppState>>) -> Response {
-    let (queued, running) = state.store.counts();
+/// Alive or not, for a probe; what else is going on only with the token.
+async fn healthz(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let accepting = state.accepting();
-    let body = json!({
-        "ok": accepting,
-        "version": env!("CARGO_PKG_VERSION"),
-        "accepting": accepting,
-        "jobs": { "queued": queued, "running": running },
-    });
+    let body = if matches!(bearer(&state, &headers), Bearer::Ok) {
+        let (queued, running) = state.store.counts();
+        json!({
+            "ok": accepting,
+            "version": env!("CARGO_PKG_VERSION"),
+            "accepting": accepting,
+            "jobs": { "queued": queued, "running": running },
+        })
+    } else {
+        json!({ "ok": accepting })
+    };
     let status = if accepting {
         StatusCode::OK
     } else {
@@ -322,11 +348,47 @@ fn accept(state: &Arc<AppState>, submission: Submission) -> Result<Response, Rej
         ));
     }
     submission.options.validate()?;
+    if submission.options.delete_source == Some(true) && !state.cfg.allow_delete {
+        return Err(Reject::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_option",
+            "delete_source is not allowed on this server ([server] allow_delete)",
+        ));
+    }
+    if submission.specs.len() > state.cfg.max_transfers {
+        return Err(Reject::new(
+            StatusCode::BAD_REQUEST,
+            "too_many_transfers",
+            format!(
+                "{} transfers in one job; the limit is {} ([server] max_transfers)",
+                submission.specs.len(),
+                state.cfg.max_transfers
+            ),
+        ));
+    }
+    if state.store.unfinished() >= state.cfg.max_queued {
+        let mut resp = Reject::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too_many_jobs",
+            format!(
+                "{} jobs are still open; the limit is {} ([server] max_queued)",
+                state.store.unfinished(),
+                state.cfg.max_queued
+            ),
+        )
+        .into_response();
+        resp.headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("5"));
+        return Ok(resp);
+    }
     let mut jobs = Vec::with_capacity(submission.specs.len());
     for spec in &submission.specs {
         let locate = |url: &str| -> Result<crate::Location, Reject> {
             state.cfg.allow_url(url)?;
-            Ok(crate::config::locate(url)?)
+            crate::config::locate(url).map_err(|e| Reject {
+                status: StatusCode::BAD_REQUEST,
+                error: ApiError::client_safe(&e, url),
+            })
         };
         let src = locate(&spec.src)?;
         if src.scheme().is_mail() {
@@ -514,7 +576,22 @@ mod tests {
         let app = app(with_token(UrlRule::Any));
         let (status, body) = call(&app, Method::GET, "/v1/healthz", None, None, "").await;
         assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body,
+            serde_json::json!({ "ok": true }),
+            "no details without the token"
+        );
+        let (status, body) = call(&app, Method::GET, "/v1/healthz", Some("s3cret"), None, "").await;
+        assert_eq!(status, StatusCode::OK);
         assert_eq!(body["accepting"], true);
+        assert!(body["version"].is_string());
+        let started = std::time::Instant::now();
+        let (status, _) = call(&app, Method::GET, "/v1/jobs", Some("guess"), None, "").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(
+            started.elapsed() >= WRONG_TOKEN_DELAY,
+            "a wrong token is slowed down"
+        );
         let (status, body) = call(&app, Method::GET, "/v1/jobs", None, None, "").await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(body["error"]["kind"], "unauthorized");
@@ -670,6 +747,76 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn deleting_and_flooding_need_permission() {
+        let app = app(with_token(UrlRule::Any));
+        let t = Some("s3cret");
+        let (status, body) = call(
+            &app,
+            Method::POST,
+            "/v1/jobs",
+            t,
+            None,
+            r#"{"src": "/tmp/a", "dst": "/tmp/out/", "options": {"delete_source": true}}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("allow_delete"),
+            "{body}"
+        );
+        let app = self::app(ServerConfig {
+            allow_delete: true,
+            max_transfers: 2,
+            max_queued: 1,
+            parallel: 1,
+            ..with_token(UrlRule::Any)
+        });
+        let (status, body) = call(
+            &app,
+            Method::POST,
+            "/v1/batches",
+            t,
+            None,
+            r#"{"jobs": [{"src": "/tmp/a", "dst": "/tmp/o/"}, {"src": "/tmp/b", "dst": "/tmp/o/"}, {"src": "/tmp/c", "dst": "/tmp/o/"}]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"]["kind"], "too_many_transfers");
+        // One job that cannot start (no slot) fills the queue; the next is
+        // told to come back.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a"), "a").unwrap();
+        let body_a = format!(
+            r#"{{"src": "{0}/a", "dst": "{0}/out/", "options": {{"delete_source": true}}}}"#,
+            dir.path().display()
+        );
+        let (status, body) = call(&app, Method::POST, "/v1/jobs", t, None, &body_a).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        let url = body["url"].as_str().unwrap().to_string();
+        let (status, body) = call(&app, Method::POST, "/v1/jobs", t, None, &body_a).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+        assert_eq!(body["error"]["kind"], "too_many_jobs");
+        // The accepted job runs to its end and, allowed to, deletes its source.
+        for _ in 0..200 {
+            let (_, snap) = call(&app, Method::GET, &url, t, None, "").await;
+            if matches!(
+                snap["state"].as_str(),
+                Some("done" | "failed" | "cancelled")
+            ) {
+                assert_eq!(snap["state"], "done", "{snap}");
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!dir.path().join("a").exists());
+        let (status, _) = call(&app, Method::POST, "/v1/jobs", t, None, &body_a).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "the queue is free again");
     }
 
     #[tokio::test]
