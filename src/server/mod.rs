@@ -116,6 +116,14 @@ impl ServerConfig {
                  (set [server] urls = \"any\" or --allow-any-url to allow others)"
             ))),
             (UrlRule::Profiles, Some(name)) => {
+                // Options in the reference replace the profile's (`?key=`,
+                // `?known_hosts=off`, `?endpoint=`), which would let a
+                // client undo what the profile fixes.
+                if url.contains('?') {
+                    return Err(Error::InvalidUrl(format!(
+                        "{url}: a job may not add ?options to a profile; set them in the profile"
+                    )));
+                }
                 if !self.profiles.is_empty() && !self.profiles.iter().any(|p| p == name) {
                     return Err(Error::InvalidUrl(format!(
                         "{url}: profile '{name}' is not among those the server allows ({})",

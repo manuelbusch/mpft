@@ -14,7 +14,7 @@ use tracing::{debug, info, warn};
 
 use super::AppState;
 use super::model::{ApiError, JobId, JobOptions, Submission, TransferState};
-use super::store::Prepared;
+use super::store::{Prepared, transfer_error};
 use crate::batch::{self, Job, JobReport, PrepareOptions};
 use crate::config::PROFILE_PREFIX;
 use crate::{Error, Location, Result};
@@ -41,6 +41,8 @@ async fn run(state: Arc<AppState>, id: JobId) {
     }
     state.store.set_preparing(&id);
     let prepared = prepare(&state, &submission).await;
+    // Whatever went wrong is told in terms of what was submitted.
+    let prepared = prepared.map_err(|(e, refs)| redact(e, &refs));
     drop(permit);
     let (jobs, refs) = match prepared {
         Ok(p) => p,
@@ -117,7 +119,8 @@ async fn run(state: Arc<AppState>, id: JobId) {
                 .as_ref()
                 .ok()
                 .map(|r| shown_report(crate::report::fanout_json(r), &refs));
-            let outcome = state.store.transfer_done(&id, &report, json);
+            let error = transfer_error(&report).map(|e| redact(e, &refs));
+            let outcome = state.store.transfer_done(&id, &report, json, error);
             debug!(%id, index, ?outcome, "transfer over");
             if fail_fast && outcome == TransferState::Failed && !token.is_cancelled() {
                 warn!(%id, index, "failed, stopping the job");
@@ -152,47 +155,56 @@ fn release(state: &AppState, jobs: &[Job]) {
 
 /// URLs to locations, patterns and trees to files, and a claim on every
 /// target. A job that fails here never ran; the error says why.
+///
+/// An error comes with the references resolved so far, for [`redact`].
 async fn prepare(
     state: &AppState,
     submission: &Submission,
-) -> std::result::Result<(Vec<Prepared>, Arc<Refs>), ApiError> {
-    crate::config::resolve_more(&submission.urls(), state.rt.signing).await?;
-    let jobs = submission
-        .specs
-        .iter()
-        .enumerate()
-        .map(|(i, spec)| {
-            locate_spec(spec, state.rt.locate.as_ref(), &submission.options)
-                .map_err(|e| ApiError::new(e.kind(), format!("job {}: {e}", i + 1)))
-        })
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+) -> std::result::Result<(Vec<Prepared>, Arc<Refs>), (ApiError, Refs)> {
+    let mut refs: Refs = Vec::new();
+    let fail = |e: ApiError, refs: &Refs| (e, refs.clone());
+    if let Err(e) = crate::config::resolve_more(&submission.urls(), state.rt.signing).await {
+        return Err(fail(e.into(), &refs));
+    }
+    let locate = state.rt.locate.as_ref();
+    let mut jobs = Vec::with_capacity(submission.specs.len());
+    for (i, spec) in submission.specs.iter().enumerate() {
+        match locate_spec(spec, locate, &submission.options) {
+            Ok(job) => {
+                // What was submitted, next to what it resolved to, so an
+                // expanded file can be shown by its reference.
+                refs.push((spec.src.clone(), job.src.clone()));
+                refs.extend(spec.dsts.iter().cloned().zip(job.dsts.iter().cloned()));
+                jobs.push(job);
+            }
+            Err(e) => {
+                let e = ApiError::new(e.kind(), format!("job {}: {e}", i + 1));
+                return Err(fail(e, &refs));
+            }
+        }
+    }
     let open = |l: &Location| crate::protocols::open(l.clone());
     let opts = PrepareOptions {
         allow_empty: submission.options.allow_empty.unwrap_or(false),
         recursive: submission.options.recursive.unwrap_or(false),
         no_mkdir: false,
     };
-    // What was submitted, next to what it resolved to, so an expanded
-    // file can be shown by its reference.
-    let refs: Refs = submission
-        .specs
-        .iter()
-        .zip(&jobs)
-        .flat_map(|(spec, job)| {
-            std::iter::once((spec.src.clone(), job.src.clone()))
-                .chain(spec.dsts.iter().cloned().zip(job.dsts.iter().cloned()))
-        })
-        .collect();
-    let jobs = batch::prepare(jobs, &open, &opts).await?;
+    let jobs = match batch::prepare(jobs, &open, &opts).await {
+        Ok(jobs) => jobs,
+        Err(e) => return Err(fail(e.into(), &refs)),
+    };
     let mut targets = state.targets.lock().unwrap_or_else(|e| e.into_inner());
     for (i, job) in jobs.iter().enumerate() {
         if let Err(e) = targets.note(job, i + 1) {
             for earlier in &jobs[..i] {
                 targets.release(earlier);
             }
-            return Err(ApiError::new(
-                "conflict",
-                format!("a target is already being written: {e}"),
+            return Err(fail(
+                ApiError::new(
+                    "conflict",
+                    format!("a target is already being written: {e}"),
+                ),
+                &refs,
             ));
         }
     }
@@ -250,6 +262,26 @@ fn shown(loc: &Location, refs: &[(String, Location)]) -> String {
         }
     }
     loc.to_string()
+}
+
+/// An error message with every resolved location it mentions replaced by
+/// what the client submitted: the message of a listing that found
+/// nothing, of a target that refused, of two jobs on one file. Longest
+/// locations first, so a file under a directory reference is rewritten
+/// as a whole and not just its directory part.
+fn redact(mut error: ApiError, refs: &[(String, Location)]) -> ApiError {
+    let mut pairs: Vec<(String, &String)> = refs
+        .iter()
+        .filter(|(url, _)| url.starts_with(PROFILE_PREFIX))
+        .map(|(url, loc)| (loc.to_string(), url))
+        .collect();
+    pairs.sort_by_key(|(text, _)| std::cmp::Reverse(text.len()));
+    for (text, url) in pairs {
+        if !text.is_empty() {
+            error.message = error.message.replace(&text, url);
+        }
+    }
+    error
 }
 
 /// A copy's report with its endpoints (source, targets, the checksum and
@@ -379,6 +411,18 @@ mod tests {
         assert_eq!(report["targets"][0]["sidecar"], "mpt://out/a.csv.sha256");
         assert_eq!(report["targets"][0]["signature"], serde_json::Value::Null);
         assert_eq!(report["targets"][1]["target"], "sftp://u:***@h/raw/");
+
+        let e = redact(
+            ApiError::new(
+                "invalid_url",
+                "sftp://h/data/in/*.csv matches no file; /srv/out/x is taken",
+            ),
+            &refs,
+        );
+        assert_eq!(
+            e.message,
+            "mpt://in/*.csv matches no file; mpt://out/x is taken"
+        );
     }
 
     #[tokio::test]
@@ -464,7 +508,9 @@ mod tests {
             .unwrap();
         assert_eq!(wait_final(&state, &id).await, JobState::Failed);
         let snap = state.store.snapshot(&id, true).unwrap();
-        assert_eq!(snap.error.unwrap().kind, "invalid_url");
+        let error = snap.error.unwrap();
+        assert_eq!(error.kind, "invalid_url");
+        assert!(error.message.contains("*.none"), "{}", error.message);
         assert!(snap.transfers.unwrap().is_empty());
     }
 

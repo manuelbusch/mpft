@@ -91,8 +91,20 @@ impl IntoResponse for Reject {
     }
 }
 
-/// The bearer token, compared in constant time.
+/// The bearer token, compared in constant time. A request a browser
+/// makes on some page's behalf carries an `Origin` header; the API is
+/// not for pages, so such a request is refused whatever else it carries.
+/// That keeps a site the operator visits from posting jobs to a server
+/// on loopback that runs without a token, or from opening its WebSocket.
 async fn auth(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+    if req.headers().contains_key(header::ORIGIN) {
+        return Reject::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "requests from a web page are not accepted (Origin header present)",
+        )
+        .into_response();
+    }
     let Some(expected) = &state.cfg.token else {
         return next.run(req).await;
     };
@@ -321,7 +333,7 @@ fn accept(state: &Arc<AppState>, submission: Submission) -> Result<Response, Rej
             return Err(Reject::new(
                 StatusCode::BAD_REQUEST,
                 "invalid_url",
-                format!("{src} cannot be a source"),
+                format!("{} cannot be a source", spec.src),
             ));
         }
         let dsts = spec
@@ -513,6 +525,57 @@ mod tests {
         assert_eq!(body, serde_json::json!([]));
         let (status, _) = call(&app, Method::GET, "/v1/nothing", Some("s3cret"), None, "").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_request_from_a_page_is_refused_even_with_the_token() {
+        let app = app(with_token(UrlRule::Any));
+        let req = HttpRequest::builder()
+            .method(Method::GET)
+            .uri("/v1/jobs")
+            .header("authorization", "Bearer s3cret")
+            .header("origin", "http://evil.example")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        // Also without a token, where a page on the same machine would
+        // otherwise get in with a text/plain batch.
+        let open = self::app(ServerConfig {
+            urls: UrlRule::Any,
+            ..Default::default()
+        });
+        let req = HttpRequest::builder()
+            .method(Method::POST)
+            .uri("/v1/batches")
+            .header("origin", "http://evil.example")
+            .header("content-type", "text/plain")
+            .body(Body::from("/etc/passwd /tmp/out/\n"))
+            .unwrap();
+        let resp = open.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn a_profile_reference_may_not_carry_options() {
+        let app = app(with_token(UrlRule::Profiles));
+        let (status, body) = call(
+            &app,
+            Method::POST,
+            "/v1/jobs",
+            Some("s3cret"),
+            None,
+            r#"{"src": "mpt://src/a?known_hosts=off", "dst": "mpt://dst/"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("?options"),
+            "{body}"
+        );
     }
 
     #[tokio::test]

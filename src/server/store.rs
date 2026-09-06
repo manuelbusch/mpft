@@ -315,14 +315,16 @@ impl Store {
     }
 
     /// A transfer is over. The state comes from the report: cancelled beats
-    /// failed beats done. `json` is the report as clients see it (see
-    /// [`crate::report::fanout_json`]), rendered by the caller so that it
-    /// can name the endpoints as they were submitted.
+    /// failed beats done. `json` and `error` are the report and the failure
+    /// as clients see them (see [`crate::report::fanout_json`] and
+    /// [`transfer_error`]), rendered by the caller so that it can name the
+    /// endpoints as they were submitted.
     pub fn transfer_done(
         &self,
         id: &JobId,
         report: &JobReport,
         json: Option<serde_json::Value>,
+        error: Option<ApiError>,
     ) -> TransferState {
         let state = if report.cancelled() {
             TransferState::Cancelled
@@ -330,24 +332,6 @@ impl Store {
             TransferState::Done
         } else {
             TransferState::Failed
-        };
-        let error = match &report.result {
-            Err(e) => Some(ApiError::from(e)),
-            Ok(r) => {
-                if let Some(c) = r.checked.as_ref().filter(|c| !c.ok()) {
-                    Some(ApiError::from(c.error()))
-                } else if let Some(Err(e)) = &r.source_removed {
-                    Some(ApiError::new(
-                        e.kind(),
-                        format!("copied, but deleting the source failed: {e}"),
-                    ))
-                } else {
-                    r.failures().next().map(|t| match &t.result {
-                        Err(e) => ApiError::new(e.kind(), format!("{}: {e}", t.target)),
-                        Ok(()) => unreachable!("a failure has an error"),
-                    })
-                }
-            }
         };
         let mut inner = self.lock();
         let Some(t) = inner
@@ -572,6 +556,30 @@ impl Store {
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.events.subscribe()
+    }
+}
+
+/// Why a transfer failed, if it did: the source could not be read, the
+/// checksum did not match, the source could not be deleted, or the first
+/// target that did not take the file.
+pub fn transfer_error(report: &JobReport) -> Option<ApiError> {
+    match &report.result {
+        Err(e) => Some(ApiError::from(e)),
+        Ok(r) => {
+            if let Some(c) = r.checked.as_ref().filter(|c| !c.ok()) {
+                Some(ApiError::from(c.error()))
+            } else if let Some(Err(e)) = &r.source_removed {
+                Some(ApiError::new(
+                    e.kind(),
+                    format!("copied, but deleting the source failed: {e}"),
+                ))
+            } else {
+                r.failures().next().map(|t| match &t.result {
+                    Err(e) => ApiError::new(e.kind(), format!("{}: {e}", t.target)),
+                    Ok(()) => unreachable!("a failure has an error"),
+                })
+            }
+        }
     }
 }
 
@@ -817,7 +825,8 @@ mod tests {
             store.transfer_done(
                 &id,
                 &ok_report(0, job("/tmp/a", "/tmp/out/")),
-                Some(serde_json::json!({"ok": true}))
+                Some(serde_json::json!({"ok": true})),
+                None,
             ),
             TransferState::Done
         );
@@ -826,8 +835,9 @@ mod tests {
             job: job("/tmp/b", "/tmp/out/"),
             result: Err(Error::Remote("gone".into())),
         };
+        let error = transfer_error(&failed);
         assert_eq!(
-            store.transfer_done(&id, &failed, None),
+            store.transfer_done(&id, &failed, None, error),
             TransferState::Failed
         );
         assert_eq!(store.finish(&id, true), Some(JobState::Failed));

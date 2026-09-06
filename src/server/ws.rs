@@ -24,6 +24,8 @@ use super::model::{Event, JobId};
 
 /// A client is a sender that must not hold the server up.
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
+/// Nothing a client sends is read, so nothing big needs buffering.
+const CLIENT_MESSAGE_LIMIT: usize = 4096;
 
 pub(super) async fn job_events(
     State(state): State<Arc<AppState>>,
@@ -39,14 +41,17 @@ pub(super) async fn job_events(
                 format!("no job {id}"),
             )
         })?;
-    Ok(ws.on_upgrade(move |socket| watch(state, socket, Some(id))))
+    Ok(ws
+        .max_message_size(CLIENT_MESSAGE_LIMIT)
+        .on_upgrade(move |socket| watch(state, socket, Some(id))))
 }
 
 pub(super) async fn all_events(
     State(state): State<Arc<AppState>>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    ws.on_upgrade(move |socket| watch(state, socket, None))
+    ws.max_message_size(CLIENT_MESSAGE_LIMIT)
+        .on_upgrade(move |socket| watch(state, socket, None))
 }
 
 /// Counts the client for the ticker while it is connected.

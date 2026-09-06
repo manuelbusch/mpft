@@ -252,11 +252,31 @@ async fn a_batch_as_ndjson_reports_every_transfer() {
     let transfers = job["transfers"].as_array().unwrap();
     assert_eq!(transfers[2]["state"], "failed");
     assert_eq!(transfers[2]["error"]["kind"], "io");
+    assert_eq!(transfers[2]["src"], "mpt://src/missing");
+
+    // A job that fails in preparation says so in terms of the reference,
+    // not of the directory behind the profile.
+    let (status, body) = server
+        .post(
+            "/v1/jobs",
+            "application/json",
+            r#"{"src": "mpt://src/*.none", "dst": "mpt://dst/"}"#.into(),
+        )
+        .await;
+    assert_eq!(status, 202, "{body}");
+    let job = server.wait(body["url"].as_str().unwrap()).await;
+    assert_eq!(job["state"], "failed", "{job}");
+    let message = job["error"]["message"].as_str().unwrap();
+    assert!(message.contains("mpt://src/*.none"), "{message}");
+    assert!(
+        !message.contains(&server.path().display().to_string()),
+        "{message}"
+    );
     assert_eq!(std::fs::read(server.path().join("dst/two")).unwrap(), b"22");
 
     let (status, list) = server.get("/v1/jobs?state=failed").await;
     assert_eq!(status, 200);
-    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list.as_array().unwrap().len(), 2, "{list}");
     assert_eq!(list[0]["id"], job["id"]);
 }
 

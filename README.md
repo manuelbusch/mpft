@@ -450,11 +450,18 @@ a fresh `snapshot` in place of what it missed. The token goes in the
 By default a job may only name `mpt://<profile>/…` endpoints, so the
 configuration decides which hosts, options and credentials the API can
 reach, and no password ever travels in a request or lands in the journal;
-a local directory is a profile with a local `url`. `urls = "any"` (or
-`--allow-any-url`) lets a job name any URL, as on the command line. Whoever
-has the token can use every allowed profile, including its credential
-providers. There is no TLS: put a reverse proxy in front for anything
-beyond the local machine.
+a local directory is a profile with a local `url`. A reference may not
+carry `?options` (they would replace the profile's: `?known_hosts=off`,
+`?key=`, `?endpoint=`), and errors, like transfers, name endpoints as they
+were submitted. `urls = "any"` (or `--allow-any-url`) lets a job name any
+URL, as on the command line. Whoever has the token can use every allowed
+profile as the server's user, including its credential providers, and can
+read, write and — with `delete_source` — delete whatever those profiles
+reach, so a profile for the API should point at exactly the directories
+it is meant to serve. Requests that carry an `Origin` header (a browser
+acting for a web page) are refused, so a page cannot drive a token-less
+server on loopback. There is no TLS: put a reverse proxy in front for
+anything beyond the local machine.
 
 With a `journal`, every accepted job is appended to a JSONL file (mode
 `0600`) and closed there when it is over. After a restart, jobs left open
