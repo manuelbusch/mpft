@@ -496,6 +496,28 @@ impl Location {
         Ok(loc)
     }
 
+    /// The directory this location is in: the location itself for a
+    /// directory target, otherwise the path without its last component.
+    /// Credentials and options are kept. Not available for mail schemes.
+    pub fn parent(&self) -> Result<Location> {
+        if self.scheme.is_mail() {
+            return Err(Error::UnsupportedOperation {
+                scheme: self.scheme.to_string(),
+                op: "have a parent directory",
+            });
+        }
+        let mut loc = self.clone();
+        if !self.is_dir_target() {
+            let p = trim_end_separators(&self.path);
+            loc.path = match last_separator(p) {
+                Some(idx) => p[..=idx].to_string(),
+                None => String::new(),
+            };
+        }
+        loc.dir_hint = true;
+        Ok(loc)
+    }
+
     /// Location of a file called `name` next to this one: inside the
     /// directory for directory targets, otherwise in the parent directory.
     /// Credentials and options are kept. Not available for mail schemes.
@@ -725,6 +747,38 @@ fn masked(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parent_is_the_directory_of_a_file_or_the_directory_itself() {
+        let file = Location::parse("sftp://u@h:2222/in/x.bin?timeout=5").unwrap();
+        let dir = file.parent().unwrap();
+        assert_eq!(dir.path(), "/in/");
+        assert!(dir.is_dir_target());
+        assert_eq!(dir.opt("timeout"), Some("5"));
+        assert_eq!(dir.parent().unwrap().path(), "/in/");
+        assert_eq!(
+            Location::parse("/tmp/a").unwrap().parent().unwrap().path(),
+            "/tmp/"
+        );
+        assert_eq!(
+            Location::parse("s3://b/k/x")
+                .unwrap()
+                .parent()
+                .unwrap()
+                .path(),
+            "b/k/"
+        );
+        assert_eq!(
+            Location::parse("a.bin").unwrap().parent().unwrap().path(),
+            ""
+        );
+        assert!(
+            Location::parse("mailto:a@example.com")
+                .unwrap()
+                .parent()
+                .is_err()
+        );
+    }
 
     #[test]
     fn bare_path_is_file() {

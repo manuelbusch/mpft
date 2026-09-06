@@ -6,6 +6,7 @@
 //! a file, standard input) is the caller's business; [`jobs`] parses the
 //! textual forms.
 
+pub mod expand;
 pub mod jobs;
 
 use std::sync::Arc;

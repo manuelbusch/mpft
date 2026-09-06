@@ -1111,3 +1111,76 @@ async fn batch_binary_exit_codes() {
         "{stderr}"
     );
 }
+
+/// A pattern in the source names every matching file of a remote
+/// directory; through the binary, with the jobs it expands to.
+#[tokio::test]
+async fn a_source_pattern_expands_on_a_remote_directory() {
+    let Some(sftp) = env("MPT_IT_SFTP") else {
+        eprintln!("skipping: MPT_IT_SFTP not set");
+        return;
+    };
+    mpt::init_crypto();
+    let tag = std::process::id();
+    let dir = tempfile::tempdir().unwrap();
+    // Three files on the server, two of which match.
+    let sender = mpt::open(&sftp).unwrap();
+    for (name, body) in [
+        (format!("glob_{tag}_1.csv"), "one"),
+        (format!("glob_{tag}_2.csv"), "two"),
+        (format!("glob_{tag}_3.txt"), "three"),
+    ] {
+        let meta = SendMeta::from_filename(&name)
+            .unwrap()
+            .with_size(body.len() as u64);
+        sender
+            .sender()
+            .unwrap()
+            .send(
+                Box::pin(std::io::Cursor::new(body.as_bytes().to_vec())),
+                &meta,
+            )
+            .await
+            .unwrap();
+    }
+    let pattern = dir_url(&sftp, &format!("/glob_{tag}_*.csv"));
+    let out = format!("{}/", dir.path().display());
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .args(["cp", &pattern, &out])
+        .output()
+        .expect("running mpt");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "{stderr}");
+    assert!(stderr.contains("2/2 jobs ok"), "{stderr}");
+    assert_eq!(
+        std::fs::read(dir.path().join(format!("glob_{tag}_1.csv"))).unwrap(),
+        b"one"
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join(format!("glob_{tag}_2.csv"))).unwrap(),
+        b"two"
+    );
+    assert!(!dir.path().join(format!("glob_{tag}_3.txt")).exists());
+
+    // Nothing matches: an error, unless allowed.
+    let none = dir_url(&sftp, &format!("/glob_{tag}_*.nothing"));
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .args(["cp", &none, &out])
+        .output()
+        .expect("running mpt");
+    assert_eq!(
+        run.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .args(["cp", "--allow-empty", &none, &out])
+        .output()
+        .expect("running mpt");
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}

@@ -86,7 +86,7 @@ mpt man                          the manual page in roff (mpt man | man -l -)
   --no-atomic                    write straight to the target name (see below)
   --resume                       continue an interrupted transfer from its .mpt-part file
   --hash <ALGO>  --check        checksums (see below)     --sign <SPEC>  --verify-signers/--verify-keyring <FILE>
-  --parallel <N>  --fail-fast  --dry-run   for cp -t and batch (see "Many files")
+  --parallel <N>  --fail-fast  --dry-run  --allow-empty   for cp -t and batch (see "Many files")
 ```
 
 Ctrl-C stops a running copy: open connections are dropped, partial files are
@@ -301,7 +301,16 @@ mpt cp -t sftp://srv/in/ -t s3://bucket/in/ *.csv        # every file to both ta
 mpt batch jobs.txt --parallel 8
 find /export -name '*.pdf' -printf '%p sftp://srv/in/\n' | mpt batch -
 mpt batch jobs.csv --dry-run                              # list the jobs, send nothing
+mpt cp 'sftp://srv/out/*.csv' /data/incoming/            # every matching remote file
 ```
+
+A source whose file name holds `*` or `[…]` stands for every file in that
+directory whose name matches (a listing, filtered; dotfiles only when the
+pattern starts with a dot). It works on any protocol that can list, in a job
+list as well as on the command line, and its targets must be directories.
+`?` is not a pattern character, since it starts the URL's query. A pattern
+that matches nothing is an error, unless `--allow-empty` says a quiet run
+is fine (a cron job over an inbox, say).
 
 A job list is read from a file or from standard input (`-`), in one of three
 forms; the form is taken from the file name (`.jsonl`, `.csv`, `.tsv`) or

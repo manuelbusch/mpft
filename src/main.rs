@@ -205,6 +205,9 @@ struct BatchArgs {
     /// Print the jobs that would run, and run nothing
     #[arg(long)]
     dry_run: bool,
+    /// A source pattern (`*.csv`) that matches nothing is not an error
+    #[arg(long)]
+    allow_empty: bool,
 }
 
 /// What the command is going to touch, worked out before anything connects
@@ -696,6 +699,13 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
         tracing::info!(signer = %s.identity(), "signing checksum files");
     }
 
+    // A pattern as the source of a plain `cp` is a batch of one line.
+    let work = match work {
+        Work::Single { src, dsts } if mpt::batch::expand::has_pattern(&locate(&src)?) => {
+            Work::Many(vec![JobSpec { src, dsts }])
+        }
+        w => w,
+    };
     match &cli.cmd {
         Cmd::Cp { batch, .. } | Cmd::Batch { batch, .. } => match work {
             Work::Single { src, dsts } => {
@@ -984,6 +994,8 @@ async fn do_batch(
             job().with_context(|| format!("job {}", i + 1))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
+    let open = |loc: &mpt::Location| mpt::protocols::open(loc.clone());
+    let jobs = mpt::batch::expand::expand(jobs, &open, args.allow_empty).await?;
     let n = jobs.len();
     if n == 0 {
         anstream::eprintln!("{WARN}nothing to do{WARN:#}: the job list is empty");
@@ -1016,7 +1028,6 @@ async fn do_batch(
         fail_fast: args.fail_fast,
         progress,
     };
-    let open = |loc: &mpt::Location| mpt::protocols::open(loc.clone());
     let mut codes: Vec<u8> = Vec::new();
     let mut cancelled = false;
     let json = settings.json;
