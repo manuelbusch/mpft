@@ -1499,3 +1499,68 @@ async fn follow_runs_jobs_as_their_lines_arrive() {
     assert_eq!(status.code(), Some(2));
     assert_eq!(fetch(&sftp, &names[1]).await, b"line 1");
 }
+
+/// A pattern with nothing in front of it expands in the working directory.
+/// `mpt cp '*.csv' out/` is the way anyone would write it, and it once failed
+/// with "No such file or directory" because the empty directory in front of
+/// the name was passed to the file system as it stood.
+#[test]
+fn a_bare_pattern_expands_in_the_working_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("out")).unwrap();
+    for name in ["one.csv", "two.csv", "notes.txt"] {
+        std::fs::write(dir.path().join(name), name).unwrap();
+    }
+    let run = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+            .args(args)
+            .current_dir(dir.path())
+            .output()
+            .expect("running mpt")
+    };
+
+    let out = run(&["cp", "*.csv", "out/"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(stderr.contains("2/2 jobs ok"), "{stderr}");
+    assert_eq!(
+        std::fs::read(dir.path().join("out/one.csv")).unwrap(),
+        b"one.csv"
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("out/two.csv")).unwrap(),
+        b"two.csv"
+    );
+    assert!(
+        !dir.path().join("out/notes.txt").exists(),
+        "the pattern took too much"
+    );
+
+    // A pattern with a directory in front behaves the same way.
+    std::fs::create_dir(dir.path().join("out2")).unwrap();
+    let out = run(&["cp", "./*.csv", "out2/"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(dir.path().join("out2/one.csv").exists());
+
+    // Nothing matches: an error, and 0 with --allow-empty rather than the
+    // I/O error the empty directory used to produce.
+    let out = run(&["cp", "*.nothing", "out/"]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("matches no file"), "{stderr}");
+    let out = run(&["cp", "--allow-empty", "*.nothing", "out/"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

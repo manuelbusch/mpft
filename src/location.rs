@@ -512,7 +512,13 @@ impl Location {
             let p = trim_end_separators(&self.path);
             loc.path = match last_separator(p) {
                 Some(idx) => p[..=idx].to_string(),
-                None => String::new(),
+                // Nothing in front of the name. Only a bare local path
+                // (`report.pdf`) and an s3 path that is just a bucket can get
+                // here — every URL scheme carries a leading `/`. An empty
+                // path is one no protocol can list, so name the directory:
+                // the working directory locally, the bucket root on s3.
+                None if self.scheme == Scheme::S3 => format!("{p}/"),
+                None => ".".to_string(),
             };
         }
         loc.dir_hint = true;
@@ -781,15 +787,40 @@ mod tests {
                 .path(),
             "b/k/"
         );
-        assert_eq!(
-            Location::parse("a.bin").unwrap().parent().unwrap().path(),
-            ""
-        );
         assert!(
             Location::parse("mailto:a@example.com")
                 .unwrap()
                 .parent()
                 .is_err()
+        );
+    }
+
+    /// A name with nothing in front of it still has a directory, and it has
+    /// to be one the protocol can list: an empty path is not. This is what a
+    /// bare pattern (`mpt cp '*.csv' out/`) rests on.
+    #[test]
+    fn the_parent_of_a_bare_name_is_the_working_directory() {
+        for name in ["a.bin", "*.csv", "report.pdf"] {
+            let parent = Location::parse(name).unwrap().parent().unwrap();
+            assert_eq!(parent.path(), ".", "parent of {name}");
+            assert!(parent.is_dir_target(), "parent of {name} is a directory");
+        }
+        // Appending to it stays in the working directory.
+        let dir = Location::parse("*.csv").unwrap().parent().unwrap();
+        assert_eq!(dir.join("one.csv").unwrap().path(), "./one.csv");
+
+        // On s3 a path without a separator is a bucket, already at its root.
+        assert_eq!(
+            Location::parse("s3://b").unwrap().parent().unwrap().path(),
+            "b/"
+        );
+        assert_eq!(
+            Location::parse("s3://b/k")
+                .unwrap()
+                .parent()
+                .unwrap()
+                .path(),
+            "b/"
         );
     }
 
