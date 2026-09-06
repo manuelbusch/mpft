@@ -149,26 +149,122 @@ fn a_file_goes_through_the_relay_to_every_target() {
     assert_eq!(std::fs::read(relay.path("a/report.bin")).unwrap(), payload);
     assert_eq!(std::fs::read(relay.path("b/report.bin")).unwrap(), payload);
     assert!(relay.path("a/report.bin.b3").exists());
+    // Reported the way cp reports a copy of its own: the resolved targets,
+    // the digests, the job count.
     assert!(
-        err.contains("mpt://a/"),
-        "targets are shown as given:\n{err}"
+        err.contains(&format!("+ {}", relay.path("b/report.bin.b3").display())),
+        "{err}"
     );
-    assert!(err.contains("+ mpt://b/report.bin.b3"), "{err}");
     assert!(err.contains("2/2 targets ok"), "{err}");
+    assert!(err.contains("1/1 jobs ok"), "{err}");
     assert!(err.contains("blake3 "), "{err}");
-    assert!(
-        !err.contains(relay.dir.path().to_str().unwrap()),
-        "no resolved paths:\n{err}"
-    );
     assert!(relay.log().contains("relay login"), "{}", relay.log());
 
-    // The same with --json: the report on stdout, targets as given.
+    // The same with --json: one report line per job, as a batch prints it.
     let (code, out, _) = relay.cp("client", &["--json", src.to_str().unwrap(), "mpt://a/"]);
     assert_eq!(code, 0);
-    let report: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let report: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
     assert_eq!(report["ok"], true);
+    assert_eq!(report["job"], 1);
     assert_eq!(report["bytes_read"], payload.len());
-    assert_eq!(report["targets"][0]["target"], "mpt://a/");
+    assert_eq!(
+        report["targets"][0]["target"],
+        format!("{}/", relay.path("a").display())
+    );
+}
+
+#[test]
+fn a_batch_goes_through_the_relay_job_by_job() {
+    let relay = Relay::start(&["--parallel", "2"]);
+    let mut files = Vec::new();
+    for i in 0..5u8 {
+        let path = relay.path(&format!("in/f{i}.bin"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let payload: Vec<u8> = (0..200_000u32 + u32::from(i))
+            .map(|n| (n % 199) as u8 ^ i)
+            .collect();
+        std::fs::write(&path, &payload).unwrap();
+        files.push((path, payload));
+    }
+    // A job list: two files to both targets, the rest to one, and a
+    // pattern that the client expands before anything is sent.
+    let list = relay.path("jobs.txt");
+    std::fs::write(
+        &list,
+        format!(
+            "{} mpt://a/ mpt://b/\n{} mpt://a/ mpt://b/\n{}/in/f[2-4].bin mpt://b/\n",
+            files[0].0.display(),
+            files[1].0.display(),
+            relay.dir.path().display()
+        ),
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .env_remove("MPT_CONFIG")
+        .arg("--config")
+        .arg(relay.path("client.toml"))
+        .args([
+            "--color",
+            "never",
+            "--json",
+            "batch",
+            "--via",
+            &relay.via("client"),
+            "--parallel",
+            "3",
+        ])
+        .arg(&list)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{err}");
+    for (i, (path, payload)) in files.iter().enumerate() {
+        let name = path.file_name().unwrap();
+        assert_eq!(
+            &std::fs::read(relay.path("b").join(name)).unwrap(),
+            payload,
+            "f{i} in b"
+        );
+        assert_eq!(relay.path("a").join(name).exists(), i < 2, "f{i} in a");
+    }
+    assert!(err.contains("5/5 jobs ok"), "{err}");
+    let lines: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 5);
+    assert!(lines.iter().all(|l| l["ok"] == true), "{lines:?}");
+    let mut jobs: Vec<u64> = lines.iter().map(|l| l["job"].as_u64().unwrap()).collect();
+    jobs.sort_unstable();
+    assert_eq!(jobs, vec![1, 2, 3, 4, 5]);
+    // Five sessions, one per job.
+    assert_eq!(
+        relay.log().matches("relay login").count(),
+        5,
+        "{}",
+        relay.log()
+    );
+
+    // `cp -t` is a batch as well, and --fail-fast stops it at the first
+    // failure: a target that cannot be written.
+    std::fs::write(relay.path("b/wall"), b"").unwrap();
+    let (code, _, err) = relay.cp(
+        "client",
+        &[
+            "--fail-fast",
+            "--parallel",
+            "1",
+            "-t",
+            "mpt://b/wall/",
+            files[0].0.to_str().unwrap(),
+            files[1].0.to_str().unwrap(),
+        ],
+    );
+    // The second job never started: the batch ends as interrupted, the
+    // way a local batch does.
+    assert_eq!(code, 130, "{err}");
+    assert!(err.contains("stopped after the first failure"), "{err}");
+    assert!(!relay.path("b/wall/f1.bin").exists());
 }
 
 #[test]
@@ -187,7 +283,8 @@ fn a_stranger_a_bad_target_and_a_refused_flag() {
     let (code, _, err) = relay.cp("client", &[src.to_str().unwrap(), "mpt://b/blocker/"]);
     assert_eq!(code, 1, "{err}");
     assert!(err.contains("FAILED"), "{err}");
-    assert!(err.contains("1 of 1 targets failed"), "{err}");
+    assert!(err.contains("relay: I/O error"), "{err}");
+    assert!(err.contains("1 of 1 jobs failed"), "{err}");
 
     let (code, _, err) = relay.cp("client", &["--check", src.to_str().unwrap(), "mpt://a/"]);
     assert_eq!(code, 2, "{err}");

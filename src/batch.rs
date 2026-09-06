@@ -9,6 +9,7 @@
 pub mod expand;
 pub mod jobs;
 
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -251,6 +252,20 @@ pub async fn run(
     run_stream(futures::stream::iter(jobs), open, copy, opts, on_done).await
 }
 
+/// [`run`] with the work per job done by `runner` (see [`run_stream_with`]).
+pub async fn run_with<'r>(
+    jobs: Vec<Job>,
+    runner: impl Fn(Job, CopyOptions) -> JobFuture<'r> + Sync,
+    copy: &CopyOptions,
+    opts: &BatchOptions,
+    on_done: impl FnMut(&JobReport),
+) -> BatchReport {
+    if let Some(p) = &opts.progress {
+        p.total.store(jobs.len(), Ordering::Relaxed);
+    }
+    run_stream_with(futures::stream::iter(jobs), runner, copy, opts, on_done).await
+}
+
 /// [`run`] for jobs that arrive while the batch runs (a list read from a
 /// pipe): each is started as soon as it is there and a slot is free, and
 /// the batch ends when the stream does and the last job is done. The
@@ -258,6 +273,38 @@ pub async fn run(
 pub async fn run_stream(
     jobs: impl Stream<Item = Job> + Unpin,
     open: &(dyn Fn(&Location) -> Result<Box<dyn Endpoint>> + Sync),
+    copy: &CopyOptions,
+    opts: &BatchOptions,
+    on_done: impl FnMut(&JobReport),
+) -> BatchReport {
+    run_stream_with(
+        jobs,
+        |job, copy| {
+            Box::pin(async move {
+                let result = run_job(&job, open, &copy).await;
+                (job, result)
+            })
+        },
+        copy,
+        opts,
+        on_done,
+    )
+    .await
+}
+
+/// What a job runner hands back: the job it was given, with the copy's
+/// outcome.
+pub type JobFuture<'r> =
+    std::pin::Pin<Box<dyn Future<Output = (Job, Result<FanoutReport>)> + Send + 'r>>;
+
+/// [`run_stream`] with the work per job done by `runner` instead of
+/// [`run_job`]: a caller that sends its jobs elsewhere (a relay) still
+/// gets the scheduling, the fail-fast stop, the counters and the report.
+/// `runner` gets the job and the copy options of that job (`cancel` and
+/// `progress` set for it) and hands the job back with the outcome.
+pub async fn run_stream_with<'r>(
+    jobs: impl Stream<Item = Job> + Unpin,
+    runner: impl Fn(Job, CopyOptions) -> JobFuture<'r> + Sync,
     copy: &CopyOptions,
     opts: &BatchOptions,
     mut on_done: impl FnMut(&JobReport),
@@ -274,6 +321,7 @@ pub async fn run_stream(
     info!(parallel, "batch");
 
     let mut reports: Vec<JobReport> = Vec::new();
+    let runner = &runner;
     let mut running = jobs
         .enumerate()
         .map(|(index, job)| {
@@ -292,7 +340,7 @@ pub async fn run_stream(
                 if let Some(p) = &opts.progress {
                     per_job.progress = Some(Progress::with_counter(Arc::clone(&p.bytes)));
                 }
-                let result = run_job(&job, open, &per_job).await;
+                let (job, result) = runner(job, per_job).await;
                 let report = JobReport { index, job, result };
                 if opts.fail_fast && !report.ok() && !report.cancelled() {
                     warn!(job = index + 1, "failed, stopping the batch");

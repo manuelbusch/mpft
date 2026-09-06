@@ -328,13 +328,8 @@ impl BatchArgs {
 /// so the credentials of every endpoint can be fetched in one go.
 #[derive(Debug)]
 enum Work {
-    /// One source, its targets: the plain `cp`; `via` names the relay
-    /// that delivers instead of this process.
-    Single {
-        src: String,
-        dsts: Vec<String>,
-        via: Option<String>,
-    },
+    /// One source, its targets: the plain `cp`.
+    Single { src: String, dsts: Vec<String> },
     /// A list of jobs: `cp -t` or `batch`.
     Many(Vec<JobSpec>),
     /// Jobs read from stdin as they come: `batch - --follow`.
@@ -344,12 +339,17 @@ enum Work {
 }
 
 impl Work {
-    /// The endpoint URLs the command works on.
-    fn urls(&self) -> Vec<&str> {
+    /// The endpoint URLs the command works on, and the relay if there is one.
+    fn urls<'a>(&'a self, via: Option<&'a str>) -> Vec<&'a str> {
+        let mut urls = self.endpoint_urls();
+        urls.extend(via);
+        urls
+    }
+
+    fn endpoint_urls(&self) -> Vec<&str> {
         match self {
-            Work::Single { src, dsts, via } => std::iter::once(src.as_str())
+            Work::Single { src, dsts } => std::iter::once(src.as_str())
                 .chain(dsts.iter().map(String::as_str))
-                .chain(via.as_deref())
                 .collect(),
             Work::Many(jobs) => jobs
                 .iter()
@@ -368,11 +368,7 @@ impl Cmd {
     /// was given.
     fn work(&self) -> anyhow::Result<Work> {
         Ok(match self {
-            Cmd::Cp {
-                target,
-                urls,
-                batch,
-            } if target.is_empty() => {
+            Cmd::Cp { target, urls, .. } if target.is_empty() => {
                 if urls.len() < 2 {
                     anyhow::bail!(
                         "cp needs a source and at least one target \
@@ -382,11 +378,7 @@ impl Cmd {
                 Work::Single {
                     src: urls[0].clone(),
                     dsts: urls[1..].to_vec(),
-                    via: batch.via().map(String::from),
                 }
-            }
-            Cmd::Cp { batch, .. } | Cmd::Batch { batch, .. } if batch.via().is_some() => {
-                anyhow::bail!("--via takes one source and its targets: `cp --via <URL> SRC DST…`");
             }
             Cmd::Cp { target, urls, .. } => Work::Many(
                 urls.iter()
@@ -685,7 +677,11 @@ async fn main() -> ExitCode {
     }
     // Credentials are fetched before anything connects, and only those the
     // endpoints of this command actually need.
-    if let Err(e) = cfg.resolve_secrets(&work.urls(), cli.sign.is_some()).await {
+    let via = cli.cmd.batch_args().and_then(|b| b.via());
+    if let Err(e) = cfg
+        .resolve_secrets(&work.urls(via), cli.sign.is_some())
+        .await
+    {
         anstream::eprintln!("{FAIL}error:{FAIL:#} {e}");
         return ExitCode::from(exit_code(&anyhow::Error::new(e)));
     }
@@ -802,7 +798,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
     let password = read_password(&cli)?;
     // A profile can ask for signing and a checksum of its own; the flags win.
     let profiles: Vec<&mpt::config::Profile> = work
-        .urls()
+        .endpoint_urls()
         .iter()
         .filter_map(|u| mpt::config::profile_of(u))
         .collect();
@@ -908,37 +904,36 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
         tracing::info!(signer = %s.identity(), "signing checksum files");
     }
 
+    // A relay does the copying for `--via`; every job goes through the
+    // batch machinery then, a single `cp` as a batch of one.
+    #[cfg(feature = "relay")]
+    let via = match cli.cmd.batch_args().and_then(|b| b.via()) {
+        Some(url) => Some(Via::new(url, &locate, &opts, &settings)?),
+        None => None,
+    };
+    #[cfg(not(feature = "relay"))]
+    let via: Option<()> = None;
+    let open_loc = |loc: &mpt::Location| mpt::protocols::open(loc.clone());
+    let runner = match &via {
+        #[cfg(feature = "relay")]
+        Some(v) => JobRunner::Via(v),
+        _ => JobRunner::Local(&open_loc),
+    };
+
     // A pattern as the source of a plain `cp` is a batch of one line, and so
     // is any source with -r, since it may turn out to be a directory.
     let recursive = cli.cmd.batch_args().is_some_and(|b| b.recursive);
     let work = match work {
-        Work::Single { via: Some(_), .. } if recursive => {
-            return Err(usage(
-                "--recursive is not available with --via: a relay takes one file",
-            ));
-        }
-        Work::Single {
-            src,
-            dsts,
-            via: None,
-        } if recursive || mpt::batch::expand::has_pattern(&locate(&src)?) => {
+        Work::Single { src, dsts }
+            if via.is_some() || recursive || mpt::batch::expand::has_pattern(&locate(&src)?) =>
+        {
             Work::Many(vec![JobSpec { src, dsts }])
         }
         w => w,
     };
     match &cli.cmd {
         Cmd::Cp { batch, .. } | Cmd::Batch { batch, .. } => match work {
-            #[cfg(feature = "relay")]
-            Work::Single {
-                src,
-                dsts,
-                via: Some(via),
-            } => do_via(&via, &src, &dsts, &locate, &opts, &settings, &cli, cancel).await,
-            #[cfg(not(feature = "relay"))]
-            Work::Single { via: Some(_), .. } => {
-                anyhow::bail!("--via needs the 'relay' feature, which this build lacks")
-            }
-            Work::Single { src, dsts, .. } => {
+            Work::Single { src, dsts } => {
                 let targets = dsts
                     .iter()
                     .map(|d| open(d))
@@ -959,7 +954,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                     .progress
                     .take()
                     .map(|_| mpt::batch::BatchProgress::new());
-                do_batch(jobs, &locate, opts, &settings, batch, progress).await
+                do_batch(jobs, &locate, &runner, opts, &settings, batch, progress).await
             }
             Work::Follow => {
                 let Cmd::Batch { format, .. } = &cli.cmd else {
@@ -972,6 +967,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                     .map(|_| mpt::batch::BatchProgress::new());
                 do_follow(
                     &locate,
+                    &runner,
                     opts,
                     &settings,
                     batch,
@@ -1323,6 +1319,7 @@ fn print_report(
 async fn do_batch(
     specs: Vec<JobSpec>,
     locate: &dyn Fn(&str) -> anyhow::Result<mpt::Location>,
+    runner: &JobRunner<'_>,
     opts: CopyOptions,
     settings: &Settings,
     args: &BatchArgs,
@@ -1354,9 +1351,36 @@ async fn do_batch(
         progress,
     };
     let mut out = BatchOutput::new(Some(n), settings.json);
-    let report = mpt::batch::run(jobs, &open, &opts, &batch_opts, |r| out.job_done(r, &opts)).await;
+    let report = mpt::batch::run_with(
+        jobs,
+        |job, copy| runner.run(job, copy),
+        &opts,
+        &batch_opts,
+        |r| out.job_done(r, &opts),
+    )
+    .await;
     clear_progress(bar);
     out.finish(&report)
+}
+
+/// Who copies a job: this process, or a relay it sends the source to.
+enum JobRunner<'a> {
+    Local(&'a (dyn Fn(&mpt::Location) -> mpt::Result<Box<dyn mpt::Endpoint>> + Sync)),
+    #[cfg(feature = "relay")]
+    Via(&'a Via),
+}
+
+impl JobRunner<'_> {
+    fn run(&self, job: mpt::Job, copy: CopyOptions) -> mpt::batch::JobFuture<'_> {
+        match self {
+            JobRunner::Local(open) => Box::pin(async move {
+                let result = mpt::batch::run_job(&job, *open, &copy).await;
+                (job, result)
+            }),
+            #[cfg(feature = "relay")]
+            JobRunner::Via(via) => Box::pin(via.run(job, copy)),
+        }
+    }
 }
 
 /// The URLs of a job list entry as locations.
@@ -1518,8 +1542,10 @@ impl BatchOutput {
 /// Credentials for endpoints that turn up along the way are fetched then.
 /// A line that cannot be read, resolved or would write a file an earlier
 /// job writes is reported and skipped; the rest carry on.
+#[allow(clippy::too_many_arguments)]
 async fn do_follow(
     locate: &dyn Fn(&str) -> anyhow::Result<mpt::Location>,
+    runner: &JobRunner<'_>,
     opts: CopyOptions,
     settings: &Settings,
     args: &BatchArgs,
@@ -1634,9 +1660,13 @@ async fn do_follow(
         })
         .flatten();
         futures::pin_mut!(jobs);
-        mpt::batch::run_stream(jobs, &open, &opts, &batch_opts, |r| {
-            out.lock().unwrap().job_done(r, &opts)
-        })
+        mpt::batch::run_stream_with(
+            jobs,
+            |job, copy| runner.run(job, copy),
+            &opts,
+            &batch_opts,
+            |r| out.lock().unwrap().job_done(r, &opts),
+        )
         .await
     };
     clear_progress(bar);
@@ -1968,261 +1998,132 @@ fn relay_listener(
     })
 }
 
-/// `cp --via`: send the source once to a relay and let it deliver. The
-/// targets are resolved here, credentials included, so the relay needs no
-/// configuration of its own; the report comes back with them named as
-/// they were given.
+/// `--via`: the relay that copies instead of this process. The targets are
+/// resolved here, credentials included, so the relay needs no configuration
+/// of its own; the report comes back the way `cp` would have made it.
 #[cfg(feature = "relay")]
-#[allow(clippy::too_many_arguments)]
-async fn do_via(
-    via: &str,
-    src: &str,
-    dsts: &[String],
-    locate: &dyn Fn(&str) -> anyhow::Result<mpt::Location>,
-    opts: &CopyOptions,
-    settings: &Settings,
-    cli: &Cli,
-    cancel: tokio_util::sync::CancellationToken,
-) -> anyhow::Result<()> {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
+struct Via {
+    relay: mpt::Location,
+    /// What the header carries: the flags of this side that a relay can
+    /// honour.
+    options: mpt::options::JobOptions,
+}
 
-    for (flag, set) in [
-        ("--check", opts.check),
-        ("--delete-source", opts.delete_source),
-        ("--resume", opts.resume),
-        ("--sign", opts.sign.is_some()),
-    ] {
-        if set {
-            return Err(usage(format!(
-                "{flag} is not available with --via: it needs what only this side has \
-                 (the checksum file, the source, the key)"
-            )));
-        }
-    }
-    let relay = locate(via)?;
-    if relay.scheme() != Scheme::Ssh {
-        return Err(usage(format!(
-            "--via needs an ssh:// URL (or a profile with one), not {relay}"
-        )));
-    }
-    // The relay, named without its options: those are for connecting.
-    let label = format!(
-        "ssh://{}{}:{}",
-        relay
-            .username()
-            .map(|u| format!("{u}@"))
-            .unwrap_or_default(),
-        relay.host().unwrap_or(""),
-        relay.port_or_default()
-    );
-    let source = locate(src)?;
-    if mpt::batch::expand::has_pattern(&source) {
-        return Err(usage(
-            "a pattern is not available with --via: name one file",
-        ));
-    }
-    let name = source
-        .filename()
-        .ok_or_else(|| anyhow::anyhow!("the source {source} has no file name"))?
-        .to_string();
-    // The targets as the relay must see them, and how to show them again.
-    let mut shown: Vec<(String, String)> = Vec::new();
-    let mut dst = Vec::new();
-    for given in dsts {
-        let loc = locate(given)?;
-        for opt in ["key", "cert", "passphrase"] {
-            if loc.opt(opt).is_some() {
+#[cfg(feature = "relay")]
+impl Via {
+    fn new(
+        url: &str,
+        locate: &dyn Fn(&str) -> anyhow::Result<mpt::Location>,
+        opts: &CopyOptions,
+        settings: &Settings,
+    ) -> anyhow::Result<Via> {
+        for (flag, set) in [
+            ("--check", opts.check),
+            ("--delete-source", opts.delete_source),
+            ("--resume", opts.resume),
+            ("--sign", opts.sign.is_some()),
+        ] {
+            if set {
                 return Err(usage(format!(
-                    "{given}: ?{opt}= names a file on this machine, which the relay cannot \
-                     read; give the target a password, or put the key on the relay"
+                    "{flag} is not available with --via: it needs what only this side has \
+                     (the checksum file, the source, the key)"
                 )));
             }
         }
-        shown.push((loc.to_string(), given.clone()));
-        dst.push(loc.unmasked());
-    }
-    let source = mpt::protocols::open(source)?;
-    let receiver = source.receiver()?;
-    let size = receiver.size().await?;
-    let stream = receiver
-        .receive()
-        .await
-        .with_context(|| format!("reading {}", source.location()))?;
-    let (stream, size) = match size {
-        Some(n) => (stream, n),
-        None => {
-            tracing::warn!("the source's size is unknown: spooling it to a temporary file first");
-            let (file, n) = mpt::stream::spool_to_tempfile(stream).await?;
-            (mpt::stream::boxed(file), n)
+        let relay = locate(url)?;
+        if relay.scheme() != Scheme::Ssh {
+            return Err(usage(format!(
+                "--via needs an ssh:// URL (or a profile with one), not {relay}"
+            )));
         }
-    };
-    let header = mpt::relay::Header {
-        v: mpt::relay::VERSION,
-        name,
-        size,
-        dst,
-        options: mpt::options::JobOptions {
-            hash: opts.hash.map(|h| h.name().to_string()),
-            atomic: (!opts.atomic).then_some(false),
-            skip_existing: opts.skip_existing.then_some(true),
-            cache: matches!(opts.cache, CacheMode::Memory { .. }).then_some(true),
-            retries: (opts.retries > 0).then_some(opts.retries),
-            timeout: Some(settings.timeout),
-            ..Default::default()
-        },
-    };
-    let uploaded = Arc::new(AtomicU64::new(0));
-    let relayed = Arc::new(AtomicU64::new(0));
-    let body = mpt::stream::boxed(mpt::stream::Counted::with_counter(
-        stream,
-        Arc::clone(&uploaded),
-    ));
-    let bar = show_progress(cli, settings).then(|| {
-        let (uploaded, relayed) = (Arc::clone(&uploaded), Arc::clone(&relayed));
-        spawn_progress_line(move |secs| {
-            let up = uploaded.load(Ordering::Relaxed);
-            let rate = human_size((up as f64 / secs) as u64);
-            format!(
-                "{} / {} ({:>3.0}%) sent, {} delivered  {rate}/s",
-                human_size(up),
-                human_size(size),
-                if size > 0 {
-                    up as f64 * 100.0 / size as f64
-                } else {
-                    100.0
-                },
-                human_size(relayed.load(Ordering::Relaxed))
-            )
+        Ok(Via {
+            relay,
+            options: mpt::options::JobOptions {
+                hash: opts.hash.map(|h| h.name().to_string()),
+                atomic: (!opts.atomic).then_some(false),
+                skip_existing: opts.skip_existing.then_some(true),
+                cache: matches!(opts.cache, CacheMode::Memory { .. }).then_some(true),
+                retries: (opts.retries > 0).then_some(opts.retries),
+                timeout: Some(settings.timeout),
+                ..Default::default()
+            },
         })
-    });
-    let outcome = mpt::relay::client::send(&relay, &header, body, &cancel, |line| {
-        if let Some(n) = line["progress"]["read"].as_u64() {
-            relayed.store(n, Ordering::Relaxed);
-        }
-    })
-    .await;
-    clear_progress(bar);
-    let outcome = match outcome {
-        Ok(o) => o,
-        Err(mpt::Error::Cancelled) => {
-            return Err(anyhow::Error::new(Interrupted).context("upload stopped"));
-        }
-        Err(e) => return Err(anyhow::Error::new(e).context(format!("relay {label}"))),
-    };
-    for line in outcome.stderr.lines().filter(|l| !l.trim().is_empty()) {
-        anstream::eprintln!("{DIM}relay: {line}{DIM:#}");
     }
-    if let Some(err) = &outcome.error {
-        let msg = err["message"].as_str().unwrap_or("refused");
-        return Err(anyhow::Error::new(ExitWith {
-            code: outcome.exit.max(FAILED),
-            msg: format!("relay: {msg}"),
-        }));
-    }
-    let Some(report) = outcome.report else {
-        anyhow::bail!("the relay ended with exit {} and no report", outcome.exit);
-    };
-    let report = with_given_names(report, &shown);
-    if settings.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    }
-    print_relay_report(&report, &label);
-    match outcome.exit {
-        0 => Ok(()),
-        INTERRUPTED => Err(anyhow::Error::new(Interrupted).context("the relay was stopped")),
-        code => {
-            let targets = report["targets"].as_array().map_or(0, Vec::len);
-            let failed = report["targets"]
-                .as_array()
-                .map_or(0, |t| t.iter().filter(|t| t["ok"] != true).count());
-            Err(anyhow::Error::new(ExitWith {
-                code,
-                msg: format!("{failed} of {targets} targets failed"),
-            }))
-        }
-    }
-}
 
-/// The relay's report with every target (and its checksum and signature
-/// files) named as it was given here, not as the relay resolved it.
-#[cfg(feature = "relay")]
-fn with_given_names(
-    mut report: serde_json::Value,
-    shown: &[(String, String)],
-) -> serde_json::Value {
-    let rename = |v: &mut serde_json::Value| {
-        if let Some(text) = v.as_str() {
-            for (resolved, given) in shown {
-                if let Some(rest) = text.strip_prefix(resolved.as_str()) {
-                    *v = serde_json::Value::String(format!("{given}{rest}"));
-                    return;
+    /// One job through the relay: read the source here, let the relay
+    /// deliver, and hand back its report as if the copy had run here.
+    async fn run(
+        &self,
+        job: mpt::Job,
+        copy: CopyOptions,
+    ) -> (mpt::Job, mpt::Result<mpt::FanoutReport>) {
+        let result = self.send(&job, &copy).await;
+        (job, result)
+    }
+
+    async fn send(&self, job: &mpt::Job, copy: &CopyOptions) -> mpt::Result<mpt::FanoutReport> {
+        let mut dst = Vec::with_capacity(job.dsts.len());
+        for loc in &job.dsts {
+            for opt in ["key", "cert", "passphrase"] {
+                if loc.opt(opt).is_some() {
+                    return Err(mpt::Error::invalid_option(
+                        opt,
+                        format!(
+                            "{loc}: names a file on this machine, which the relay cannot read; \
+                             give the target a password, or put the key on the relay"
+                        ),
+                    ));
                 }
             }
+            dst.push(loc.unmasked());
         }
-    };
-    if let Some(targets) = report["targets"].as_array_mut() {
-        for t in targets {
-            rename(&mut t["target"]);
-            rename(&mut t["sidecar"]);
-            rename(&mut t["signature"]);
-        }
-    }
-    report
-}
-
-/// The relay's report the way `cp` prints its own: one line per target,
-/// the digests, a summary naming the relay.
-#[cfg(feature = "relay")]
-fn print_relay_report(report: &serde_json::Value, relay: &str) {
-    let ms = |v: &serde_json::Value| Duration::from_millis(v.as_u64().unwrap_or(0));
-    let targets = report["targets"].as_array().cloned().unwrap_or_default();
-    let mut failed = 0;
-    for t in &targets {
-        let target = t["target"].as_str().unwrap_or("?");
-        if t["skipped"] == true {
-            anstream::eprintln!(
-                "{DIM}skip  {:>14}  {:>9}  {target}{DIM:#}",
-                "already there",
-                ""
-            );
-        } else if t["ok"] == true {
-            anstream::eprintln!(
-                "{OK}ok    {OK:#}  {NUM}{:>12}{NUM:#} bytes  {NUM}{:>9.2?}{NUM:#}  {DIM}{target}{DIM:#}",
-                t["bytes"].as_u64().unwrap_or(0),
-                ms(&t["elapsed_ms"])
-            );
-            for extra in [&t["sidecar"], &t["signature"]] {
-                if let Some(path) = extra.as_str() {
-                    anstream::eprintln!("{DIM}        + {path}{DIM:#}");
-                }
+        let name = job
+            .src
+            .filename()
+            .ok_or_else(|| mpt::Error::InvalidUrl(format!("{}: no file name to relay", job.src)))?
+            .to_string();
+        let source = mpt::protocols::open(job.src.clone())?;
+        let receiver = source.receiver()?;
+        let size = receiver.size().await?;
+        let stream = receiver.receive().await?;
+        let (stream, size) = match size {
+            Some(n) => (stream, n),
+            None => {
+                tracing::warn!(%name, "size unknown: spooling the source to a temporary file first");
+                let (file, n) = mpt::stream::spool_to_tempfile(stream).await?;
+                (mpt::stream::boxed(file), n)
             }
-        } else {
-            failed += 1;
-            anstream::eprintln!(
-                "{FAIL}FAILED{FAIL:#}  {NUM}{:>12}{NUM:#} bytes  {NUM}{:>9.2?}{NUM:#}  {DIM}{target}{DIM:#}: {FAIL}{}{FAIL:#}",
-                t["bytes"].as_u64().unwrap_or(0),
-                ms(&t["elapsed_ms"]),
-                t["error"].as_str().unwrap_or("failed")
-            );
+        };
+        let header = mpt::relay::Header {
+            v: mpt::relay::VERSION,
+            name,
+            size,
+            dst,
+            options: self.options.clone(),
+        };
+        // The upload is what the progress line counts.
+        let body: mpt::ByteStream = match &copy.progress {
+            Some(p) => mpt::stream::boxed(mpt::stream::Counted::with_counter(stream, p.counter())),
+            None => stream,
+        };
+        let cancel = copy.cancel.clone().unwrap_or_default();
+        let outcome = mpt::relay::client::send(&self.relay, &header, body, &cancel, |_| {}).await?;
+        for line in outcome.stderr.lines().filter(|l| !l.trim().is_empty()) {
+            tracing::debug!("relay: {line}");
         }
-    }
-    let summary = if failed == 0 { OK } else { WARN };
-    anstream::eprintln!(
-        "{DIM}{} via {relay}{DIM:#}: {NUM}{}{NUM:#} bytes sent, {summary}{}/{} targets ok{summary:#} in {NUM}{:.2?}{NUM:#}",
-        report["source"].as_str().unwrap_or("?"),
-        report["bytes_read"].as_u64().unwrap_or(0),
-        targets.len() - failed,
-        targets.len(),
-        ms(&report["elapsed_ms"])
-    );
-    if let Some(digests) = report["digests"].as_object() {
-        for (algo, hex) in digests {
-            anstream::eprintln!(
-                "{HEAD}{algo:<7}{HEAD:#} {NUM}{}{NUM:#}",
-                hex.as_str().unwrap_or("")
-            );
+        if let Some(err) = &outcome.error {
+            return Err(mpt::Error::Transport {
+                protocol: "relay",
+                source: err["message"].as_str().unwrap_or("refused").into(),
+            });
         }
+        let report = outcome.report.ok_or_else(|| {
+            mpt::Error::Remote(format!(
+                "the relay ended with exit {} and no report",
+                outcome.exit
+            ))
+        })?;
+        mpt::report::fanout_from_json(&report)
     }
 }
 
@@ -2445,7 +2346,7 @@ mod tests {
         assert_eq!(jobs[2].src, "c");
         assert_eq!(jobs[2].dsts, vec!["sftp://h/in/", "s3://b/"]);
         assert_eq!(
-            cli.cmd.work().unwrap().urls(),
+            cli.cmd.work().unwrap().urls(None),
             vec![
                 "a",
                 "sftp://h/in/",

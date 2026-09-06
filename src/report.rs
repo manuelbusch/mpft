@@ -4,10 +4,12 @@
 //! "Machine-readable output"), so a script reads the same fields whether
 //! it ran the command or asked the server.
 
+use std::time::Duration;
+
 use serde_json::{Value, json};
 
-use crate::Error;
-use crate::transfer::FanoutReport;
+use crate::transfer::{CheckReport, FanoutReport, TargetReport};
+use crate::{Error, HashAlgo, Result};
 
 /// The whole outcome of one copy: what was read, what each target did, the
 /// digests and the `check` verdict.
@@ -57,7 +59,146 @@ pub fn fanout_json(report: &FanoutReport) -> Value {
     })
 }
 
+/// A report back from its JSON, as a relay hands it over. A target's
+/// failure comes back as a `relay` transport error carrying the message;
+/// a cancelled one as [`Error::Cancelled`].
+pub fn fanout_from_json(v: &Value) -> Result<FanoutReport> {
+    let bad = |what: &str| Error::Remote(format!("report: {what}"));
+    let str_of = |v: &Value| v.as_str().map(String::from);
+    let ms = |v: &Value| Duration::from_millis(v.as_u64().unwrap_or(0));
+    let targets = v["targets"]
+        .as_array()
+        .ok_or_else(|| bad("no targets"))?
+        .iter()
+        .map(|t| {
+            let result = if t["ok"] == true {
+                Ok(())
+            } else if t["cancelled"] == true {
+                Err(Error::Cancelled)
+            } else {
+                Err(Error::Transport {
+                    protocol: "relay",
+                    source: t["error"].as_str().unwrap_or("failed").into(),
+                })
+            };
+            TargetReport {
+                target: str_of(&t["target"]).unwrap_or_default(),
+                bytes: t["bytes"].as_u64().unwrap_or(0),
+                elapsed: ms(&t["elapsed_ms"]),
+                attempts: t["attempts"].as_u64().unwrap_or(1) as u32,
+                result,
+                sidecar: str_of(&t["sidecar"]),
+                signature: str_of(&t["signature"]),
+                skipped: t["skipped"] == true,
+            }
+        })
+        .collect();
+    let digests = v["digests"]
+        .as_object()
+        .map(|d| {
+            d.iter()
+                .filter_map(|(algo, hex)| {
+                    Some((HashAlgo::parse(algo).ok()?, hex.as_str()?.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let checked = v["check"].as_object().and_then(|c| {
+        Some(CheckReport {
+            algo: HashAlgo::parse(c.get("algo")?.as_str()?).ok()?,
+            expected: str_of(c.get("expected")?)?,
+            actual: str_of(c.get("actual")?)?,
+            signer: c.get("signer").and_then(str_of),
+        })
+    });
+    let source_removed = match (&v["source_removed"], &v["remove_error"]) {
+        (Value::Bool(true), _) => Some(Ok(())),
+        (Value::Bool(false), e) => Some(Err(Error::Remote(
+            e.as_str().unwrap_or("not removed").to_string(),
+        ))),
+        _ => None,
+    };
+    Ok(FanoutReport {
+        source: str_of(&v["source"]).unwrap_or_default(),
+        bytes_read: v["bytes_read"].as_u64().unwrap_or(0),
+        elapsed: ms(&v["elapsed_ms"]),
+        targets,
+        digests,
+        checked,
+        source_removed,
+    })
+}
+
 /// An error as `{"kind": …, "message": …}`; `kind` is [`Error::kind`].
 pub fn error_json(err: &Error) -> Value {
     json!({ "kind": err.kind(), "message": err.to_string() })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_report_survives_the_round_trip() {
+        let report = FanoutReport {
+            source: "report.pdf".into(),
+            bytes_read: 1234,
+            elapsed: Duration::from_millis(50),
+            targets: vec![
+                TargetReport {
+                    target: "sftp://u@h/in/".into(),
+                    bytes: 1234,
+                    elapsed: Duration::from_millis(40),
+                    attempts: 1,
+                    result: Ok(()),
+                    sidecar: Some("sftp://u@h/in/report.pdf.b3".into()),
+                    signature: None,
+                    skipped: false,
+                },
+                TargetReport {
+                    target: "ftp://x/".into(),
+                    bytes: 0,
+                    elapsed: Duration::ZERO,
+                    attempts: 2,
+                    result: Err(Error::Auth("wrong password".into())),
+                    sidecar: None,
+                    signature: None,
+                    skipped: false,
+                },
+                TargetReport {
+                    target: "/tmp/".into(),
+                    bytes: 0,
+                    elapsed: Duration::ZERO,
+                    attempts: 0,
+                    result: Err(Error::Cancelled),
+                    sidecar: None,
+                    signature: None,
+                    skipped: false,
+                },
+            ],
+            digests: vec![(HashAlgo::Blake3, "ab".repeat(32))],
+            checked: None,
+            source_removed: None,
+        };
+        let back = fanout_from_json(&fanout_json(&report)).unwrap();
+        assert_eq!(back.source, "report.pdf");
+        assert_eq!(back.bytes_read, 1234);
+        assert_eq!(back.elapsed, Duration::from_millis(50));
+        assert_eq!(back.targets.len(), 3);
+        assert!(back.targets[0].result.is_ok());
+        assert_eq!(
+            back.targets[0].sidecar.as_deref(),
+            Some("sftp://u@h/in/report.pdf.b3")
+        );
+        let e = back.targets[1].result.as_ref().unwrap_err().to_string();
+        assert_eq!(e, "relay: authentication failed: wrong password");
+        assert_eq!(back.targets[1].attempts, 2);
+        assert!(matches!(back.targets[2].result, Err(Error::Cancelled)));
+        assert_eq!(back.digests, vec![(HashAlgo::Blake3, "ab".repeat(32))]);
+        // The JSON of the round-tripped report is the JSON it came from,
+        // but for the error text, which now names the relay.
+        let mut again = fanout_json(&back);
+        again["targets"][1]["error"] = fanout_json(&report)["targets"][1]["error"].clone();
+        assert_eq!(again, fanout_json(&report));
+    }
 }

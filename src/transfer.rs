@@ -61,7 +61,9 @@ impl Progress {
         self.read.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    fn counter(&self) -> Arc<std::sync::atomic::AtomicU64> {
+    /// The counter itself, for a reader that is counted elsewhere (a
+    /// relay's upload) and still wants to show up here.
+    pub fn counter(&self) -> Arc<std::sync::atomic::AtomicU64> {
         Arc::clone(&self.read)
     }
 

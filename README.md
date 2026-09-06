@@ -515,6 +515,12 @@ mpt cp --via ssh://relay@fast.example:2222 report.pdf mpt://prod/ mpt://archive/
 
 `--via` takes an `ssh://` URL, or a profile whose `url` is one; the key,
 the agent, `known_hosts` and `?hostkey=` work as they do for `sftp://`.
+It is a batch option: `cp -t`, `batch` (also `batch - --follow`) and a
+`cp` with a pattern or `-r` send every file of the list through the relay,
+one SSH session per file, `--parallel` of them at once, with `--fail-fast`
+and the batch's progress and summary as usual; a plain `cp --via` is a
+batch of one. Patterns and trees are expanded on the client, which is
+where the source is.
 The targets are resolved on the client — profiles, credential providers,
 `--password` — and travel to the relay in full over the SSH channel, so the
 relay needs nothing but a line in `authorized_keys` per client. The one
@@ -523,10 +529,9 @@ is refused, since the file is on this side; give such a target a password
 or a token, or put its key on the relay. Flags that need this side —
 `--check`, `--sign`, `--delete-source`, `--resume` — are refused with
 `--via`; `--hash`, `--timeout`, `--cache`/`--retries`, `--skip-existing`,
-`--no-atomic` and `?options` of the targets go along. The progress line
-shows what was sent and what the relay has delivered, the report comes
-back with the targets named as they were given, `--json` prints it as
-usual, and the exit code is what `cp` would have given.
+`--no-atomic` and `?options` of the targets go along. The report comes
+back and is printed as `cp` prints its own, `--json` gives the same
+object per job, and the exit code is what `cp` would have given.
 
 The client stays connected until the relay is done: the upload is the
 transfer. If the connection drops, the relay's source ends early, every
