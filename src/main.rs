@@ -353,9 +353,7 @@ async fn main() -> ExitCode {
     }
     mpt::config::install(cfg);
     mpt::init_crypto();
-    let outcome = run(cli, settings).await;
-    mpt::shutdown().await;
-    match outcome {
+    match run(cli, settings).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             anstream::eprintln!("{FAIL}error:{FAIL:#} {e:#}");

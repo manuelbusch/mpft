@@ -11,7 +11,6 @@
 //! ACK bytes: `\0` ok, `\x01` warning + text line, `\x02` fatal + text line.
 
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use async_trait::async_trait;
@@ -38,7 +37,7 @@ impl ScpEndpoint {
 
     /// Open an exec channel. The stream carries an inactivity deadline, so a
     /// server that stops talking mid-transfer fails instead of hanging.
-    async fn exec(&self, command: &str) -> Result<(Arc<Handle<ClientHandler>>, ScpStream)> {
+    async fn exec(&self, command: &str) -> Result<(Handle<ClientHandler>, ScpStream)> {
         let handle = self.cfg.connect().await?;
         let channel = handle.channel_open_session().await.map_err(ssh_err)?;
         debug!(%command, "scp exec");
@@ -89,6 +88,7 @@ impl ScpEndpoint {
         let timed_out = tokio::time::timeout(self.cfg.timeout, collect)
             .await
             .is_err();
+        super::disconnect(&handle).await;
         if timed_out {
             return Err(Error::Remote(format!(
                 "ssh: `{command}` did not finish within {:?}",
@@ -250,8 +250,7 @@ struct ScpReader {
     stream: ScpStream,
     remaining: u64,
     acked: bool,
-    /// Keeps the session alive for as long as the reader lives.
-    _handle: Arc<Handle<ClientHandler>>,
+    _handle: Handle<ClientHandler>,
 }
 
 impl AsyncRead for ScpReader {
@@ -312,7 +311,7 @@ impl Sender for ScpEndpoint {
         } else {
             format!("scp -t {}", shell_quote(&target))
         };
-        let (_session, mut stream) = self.exec(&cmd).await?;
+        let (handle, mut stream) = self.exec(&cmd).await?;
 
         read_ack(&mut stream).await?;
         let header = format!("C0644 {size} {}\n", crate::location::safe_name(&name)?);
@@ -329,6 +328,7 @@ impl Sender for ScpEndpoint {
         stream.flush().await?;
         read_ack(&mut stream).await?;
         stream.shutdown().await?;
+        super::disconnect(&handle).await;
         Ok(())
     }
 

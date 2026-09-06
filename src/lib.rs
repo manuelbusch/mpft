@@ -39,14 +39,6 @@ pub fn open(url: &str) -> Result<Box<dyn Endpoint>> {
     protocols::open(config::locate(url)?)
 }
 
-/// Close what is still open: pooled SSH sessions are kept for the life of the
-/// process so a transfer's several steps share one handshake, and this says
-/// goodbye to them properly. Nothing else needs it.
-pub async fn shutdown() {
-    #[cfg(feature = "ssh")]
-    protocols::ssh::close_sessions().await;
-}
-
 /// Install the process-wide rustls crypto provider (aws-lc-rs).
 ///
 /// Several dependencies (reqwest, lettre, suppaftp, object_store) build rustls

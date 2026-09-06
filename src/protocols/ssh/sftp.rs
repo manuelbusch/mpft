@@ -1,8 +1,6 @@
 //! `sftp://` via the SSH SFTP subsystem (russh-sftp).
 
 use async_trait::async_trait;
-use std::sync::Arc;
-
 use russh::client::Handle;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
@@ -25,9 +23,7 @@ impl SftpEndpoint {
         Ok(SftpEndpoint { loc, cfg })
     }
 
-    /// A channel on a (possibly reused) session; the handle travels with
-    /// the stream so the session outlives it.
-    async fn session(&self) -> Result<(Arc<Handle<ClientHandler>>, SftpSession)> {
+    async fn session(&self) -> Result<(Handle<ClientHandler>, SftpSession)> {
         let handle = self.cfg.connect().await?;
         let channel = handle.channel_open_session().await.map_err(ssh_err)?;
         channel
@@ -71,14 +67,14 @@ impl Endpoint for SftpEndpoint {
 #[async_trait]
 impl Receiver for SftpEndpoint {
     async fn receive(&self) -> Result<ByteStream> {
-        let (session, sftp) = self.session().await?;
+        let (handle, sftp) = self.session().await?;
         let file = sftp.open(self.remote_path()).await.map_err(sftp_err)?;
         let file = stream::Idle::maybe(file, self.cfg.idle);
-        Ok(stream::boxed(stream::Guarded::new(file, (sftp, session))))
+        Ok(stream::boxed(stream::Guarded::new(file, (sftp, handle))))
     }
 
     async fn list(&self) -> Result<Vec<Entry>> {
-        let (_session, sftp) = self.session().await?;
+        let (handle, sftp) = self.session().await?;
         let path = self.remote_path();
         let path = if path.is_empty() {
             ".".to_string()
@@ -100,13 +96,15 @@ impl Receiver for SftpEndpoint {
             .collect();
         out.sort_by(|a, b| a.name.cmp(&b.name));
         let _ = sftp.close().await;
+        super::disconnect(&handle).await;
         Ok(out)
     }
 
     async fn size(&self) -> Result<Option<u64>> {
-        let (_session, sftp) = self.session().await?;
+        let (handle, sftp) = self.session().await?;
         let md = sftp.metadata(self.remote_path()).await.map_err(sftp_err)?;
         let _ = sftp.close().await;
+        super::disconnect(&handle).await;
         Ok(if md.is_dir() { None } else { md.size })
     }
 }
@@ -114,7 +112,7 @@ impl Receiver for SftpEndpoint {
 #[async_trait]
 impl Sender for SftpEndpoint {
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()> {
-        let (_session, sftp) = self.session().await?;
+        let (handle, sftp) = self.session().await?;
         let mut target = strip_home(&self.loc.target_path(meta.filename.as_deref())?);
         // If the path exists and is a directory, append the file name.
         if !self.loc.is_dir_target()
@@ -137,6 +135,7 @@ impl Sender for SftpEndpoint {
         file.shutdown().await?;
         result?;
         let _ = sftp.close().await;
+        super::disconnect(&handle).await;
         Ok(())
     }
 
@@ -145,21 +144,23 @@ impl Sender for SftpEndpoint {
     }
 
     async fn rename(&self, from: &str, to: &str) -> Result<()> {
-        let (_session, sftp) = self.session().await?;
+        let (handle, sftp) = self.session().await?;
         let from = strip_home(self.loc.sibling(from)?.path());
         let to = strip_home(self.loc.sibling(to)?.path());
         // Plain SFTP rename refuses an existing target; replace it first.
         let _ = sftp.remove_file(to.clone()).await;
         let res = sftp.rename(from, to).await.map_err(sftp_err);
         let _ = sftp.close().await;
+        super::disconnect(&handle).await;
         res
     }
 
     async fn remove(&self, name: &str) -> Result<()> {
-        let (_session, sftp) = self.session().await?;
+        let (handle, sftp) = self.session().await?;
         let path = strip_home(self.loc.sibling(name)?.path());
         let res = sftp.remove_file(path).await.map_err(sftp_err);
         let _ = sftp.close().await;
+        super::disconnect(&handle).await;
         res
     }
 }

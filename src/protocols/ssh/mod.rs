@@ -11,9 +11,8 @@ pub mod agent;
 pub mod scp;
 pub mod sftp;
 
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use russh::client::{self, Handle};
@@ -161,52 +160,12 @@ impl SshConfig {
         })
     }
 
-    /// An open, authenticated session — a pooled one when this process
-    /// already has one to the same server and identity.
-    ///
-    /// A transfer needs several: the payload, the rename that finishes it,
-    /// the checksum file and its signature. Each handshake costs a round trip
-    /// and a signature, so they are worth keeping.
-    pub async fn connect(&self) -> Result<Arc<Handle<ClientHandler>>> {
-        let key = self.pool_key();
-        if let Some(handle) = pooled(&key) {
-            debug!(host = %self.host, "reusing the open ssh session");
-            return Ok(handle);
-        }
-        let handle = Arc::new(
-            crate::protocols::with_connect_retries(self.connect_retries, "ssh connect", || {
-                self.connect_once()
-            })
-            .await?,
-        );
-        remember(key, Arc::clone(&handle));
-        Ok(handle)
-    }
-
-    /// What makes two sessions interchangeable: the same server, the same
-    /// user and the same credentials. The password is hashed rather than
-    /// kept, so the key can be held for the life of the process.
-    fn pool_key(&self) -> String {
-        let secret = self
-            .password
-            .as_ref()
-            .map(|p| {
-                blake3::hash(p.expose_secret().as_bytes())
-                    .to_hex()
-                    .to_string()
-            })
-            .unwrap_or_default();
-        format!(
-            "{}:{}|{}|{:?}|{:?}|{:?}|{:?}|{}",
-            self.host,
-            self.port,
-            self.user,
-            self.key_file,
-            self.cert_file,
-            self.known_hosts,
-            self.pinned_host_keys,
-            secret
-        )
+    /// Connect and authenticate, retrying transient failures.
+    pub async fn connect(&self) -> Result<Handle<ClientHandler>> {
+        crate::protocols::with_connect_retries(self.connect_retries, "ssh connect", || {
+            self.connect_once()
+        })
+        .await
     }
 
     async fn connect_once(&self) -> Result<Handle<ClientHandler>> {
@@ -528,46 +487,6 @@ pub(crate) fn ssh_err(e: russh::Error) -> Error {
     }
 }
 
-/// Sessions this process has open, by [`SshConfig::pool_key`]. They are kept
-/// until [`close_sessions`] drops them, or the process ends.
-fn pool() -> &'static Mutex<HashMap<String, Arc<Handle<ClientHandler>>>> {
-    static POOL: OnceLock<Mutex<HashMap<String, Arc<Handle<ClientHandler>>>>> = OnceLock::new();
-    POOL.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// A live session for `key`, if there is one. A session the server has closed
-/// in the meantime is dropped instead of handed out.
-fn pooled(key: &str) -> Option<Arc<Handle<ClientHandler>>> {
-    let mut pool = pool().lock().ok()?;
-    match pool.get(key) {
-        Some(handle) if !handle.is_closed() => Some(Arc::clone(handle)),
-        Some(_) => {
-            debug!("the pooled ssh session was closed by the server; connecting again");
-            pool.remove(key);
-            None
-        }
-        None => None,
-    }
-}
-
-fn remember(key: String, handle: Arc<Handle<ClientHandler>>) {
-    if let Ok(mut pool) = pool().lock() {
-        pool.insert(key, handle);
-    }
-}
-
-/// Say goodbye to every pooled session and forget it. Call it when the work
-/// is done — a transfer still in flight would lose its connection.
-pub async fn close_sessions() {
-    let open: Vec<Arc<Handle<ClientHandler>>> = match pool().lock() {
-        Ok(mut pool) => pool.drain().map(|(_, handle)| handle).collect(),
-        Err(_) => return,
-    };
-    for handle in open {
-        disconnect(&handle).await;
-    }
-}
-
 /// Gracefully disconnect; errors are logged, not propagated.
 pub(crate) async fn disconnect(handle: &Handle<ClientHandler>) {
     if let Err(e) = handle
@@ -595,40 +514,6 @@ pub(crate) fn shell_quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn config(url: &str) -> SshConfig {
-        SshConfig::from_location(&Location::parse(url).unwrap()).unwrap()
-    }
-
-    #[test]
-    fn only_interchangeable_sessions_share_a_key() {
-        let base = config("sftp://deploy@srv.example.com/a/?key=/k/id");
-        // The path is not part of the connection.
-        assert_eq!(
-            base.pool_key(),
-            config("sftp://deploy@srv.example.com/b/other.bin?key=/k/id").pool_key()
-        );
-        // Nor is the protocol on top of it: scp and sftp are channels.
-        assert_eq!(
-            base.pool_key(),
-            config("scp://deploy@srv.example.com/a/?key=/k/id").pool_key()
-        );
-        // Everything that decides who we are, or who they are, is.
-        for other in [
-            "sftp://deploy@other.example.com/a/?key=/k/id",
-            "sftp://deploy@srv.example.com:2222/a/?key=/k/id",
-            "sftp://someone@srv.example.com/a/?key=/k/id",
-            "sftp://deploy@srv.example.com/a/?key=/k/other",
-            "sftp://deploy@srv.example.com/a/?key=/k/id&known_hosts=off",
-            "sftp://deploy@srv.example.com/a/?key=/k/id&hostkey=SHA256:f29GJDwDP5hekqa22VhNdaNPBM+q6AzG3FvQaBCJnmg",
-            "sftp://deploy:secret@srv.example.com/a/?key=/k/id",
-        ] {
-            assert_ne!(base.pool_key(), config(other).pool_key(), "{other}");
-        }
-        // The password is hashed, never carried along.
-        let with_password = config("sftp://deploy:hunter2@srv.example.com/a/?key=/k/id");
-        assert!(!with_password.pool_key().contains("hunter2"));
-    }
 
     #[test]
     fn fingerprints_are_normalized() {
