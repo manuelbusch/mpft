@@ -410,6 +410,49 @@ impl Sender for FtpEndpoint {
         true
     }
 
+    fn supports_append(&self) -> bool {
+        true
+    }
+
+    async fn existing_size(&self, name: &str) -> Result<Option<u64>> {
+        let mut ftp = self.connect().await?;
+        let path = self.loc.sibling(name)?.path().to_string();
+        // SIZE fails for a file that is not there, which is the answer.
+        let size = ftp.size(&path).await.ok().map(|n| n as u64);
+        let _ = ftp.quit().await;
+        Ok(size)
+    }
+
+    async fn append(&self, body: ByteStream, meta: &SendMeta, offset: u64) -> Result<()> {
+        let mut ftp = self.connect().await?;
+        let target = self.loc.target_path(meta.filename.as_deref())?;
+        debug!(%target, offset, "ftp resume (APPE)");
+        let up = self.ctl("APPE", ftp.append_with_stream(&target)).await?;
+        let mut up = stream::Idle::new(up, self.timeout);
+        let written = stream::pipe(body, &mut up).await?;
+        up.shutdown().await?;
+        let mut sink = [0u8; 1024];
+        loop {
+            match tokio::io::AsyncReadExt::read(&mut up, &mut sink).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+        self.ctl("transfer completion", up.into_inner().finish())
+            .await?;
+        if let Ok(remote) = self.ctl("SIZE", ftp.size(&target)).await
+            && remote as u64 != offset + written
+        {
+            let _ = ftp.quit().await;
+            return Err(Error::Remote(format!(
+                "ftp: resume incomplete: server holds {remote} of {} bytes for {target}",
+                offset + written
+            )));
+        }
+        let _ = ftp.quit().await;
+        Ok(())
+    }
+
     async fn rename(&self, from: &str, to: &str) -> Result<()> {
         let from = self.loc.sibling(from)?.path().to_string();
         let to = self.loc.sibling(to)?.path().to_string();

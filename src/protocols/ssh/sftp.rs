@@ -143,6 +143,39 @@ impl Sender for SftpEndpoint {
         true
     }
 
+    fn supports_append(&self) -> bool {
+        true
+    }
+
+    async fn existing_size(&self, name: &str) -> Result<Option<u64>> {
+        let (handle, sftp) = self.session().await?;
+        let path = strip_home(self.loc.sibling(name)?.path());
+        let size = match sftp.metadata(path).await {
+            Ok(md) if !md.is_dir() => md.size,
+            _ => None,
+        };
+        let _ = sftp.close().await;
+        super::disconnect(&handle).await;
+        Ok(size)
+    }
+
+    async fn append(&self, body: ByteStream, meta: &SendMeta, offset: u64) -> Result<()> {
+        let (handle, sftp) = self.session().await?;
+        let target = strip_home(&self.loc.target_path(meta.filename.as_deref())?);
+        debug!(%target, offset, "resuming an sftp upload");
+        let file = sftp
+            .open_with_flags(target.clone(), OpenFlags::WRITE | OpenFlags::APPEND)
+            .await
+            .map_err(sftp_err)?;
+        let mut file = stream::Idle::maybe(file, self.cfg.idle);
+        let result = stream::pipe(body, &mut file).await;
+        file.shutdown().await?;
+        result?;
+        let _ = sftp.close().await;
+        super::disconnect(&handle).await;
+        Ok(())
+    }
+
     async fn rename(&self, from: &str, to: &str) -> Result<()> {
         let (handle, sftp) = self.session().await?;
         let from = strip_home(self.loc.sibling(from)?.path());

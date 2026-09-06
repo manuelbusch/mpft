@@ -100,6 +100,10 @@ pub struct CopyOptions {
     pub cancel: Option<CancellationToken>,
     /// Filled in while the source is read, for a progress display.
     pub progress: Option<Arc<Progress>>,
+    /// Continue an interrupted transfer: whatever of `<name>.mpt-part` is
+    /// already on the target stays, and only the rest is sent. Needs `atomic`
+    /// (there is no partial file otherwise) and a target that can append.
+    pub resume: bool,
 }
 
 impl std::fmt::Debug for CopyOptions {
@@ -129,6 +133,7 @@ impl Default for CopyOptions {
             atomic: true,
             cancel: None,
             progress: None,
+            resume: false,
         }
     }
 }
@@ -311,11 +316,16 @@ pub async fn copy_many(
 
     // Atomic finish: upload to `<name>.mpt-part` and rename it into place, so
     // a partial file never appears under the final name.
-    let plans: Vec<Option<PartPlan>> = dsts
+    let mut plans: Vec<Option<PartPlan>> = dsts
         .iter()
         .zip(&senders)
         .map(|(dst, sender)| part_plan(*dst, *sender, &meta, opts.atomic))
         .collect::<Result<Vec<_>>>()?;
+    if opts.resume {
+        for plan in plans.iter_mut().flatten() {
+            plan.resume_from = resume_offset(plan, size).await;
+        }
+    }
     let jobs: Vec<Job> = dsts
         .iter()
         .zip(&senders)
@@ -336,6 +346,7 @@ pub async fn copy_many(
                     None => meta.clone(),
                 },
                 plan: plan.as_ref(),
+                keep_partial: opts.resume,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -358,12 +369,10 @@ pub async fn copy_many(
                     let mut bytes;
                     let result = loop {
                         attempts += 1;
-                        let (reader, count) = Counted::new(cache.reader());
-                        let r = cancellable(
-                            opts.cancel.as_ref(),
-                            job.sender.send(Box::pin(reader), &job.meta),
-                        )
-                        .await;
+                        let reader = crate::stream::Skip::new(cache.reader(), job.skip());
+                        let (reader, count) = Counted::new(reader);
+                        let r =
+                            cancellable(opts.cancel.as_ref(), job.send(Box::pin(reader))).await;
                         bytes = count.load(std::sync::atomic::Ordering::Relaxed);
                         match r {
                             Ok(()) => break Ok(()),
@@ -390,12 +399,11 @@ pub async fn copy_many(
             };
             let running = jobs.iter().zip(readers).map(|(job, reader)| async move {
                 let t = Instant::now();
+                // Each target skips what it already has, so one shared stream
+                // can serve targets that are at different points.
+                let reader = crate::stream::Skip::new(reader, job.skip());
                 let (reader, count) = Counted::new(reader);
-                let result = cancellable(
-                    opts.cancel.as_ref(),
-                    job.sender.send(Box::pin(reader), &job.meta),
-                )
-                .await;
+                let result = cancellable(opts.cancel.as_ref(), job.send(Box::pin(reader))).await;
                 let result = finalize(job, result).await;
                 TargetReport {
                     target: job.dst.location().to_string(),
@@ -509,6 +517,23 @@ struct Job<'a> {
     sender: &'a dyn crate::Sender,
     meta: SendMeta,
     plan: Option<&'a PartPlan>,
+    /// Whether an interrupted upload is worth keeping for a later `--resume`.
+    keep_partial: bool,
+}
+
+impl Job<'_> {
+    /// Bytes of the payload this target already has.
+    fn skip(&self) -> u64 {
+        self.plan.map(|p| p.resume_from).unwrap_or(0)
+    }
+
+    /// Send the payload, or the rest of it when the target is resuming.
+    async fn send(&self, body: crate::ByteStream) -> Result<()> {
+        match self.skip() {
+            0 => self.sender.send(body, &self.meta).await,
+            offset => self.sender.append(body, &self.meta, offset).await,
+        }
+    }
 }
 
 /// The temporary file of an atomic transfer.
@@ -516,6 +541,8 @@ struct PartPlan {
     ep: Box<dyn Endpoint>,
     part: String,
     final_name: String,
+    /// How much of the part file is already there (0 = start from the top).
+    resume_from: u64,
 }
 
 /// Decide whether this target gets a `.mpt-part` file, and open an endpoint
@@ -537,7 +564,46 @@ fn part_plan(
         ep: crate::protocols::open(loc)?,
         part,
         final_name,
+        resume_from: 0,
     }))
+}
+
+/// How much of this target's part file is worth keeping: what is already
+/// there, as long as the target can append and the payload is longer.
+///
+/// A part file that is at least as large as the source is not resumable —
+/// it may be a leftover of something else — so it is written again.
+async fn resume_offset(plan: &PartPlan, size: Option<u64>) -> u64 {
+    let Ok(sender) = plan.ep.sender() else {
+        return 0;
+    };
+    if !sender.supports_append() {
+        debug!(part = %plan.part, "the target cannot append; sending the whole payload");
+        return 0;
+    }
+    let existing = match plan.ep.sender().unwrap().existing_size(&plan.part).await {
+        Ok(Some(n)) => n,
+        Ok(None) => return 0,
+        Err(e) => {
+            debug!(part = %plan.part, "cannot tell how much arrived: {e}");
+            return 0;
+        }
+    };
+    match size {
+        Some(total) if existing >= total => {
+            warn!(
+                part = %plan.part,
+                existing, total,
+                "the partial file is not shorter than the payload; starting again"
+            );
+            0
+        }
+        _ if existing == 0 => 0,
+        _ => {
+            info!(part = %plan.part, offset = existing, "resuming");
+            existing
+        }
+    }
 }
 
 /// Move the `.mpt-part` file into place, or clean it up after a failure.
@@ -561,6 +627,15 @@ async fn finalize(job: &Job<'_>, result: Result<()>) -> Result<()> {
                 )))
             }
         },
+        // A transfer that is meant to be resumable keeps what arrived; every
+        // other failure takes its leftovers with it.
+        Err(e) if job.keep_partial => {
+            info!(
+                part = %plan.part,
+                "keeping the partial file; --resume continues from it"
+            );
+            Err(e)
+        }
         Err(e) => {
             if let Err(cleanup) = sender.remove(&plan.part).await {
                 warn!(part = %plan.part, "could not remove the partial file: {cleanup}");
@@ -1104,6 +1179,71 @@ mod tests {
         assert!(err.contains("mpt-signed-at"), "{err}");
         // A clock that runs behind must not turn into a huge age.
         assert!(check_signature_age(Some(SystemTime::now() + hour), Some(hour)).is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_resumed_copy_sends_only_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload: Vec<u8> = (0..30_000u32).map(|i| (i % 251) as u8).collect();
+        let src_path = dir.path().join("data.bin");
+        std::fs::write(&src_path, &payload).unwrap();
+        let out = dir.path().join("out");
+        std::fs::create_dir(&out).unwrap();
+        // What an interrupted transfer left behind.
+        std::fs::write(out.join("data.bin.mpt-part"), &payload[..10_000]).unwrap();
+
+        let src = crate::open(src_path.to_str().unwrap()).unwrap();
+        let dst = crate::open(&format!("{}/", out.display())).unwrap();
+        let opts = CopyOptions {
+            resume: true,
+            hash: Some(HashAlgo::Sha256),
+            ..Default::default()
+        };
+        let report = copy_many(src.as_ref(), &[dst.as_ref()], &opts)
+            .await
+            .unwrap();
+        assert!(report.all_ok(), "{:?}", report.targets);
+        assert_eq!(
+            report.targets[0].bytes, 20_000,
+            "only the missing part travels"
+        );
+        assert_eq!(report.bytes_read, 30_000, "but the source is read in full");
+        assert_eq!(std::fs::read(out.join("data.bin")).unwrap(), payload);
+        // The checksum covers the whole file, not just what was sent.
+        assert_eq!(
+            report.digests[0].1,
+            crate::hash::digest_bytes(HashAlgo::Sha256, &payload)
+        );
+        assert!(!out.join("data.bin.mpt-part").exists());
+
+        // A leftover that is not shorter than the payload is not resumable.
+        std::fs::remove_file(out.join("data.bin")).unwrap();
+        std::fs::write(out.join("data.bin.mpt-part"), vec![0u8; 30_000]).unwrap();
+        let report = copy_many(src.as_ref(), &[dst.as_ref()], &opts)
+            .await
+            .unwrap();
+        assert_eq!(report.targets[0].bytes, 30_000, "written from the top");
+        assert_eq!(std::fs::read(out.join("data.bin")).unwrap(), payload);
+    }
+
+    #[tokio::test]
+    async fn without_resume_the_partial_file_is_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = vec![7u8; 5_000];
+        let src_path = dir.path().join("data.bin");
+        std::fs::write(&src_path, &payload).unwrap();
+        let out = dir.path().join("out");
+        std::fs::create_dir(&out).unwrap();
+        std::fs::write(out.join("data.bin.mpt-part"), vec![9u8; 1_000]).unwrap();
+
+        let src = crate::open(src_path.to_str().unwrap()).unwrap();
+        let dst = crate::open(&format!("{}/", out.display())).unwrap();
+        let report = copy_many(src.as_ref(), &[dst.as_ref()], &CopyOptions::default())
+            .await
+            .unwrap();
+        assert!(report.all_ok());
+        assert_eq!(report.targets[0].bytes, 5_000);
+        assert_eq!(std::fs::read(out.join("data.bin")).unwrap(), payload);
     }
 
     #[tokio::test]

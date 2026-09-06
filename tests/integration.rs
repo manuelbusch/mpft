@@ -804,3 +804,68 @@ async fn http_sends_a_bearer_token() {
         .unwrap();
     assert_eq!(got, "Bearer s3cr3t");
 }
+
+/// An interrupted upload is continued rather than repeated: the part file on
+/// the target keeps what it has, and only the rest travels.
+async fn resume_roundtrip(base: &str, name: &str) {
+    mpt::init_crypto();
+    let payload = random_payload(60_000);
+    let dst = mpt::open(base).unwrap();
+
+    // What an interrupted transfer would have left behind.
+    let part = format!("{name}.mpt-part");
+    let meta = SendMeta::from_filename(&part).unwrap().with_size(20_000);
+    dst.sender()
+        .unwrap()
+        .send(
+            Box::pin(std::io::Cursor::new(payload[..20_000].to_vec())),
+            &meta,
+        )
+        .await
+        .expect("placing the partial file");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let src_path = tmp.path().join(name);
+    std::fs::write(&src_path, &payload).unwrap();
+    let src = mpt::open(src_path.to_str().unwrap()).unwrap();
+    let opts = mpt::CopyOptions {
+        resume: true,
+        ..Default::default()
+    };
+    let report = mpt::copy_many(src.as_ref(), &[dst.as_ref()], &opts)
+        .await
+        .expect("resumed copy");
+    assert!(report.all_ok(), "{:?}", report.targets);
+    assert_eq!(
+        report.targets[0].bytes, 40_000,
+        "only what was missing should travel"
+    );
+
+    // And the file is whole.
+    let file = mpt::open(&dir_url(base, &format!("/{name}"))).unwrap();
+    let mut stream = file.receiver().unwrap().receive().await.expect("download");
+    let mut got = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut got)
+        .await
+        .unwrap();
+    assert_eq!(got.len(), payload.len());
+    assert!(got == payload, "the resumed file differs from the source");
+}
+
+#[tokio::test]
+async fn sftp_resumes_a_partial_upload() {
+    let Some(base) = env("MPT_IT_SFTP") else {
+        eprintln!("skipping: MPT_IT_SFTP not set");
+        return;
+    };
+    resume_roundtrip(&base, &format!("resume_sftp_{}.bin", std::process::id())).await;
+}
+
+#[tokio::test]
+async fn ftp_resumes_a_partial_upload() {
+    let Some(base) = env("MPT_IT_FTP") else {
+        eprintln!("skipping: MPT_IT_FTP not set");
+        return;
+    };
+    resume_roundtrip(&base, &format!("resume_ftp_{}.bin", std::process::id())).await;
+}

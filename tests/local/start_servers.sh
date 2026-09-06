@@ -75,10 +75,12 @@ export MPT_IT_S3="s3://testbucket/it/?endpoint=http://127.0.0.1:9000"
 export MPT_IT_MAILTO="mailto:dest@example.com?from=sender@example.com"
 export MPT_SMTP_URL="smtp://127.0.0.1:8025/?tls=none"
 export MPT_IT_MAILDIR="$WORK/mail"
-export MPT_IT_SFTP="sftp://$USER@127.0.0.1:2222/$WORK/ssh/data/?key=$WORK/ssh/client_key&known_hosts=off"
+# connect_retries: under a burst of parallel tests the user-level sshd
+# occasionally resets a connection before authentication; one retry absorbs it.
+export MPT_IT_SFTP="sftp://$USER@127.0.0.1:2222/$WORK/ssh/data/?key=$WORK/ssh/client_key&known_hosts=off&connect_retries=1"
 # A directory of its own: sftp and scp targets in one fan-out would otherwise
 # write the same file (including the same .mpt-part) at the same time.
-export MPT_IT_SCP="scp://$USER@127.0.0.1:2222/$WORK/ssh/scp/?key=$WORK/ssh/client_key&known_hosts=off"
+export MPT_IT_SCP="scp://$USER@127.0.0.1:2222/$WORK/ssh/scp/?key=$WORK/ssh/client_key&known_hosts=off&connect_retries=1"
 # Certificate authentication: cert_key is not in authorized_keys, so this URL
 # only works if the certificate is presented.
 export MPT_IT_SFTP_CERT="sftp://$USER@127.0.0.1:2222/$WORK/ssh/data/?key=$WORK/ssh/cert_key&cert=$WORK/ssh/cert_key-cert.pub&known_hosts=off"

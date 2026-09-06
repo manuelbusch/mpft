@@ -100,6 +100,35 @@ impl Sender for FileEndpoint {
         true
     }
 
+    fn supports_append(&self) -> bool {
+        true
+    }
+
+    async fn existing_size(&self, name: &str) -> Result<Option<u64>> {
+        match fs::metadata(self.sibling_path(name)?).await {
+            Ok(md) if md.is_file() => Ok(Some(md.len())),
+            _ => Ok(None),
+        }
+    }
+
+    async fn append(&self, body: ByteStream, meta: &SendMeta, offset: u64) -> Result<()> {
+        let target = self.target(meta).await?;
+        let mut f = fs::OpenOptions::new()
+            .append(true)
+            .open(&target)
+            .await
+            .map_err(|e| {
+                crate::Error::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("{}: {e}", target.display()),
+                ))
+            })?;
+        tracing::debug!(?target, offset, "resuming a local file");
+        stream::pipe(body, &mut f).await?;
+        f.sync_all().await?;
+        Ok(())
+    }
+
     async fn rename(&self, from: &str, to: &str) -> Result<()> {
         Ok(fs::rename(self.sibling_path(from)?, self.sibling_path(to)?).await?)
     }

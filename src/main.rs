@@ -98,6 +98,11 @@ struct Cli {
     #[arg(long, global = true)]
     no_atomic: bool,
 
+    /// Continue an interrupted transfer: keep what is already in
+    /// <name>.mpt-part on the target and send only the rest
+    #[arg(long, global = true, conflicts_with = "no_atomic")]
+    resume: bool,
+
     /// Compute a checksum while copying and write <name>.sha256|.sha512|.b3
     /// next to every target (sha256sum/b3sum format; mail gets it as attachment)
     #[arg(long, global = true, value_name = "ALGO")]
@@ -220,6 +225,7 @@ struct Settings {
     queue: usize,
     timeout: u64,
     atomic: bool,
+    resume: bool,
     hash: Option<HashAlgo>,
     json: bool,
 }
@@ -255,6 +261,7 @@ impl Settings {
             timeout: cli.timeout.or(d.timeout).unwrap_or(30),
             // --no-atomic and `atomic = false` both switch it off.
             atomic: !cli.no_atomic && d.atomic.unwrap_or(true),
+            resume: cli.resume || d.resume.unwrap_or(false),
             json: cli.json || d.json.unwrap_or(false),
             hash: match &d.hash {
                 _ if cli.hash.is_some() => cli.hash,
@@ -508,6 +515,7 @@ async fn run(cli: Cli, settings: Settings) -> anyhow::Result<()> {
             send_timeout: timeout,
         },
         atomic: settings.atomic,
+        resume: settings.resume,
         cancel: Some(cancel.clone()),
         progress: show_progress(&cli, &settings).then(mpt::transfer::Progress::new),
         hash: settings.hash.or(sign.as_ref().map(|_| HashAlgo::Sha256)),
@@ -1013,6 +1021,7 @@ fn show_config(cfg: &mpt::Config) {
         "defaults".queue = d.queue,
         "defaults".timeout = d.timeout,
         "defaults".atomic = d.atomic,
+        "defaults".resume = d.resume,
         "defaults".log = d.log,
         "policy".known_hosts = p.known_hosts,
         "policy".refuse_plaintext_auth = p.refuse_plaintext_auth,

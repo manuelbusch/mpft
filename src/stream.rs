@@ -117,6 +117,57 @@ impl<R: AsyncRead + Unpin> AsyncRead for Counted<R> {
     }
 }
 
+/// Drops the first `skip` bytes of a reader, for resuming an upload: the
+/// source is read from the start (the checksum needs all of it), but only
+/// what the target is missing is handed on.
+pub struct Skip<R> {
+    inner: R,
+    remaining: u64,
+}
+
+impl<R> Skip<R> {
+    pub fn new(inner: R, skip: u64) -> Self {
+        Skip {
+            inner,
+            remaining: skip,
+        }
+    }
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for Skip<R> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        while self.remaining > 0 {
+            let before = buf.filled().len();
+            match Pin::new(&mut self.inner).poll_read(cx, buf) {
+                std::task::Poll::Ready(Ok(())) => {
+                    let read = (buf.filled().len() - before) as u64;
+                    if read == 0 {
+                        // End of the source before the offset was reached.
+                        return std::task::Poll::Ready(Ok(()));
+                    }
+                    let drop_now = read.min(self.remaining);
+                    self.remaining -= drop_now;
+                    // Keep whatever is past the offset, discard the rest.
+                    let keep = read - drop_now;
+                    let filled = buf.filled().len();
+                    let start = filled - keep as usize;
+                    buf.filled_mut().copy_within(start.., before);
+                    buf.set_filled(before + keep as usize);
+                    if keep > 0 {
+                        return std::task::Poll::Ready(Ok(()));
+                    }
+                }
+                other => return other,
+            }
+        }
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Fan-out: one source stream, many readers, constant memory, no disk.
 // ---------------------------------------------------------------------------
@@ -290,6 +341,42 @@ impl MemoryCache {
     /// A fresh reader over the cached bytes (cheap: shares the buffer).
     pub fn reader(&self) -> ByteStream {
         Box::pin(std::io::Cursor::new(self.0.clone()))
+    }
+}
+
+#[cfg(test)]
+mod skip_tests {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    async fn skipped(data: &[u8], skip: u64, buf_size: usize) -> Vec<u8> {
+        let mut r = Skip::new(std::io::Cursor::new(data.to_vec()), skip);
+        let mut out = Vec::new();
+        let mut buf = vec![0u8; buf_size];
+        loop {
+            let n = r.read(&mut buf).await.unwrap();
+            if n == 0 {
+                return out;
+            }
+            out.extend_from_slice(&buf[..n]);
+        }
+    }
+
+    #[tokio::test]
+    async fn skipping_leaves_exactly_the_rest() {
+        let data: Vec<u8> = (0..=255u8).cycle().take(10_000).collect();
+        for skip in [0u64, 1, 999, 4096, 9_999] {
+            for buf_size in [1, 7, 512, 4096, 16_384] {
+                let got = skipped(&data, skip, buf_size).await;
+                assert_eq!(
+                    got,
+                    data[skip as usize..],
+                    "skip {skip} with {buf_size}-byte reads"
+                );
+            }
+        }
+        // Skipping past the end leaves nothing, and does not hang.
+        assert!(skipped(&data, 20_000, 512).await.is_empty());
     }
 }
 

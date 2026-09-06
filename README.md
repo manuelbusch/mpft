@@ -82,6 +82,7 @@ mpt man                          the manual page in roff (mpt man | man -l -)
   --progress auto|always|never   progress line (auto: only on a terminal, and not with --json)
   --timeout <SECONDS>            inactivity timeout, 30 by default, 0 disables it
   --no-atomic                    write straight to the target name (see below)
+  --resume                       continue an interrupted transfer from its .mpt-part file
   --hash <ALGO>  --check        checksums (see below)     --sign <SPEC>  --verify-signers/--verify-keyring <FILE>
 ```
 
@@ -132,6 +133,7 @@ retries     = 0
 chunk       = "64K"
 queue       = 16
 atomic      = true            # finish through <name>.mpt-part
+resume      = false           # continue from a leftover .mpt-part
 hash        = "sha256"
 color       = "auto"          # auto | always | never
 log         = "warn"          # level, or RUST_LOG syntax; -v and RUST_LOG win
@@ -430,6 +432,37 @@ marker.
 would trip over the extra file. Two transfers writing the same target file at
 the same time still conflict, and the second rename now reports it instead of
 interleaving silently.
+
+### Resuming
+
+`--resume` continues where an interrupted transfer stopped: whatever
+`<name>.mpt-part` already holds on the target stays, and only the rest is
+sent.
+
+```
+mpt cp --resume big.iso sftp://srv/in/
+```
+
+```
+INFO resuming part=big.iso.mpt-part offset=50839552
+big.iso -> sftp://srv/in/: 69160448 bytes in 526.28ms
+```
+
+The source is still read from the beginning — a checksum has to cover the whole
+file — but only the missing bytes travel, which is what a slow line cares
+about. The `--resume` flag also decides what happens to the partial file when a
+transfer is interrupted: with it, what arrived is kept to be continued;
+without it, the leftovers are cleaned up as before.
+
+| Protocol | Resumable | How |
+|---|---|---|
+| file, sftp, ftp/ftps | ✓ | append to the part file (`APPE` for FTP) |
+| scp, webdav, http, s3, mail | ✗ | no append; the whole payload is sent |
+
+In a fan-out each target resumes from its own offset — the shared source stream
+is read once and every target skips what it already has. A part file that is
+not shorter than the payload is not treated as a prefix of it: it is written
+again from the top.
 
 ## Checksums
 

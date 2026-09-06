@@ -129,6 +129,30 @@ pub trait Sender: Send + Sync {
             op: "remove",
         })
     }
+
+    /// Whether the target can be written to from a given offset, which is
+    /// what makes resuming an interrupted upload possible.
+    fn supports_append(&self) -> bool {
+        false
+    }
+
+    /// Size of the file `name` in the directory of this endpoint's location,
+    /// or `None` when it is not there. Used to find out how much of an
+    /// interrupted upload has arrived.
+    async fn existing_size(&self, name: &str) -> Result<Option<u64>> {
+        let _ = name;
+        Ok(None)
+    }
+
+    /// Write `body` to the end of the endpoint's file, which already holds
+    /// `offset` bytes. The caller has skipped that many bytes of the payload.
+    async fn append(&self, body: ByteStream, meta: &SendMeta, offset: u64) -> Result<()> {
+        let _ = (body, meta, offset);
+        Err(crate::Error::UnsupportedOperation {
+            scheme: String::new(),
+            op: "append",
+        })
+    }
 }
 
 /// A parsed, ready-to-use endpoint. Direction support is optional per protocol.

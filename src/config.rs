@@ -87,6 +87,8 @@ pub struct Defaults {
     pub timeout: Option<u64>,
     /// Finish transfers through a `.mpt-part` file.
     pub atomic: Option<bool>,
+    /// Continue an interrupted transfer from what is in the `.mpt-part` file.
+    pub resume: Option<bool>,
     /// Log level, either a bare level or `RUST_LOG` syntax.
     pub log: Option<String>,
     /// Print the report as JSON on standard output.
@@ -513,6 +515,7 @@ impl Config {
             defaults.queue,
             defaults.timeout,
             defaults.atomic,
+            defaults.resume,
             defaults.log,
             defaults.json,
             policy.known_hosts,
