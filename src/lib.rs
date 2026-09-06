@@ -5,6 +5,7 @@
 //! exposes a [`Receiver`] (download / list) and a [`Sender`] (upload).
 //! Protocols that can only send (e-mail) simply return `None` for the receiver.
 
+pub mod batch;
 pub mod config;
 pub mod credentials;
 pub mod endpoint;
@@ -19,6 +20,7 @@ pub mod stream;
 pub mod tls;
 pub mod transfer;
 
+pub use batch::{BatchOptions, BatchReport, Job, JobReport};
 pub use config::Config;
 pub use endpoint::{Endpoint, Entry, Receiver, SendMeta, Sender};
 pub use error::{Error, Result};

@@ -869,3 +869,245 @@ async fn ftp_resumes_a_partial_upload() {
     };
     resume_roundtrip(&base, &format!("resume_ftp_{}.bin", std::process::id())).await;
 }
+
+/// Download `<base>/<name>` and return the bytes.
+async fn fetch(base: &str, name: &str) -> Vec<u8> {
+    let file = mpt::open(&dir_url(base, &format!("/{name}"))).unwrap();
+    let mut stream = file.receiver().unwrap().receive().await.expect("download");
+    let mut got = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut got)
+        .await
+        .unwrap();
+    got
+}
+
+/// Twenty jobs, each a local file fanned out to sftp and ftp, four at a
+/// time; every target ends up byte-identical to its source.
+#[tokio::test]
+async fn batch_runs_many_jobs_in_parallel() {
+    let (Some(sftp), Some(ftp)) = (env("MPT_IT_SFTP"), env("MPT_IT_FTP")) else {
+        eprintln!("skipping: MPT_IT_SFTP and MPT_IT_FTP not both set");
+        return;
+    };
+    mpt::init_crypto();
+    let dir = tempfile::tempdir().unwrap();
+    let tag = std::process::id();
+    let mut jobs = Vec::new();
+    let mut payloads = Vec::new();
+    for i in 0..20 {
+        let name = format!("batch_{tag}_{i}.bin");
+        let payload = random_payload(1000 + i * 137);
+        let path = dir.path().join(&name);
+        std::fs::write(&path, &payload).unwrap();
+        payloads.push((name, payload));
+        jobs.push(mpt::Job {
+            src: Location::parse(path.to_str().unwrap()).unwrap(),
+            dsts: vec![
+                Location::parse(&sftp).unwrap(),
+                Location::parse(&ftp).unwrap(),
+            ],
+        });
+    }
+    let open = |l: &Location| mpt::protocols::open(l.clone());
+    let progress = mpt::batch::BatchProgress::new();
+    let opts = mpt::BatchOptions {
+        parallel: 4,
+        fail_fast: false,
+        progress: Some(progress.clone()),
+    };
+    let mut finished = Vec::new();
+    let report = mpt::batch::run(jobs, &open, &mpt::CopyOptions::default(), &opts, |r| {
+        finished.push(r.index)
+    })
+    .await;
+    assert!(
+        report.all_ok(),
+        "{:?}",
+        report
+            .failures()
+            .map(|j| format!("{}: {:?}", j.job.src, j.result))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(finished.len(), 20);
+    assert_eq!(progress.done(), 20);
+    assert_eq!(progress.failed(), 0);
+    let total: u64 = payloads.iter().map(|(_, p)| p.len() as u64).sum();
+    assert_eq!(progress.bytes(), total);
+    for (name, payload) in &payloads {
+        assert!(fetch(&sftp, name).await == *payload, "{name} on sftp");
+        assert!(fetch(&ftp, name).await == *payload, "{name} on ftp");
+    }
+}
+
+/// The binary: a CSV list with a spare column, a JSON Lines list on stdin
+/// with `--json` (one JSON object per job on stdout), and `--dry-run`, which
+/// transfers nothing.
+#[tokio::test]
+async fn batch_binary_takes_csv_and_jsonl_lists() {
+    let Some(sftp) = env("MPT_IT_SFTP") else {
+        eprintln!("skipping: MPT_IT_SFTP not set");
+        return;
+    };
+    mpt::init_crypto();
+    let dir = tempfile::tempdir().unwrap();
+    let tag = std::process::id();
+    let mut names = Vec::new();
+    for i in 0..4 {
+        let name = format!("batchbin_{tag}_{i}.bin");
+        std::fs::write(dir.path().join(&name), format!("job {i}")).unwrap();
+        names.push(name);
+    }
+    let path = |n: &str| dir.path().join(n).display().to_string();
+
+    // CSV: the `note` column is ignored, the second row has two targets.
+    let csv = dir.path().join("jobs.csv");
+    std::fs::write(
+        &csv,
+        format!(
+            "note,src,dst,dst\nfirst,{},{sftp},\nsecond,{},{sftp},{}/\n",
+            path(&names[0]),
+            path(&names[1]),
+            dir.path().join("copy").display()
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir(dir.path().join("copy")).unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .args(["batch", csv.to_str().unwrap(), "--parallel", "2"])
+        .output()
+        .expect("running mpt");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(stderr.contains("2/2 jobs ok"), "{stderr}");
+    assert_eq!(fetch(&sftp, &names[0]).await, b"job 0");
+    assert_eq!(fetch(&sftp, &names[1]).await, b"job 1");
+    assert_eq!(
+        std::fs::read(dir.path().join("copy").join(&names[1])).unwrap(),
+        b"job 1"
+    );
+
+    // JSON Lines on stdin, JSON out: one object per job, in completion order.
+    let jsonl = format!(
+        "{{\"src\": \"{}\", \"dst\": \"{sftp}\"}}\n{{\"src\": \"{}\", \"dst\": [\"{sftp}\"]}}\n",
+        path(&names[2]),
+        path(&names[3])
+    );
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .args(["batch", "-", "--json"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("running mpt");
+    std::io::Write::write_all(child.stdin.as_mut().unwrap(), jsonl.as_bytes()).unwrap();
+    drop(child.stdin.take());
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("one JSON object per line"))
+        .collect();
+    assert_eq!(lines.len(), 2, "{stdout}");
+    let mut jobs: Vec<u64> = lines.iter().map(|l| l["job"].as_u64().unwrap()).collect();
+    jobs.sort();
+    assert_eq!(jobs, vec![1, 2]);
+    assert!(lines.iter().all(|l| l["ok"] == true), "{stdout}");
+    assert_eq!(fetch(&sftp, &names[2]).await, b"job 2");
+    assert_eq!(fetch(&sftp, &names[3]).await, b"job 3");
+
+    // Dry run: the jobs are listed, nothing is sent.
+    let unsent = format!("batchbin_{tag}_dry.bin");
+    std::fs::write(dir.path().join(&unsent), b"never").unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .args(["cp", "--dry-run", "-t", &sftp, &path(&unsent)])
+        .output()
+        .expect("running mpt");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("[1/1]") && stdout.contains(&unsent),
+        "{stdout}"
+    );
+    let listing = mpt::open(&sftp)
+        .unwrap()
+        .receiver()
+        .unwrap()
+        .list()
+        .await
+        .unwrap();
+    assert!(
+        listing.iter().all(|e| e.name != unsent),
+        "dry run sent a file"
+    );
+}
+
+/// When every failure in a batch is an authentication failure, the exit
+/// code says so (4); the other jobs still run. Two jobs writing the same
+/// file are refused before anything is sent (2).
+#[tokio::test]
+async fn batch_binary_exit_codes() {
+    let (Some(sftp), Some(ftp)) = (env("MPT_IT_SFTP"), env("MPT_IT_FTP")) else {
+        eprintln!("skipping: MPT_IT_SFTP and MPT_IT_FTP not both set");
+        return;
+    };
+    mpt::init_crypto();
+    let dir = tempfile::tempdir().unwrap();
+    let tag = std::process::id();
+    let good = format!("batchcode_{tag}_good.bin");
+    let bad = format!("batchcode_{tag}_bad.bin");
+    std::fs::write(dir.path().join(&good), b"good").unwrap();
+    std::fs::write(dir.path().join(&bad), b"bad").unwrap();
+    let wrong_ftp = ftp.replace("ftppass@", "wrongpass@");
+    assert_ne!(
+        wrong_ftp, ftp,
+        "the FTP test URL is expected to carry ftpuser:ftppass"
+    );
+    let list = dir.path().join("jobs.txt");
+    std::fs::write(
+        &list,
+        format!(
+            "'{}' '{sftp}'\n'{}' '{wrong_ftp}'\n",
+            dir.path().join(&good).display(),
+            dir.path().join(&bad).display()
+        ),
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .args(["batch", list.to_str().unwrap()])
+        .output()
+        .expect("running mpt");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(4), "{stderr}");
+    assert!(stderr.contains("1/2 jobs ok"), "{stderr}");
+    assert_eq!(fetch(&sftp, &good).await, b"good");
+
+    // The same target twice.
+    std::fs::write(
+        &list,
+        format!(
+            "'{}' '{sftp}'\n'{}' '{sftp}'\n",
+            dir.path().join(&good).display(),
+            dir.path().join(&good).display()
+        ),
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .args(["batch", list.to_str().unwrap()])
+        .output()
+        .expect("running mpt");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("jobs 1 and 2 write the same target"),
+        "{stderr}"
+    );
+}

@@ -47,6 +47,15 @@ impl Progress {
         Arc::new(Progress::default())
     }
 
+    /// A progress whose byte counter someone else holds too, so several
+    /// copies can add up into one figure (a batch).
+    pub fn with_counter(read: Arc<std::sync::atomic::AtomicU64>) -> Arc<Progress> {
+        Arc::new(Progress {
+            read,
+            total: std::sync::atomic::AtomicU64::new(u64::MAX),
+        })
+    }
+
     /// Bytes read from the source so far.
     pub fn read(&self) -> u64 {
         self.read.load(std::sync::atomic::Ordering::Relaxed)

@@ -93,6 +93,8 @@ pub struct Defaults {
     pub log: Option<String>,
     /// Print the report as JSON on standard output.
     pub json: Option<bool>,
+    /// Jobs in flight at once for `cp -t` and `batch`.
+    pub parallel: Option<usize>,
 }
 
 /// `[policy]` — rules that hold for every endpoint of the process.

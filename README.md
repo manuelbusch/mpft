@@ -66,6 +66,8 @@ Priority: URL > environment > default. Passwords are masked in all log output.
 
 ```
 mpt cp <SRC_URL> <DST_URL>...    copy from one endpoint to one or more targets
+mpt cp -t <DST_URL> <SRC_URL>... copy every source into a directory target (-t repeatable)
+mpt batch <FILE|->               run a job list: lines, JSON Lines or CSV (see below)
 mpt ls <URL>                     list a directory
 mpt schemes                      print the table above
 mpt profiles                     list the named targets from the configuration
@@ -84,6 +86,7 @@ mpt man                          the manual page in roff (mpt man | man -l -)
   --no-atomic                    write straight to the target name (see below)
   --resume                       continue an interrupted transfer from its .mpt-part file
   --hash <ALGO>  --check        checksums (see below)     --sign <SPEC>  --verify-signers/--verify-keyring <FILE>
+  --parallel <N>  --fail-fast  --dry-run   for cp -t and batch (see "Many files")
 ```
 
 Ctrl-C stops a running copy: open connections are dropped, partial files are
@@ -101,7 +104,8 @@ removed, every unfinished target reports `cancelled`, and the exit code is 130.
 | 130 | stopped with Ctrl-C |
 
 With several targets a mixed outcome is 1; with one target the code says what
-went wrong with it.
+went wrong with it. A batch works the same way: if every failed job failed for
+the same reason (all 4, say), that is the code; otherwise 1.
 
 ## Configuration
 
@@ -284,6 +288,47 @@ Targets that connect before they read (SCP, SMTP) pause the stream briefly at
 the start until they are ready; this is head-of-line blocking, not a deadlock.
 A target that stops accepting data altogether is dropped from the fan-out after
 `--timeout` and reports a timeout, so it cannot hold up the others.
+
+## Many files
+
+`cp` moves one file; `cp -t` and `batch` move many. Each job is one source
+with its targets, run through the same pipeline as a single `cp` (fan-out,
+checksums, signatures, atomic finish, resume all apply per job). Up to
+`--parallel` jobs (4 by default, `[defaults] parallel`) run at the same time.
+
+```
+mpt cp -t sftp://srv/in/ -t s3://bucket/in/ *.csv        # every file to both targets
+mpt batch jobs.txt --parallel 8
+find /export -name '*.pdf' -printf '%p sftp://srv/in/\n' | mpt batch -
+mpt batch jobs.csv --dry-run                              # list the jobs, send nothing
+```
+
+A job list is read from a file or from standard input (`-`), in one of three
+forms; the form is taken from the file name (`.jsonl`, `.csv`, `.tsv`) or
+guessed from the first line, and `--format lines|jsonl|csv` settles it.
+
+| Form | One job looks like | Notes |
+|---|---|---|
+| lines | `/data/a.bin sftp://srv/in/ s3://bucket/in/` | shell quoting for names with spaces, `#` comments |
+| JSON Lines | `{"src": "/data/a.bin", "dst": ["sftp://srv/in/", "s3://bucket/in/"]}` | `dst` is a string or a list |
+| CSV / TSV | header `src,dst,dst`, one row per job | extra columns are ignored, empty `dst` cells too |
+
+URLs in a list are what you would type on the command line: `mpt://profile/`
+names work, and the credentials of every endpoint in the list are fetched
+before the first job starts. What the list may not do is send two jobs to the
+same file: they would share a `.mpt-part`, so the batch is refused before
+anything is transferred (exit code 2).
+
+Every job opens its own connections; `--parallel` is therefore also the number
+of simultaneous logins on a host (an `sshd` with the default `MaxStartups`
+starts refusing at ten). With `--cache`, memory is `--cache-limit` times
+`--parallel`. `--fail-fast` stops starting jobs after the first failure and
+cancels the running ones; Ctrl-C stops everything, as for a single copy.
+
+Each job is reported as it finishes, prefixed `[3/120]`; with `--json`, one
+JSON object per job goes to stdout as it completes (JSON Lines, with a `job`
+field holding the position in the list), which a script can follow with
+`jq -c`. The progress line shows jobs done, jobs failed and bytes so far.
 
 ## Single sign-on
 

@@ -5,6 +5,7 @@ use std::time::Duration;
 use anstyle::{AnsiColor, Style};
 use anyhow::Context;
 use clap::{ColorChoice, Parser, Subcommand};
+use mpt::batch::jobs::{Format, JobSpec};
 use mpt::sign::{SignSpec, VerifySpec};
 use mpt::{CacheMode, CopyOptions, HashAlgo, Scheme, TeeOptions};
 
@@ -141,12 +142,32 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Copy from one URL to one or more targets (the source is read once)
+    /// Copy from one URL to one or more targets (the source is read once),
+    /// or with -t: copy every URL given into the target directory
     #[command(alias = "copy")]
     Cp {
-        src: String,
-        #[arg(required = true, num_args = 1..)]
-        dst: Vec<String>,
+        /// Copy every positional URL into this directory target (repeat for
+        /// a fan-out). Without it, the first URL is the source and the rest
+        /// are its targets
+        #[arg(short = 't', long = "target", value_name = "URL")]
+        target: Vec<String>,
+        #[arg(required = true, num_args = 1.., value_name = "URL")]
+        urls: Vec<String>,
+        #[command(flatten)]
+        batch: BatchArgs,
+    },
+    /// Run a list of jobs from a file or standard input: `SRC DST…` per line
+    /// with shell quoting, JSON Lines, or CSV with `src` and `dst` columns
+    Batch {
+        /// The job list; `-` reads standard input
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        /// lines, jsonl or csv; guessed from the file name or the first
+        /// line when not given
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<Format>,
+        #[command(flatten)]
+        batch: BatchArgs,
     },
     /// List a directory
     Ls { url: String },
@@ -171,15 +192,100 @@ enum Cmd {
     },
 }
 
-impl Cmd {
-    /// The endpoint URLs this command works on.
+/// Options shared by `cp -t` and `batch`.
+#[derive(clap::Args, Debug, Clone, Default)]
+struct BatchArgs {
+    /// Jobs in flight at once (4 by default). Every job opens its own
+    /// connections, and with --cache holds its own copy of the payload
+    #[arg(long, value_name = "N")]
+    parallel: Option<usize>,
+    /// Stop after the first failed job and cancel the running ones
+    #[arg(long)]
+    fail_fast: bool,
+    /// Print the jobs that would run, and run nothing
+    #[arg(long)]
+    dry_run: bool,
+}
+
+/// What the command is going to touch, worked out before anything connects
+/// so the credentials of every endpoint can be fetched in one go.
+#[derive(Debug)]
+enum Work {
+    /// One source, its targets: the plain `cp`.
+    Single { src: String, dsts: Vec<String> },
+    /// A list of jobs: `cp -t` or `batch`.
+    Many(Vec<JobSpec>),
+    /// Any other URLs the command names.
+    Urls(Vec<String>),
+}
+
+impl Work {
+    /// The endpoint URLs the command works on.
     fn urls(&self) -> Vec<&str> {
         match self {
-            Cmd::Cp { src, dst } => std::iter::once(src.as_str())
-                .chain(dst.iter().map(String::as_str))
+            Work::Single { src, dsts } => std::iter::once(src.as_str())
+                .chain(dsts.iter().map(String::as_str))
                 .collect(),
-            Cmd::Ls { url } => vec![url.as_str()],
-            _ => Vec::new(),
+            Work::Many(jobs) => jobs
+                .iter()
+                .flat_map(|j| {
+                    std::iter::once(j.src.as_str()).chain(j.dsts.iter().map(String::as_str))
+                })
+                .collect(),
+            Work::Urls(urls) => urls.iter().map(String::as_str).collect(),
+        }
+    }
+}
+
+impl Cmd {
+    /// Read the job list, if the command has one, and sort out what `cp`
+    /// was given.
+    fn work(&self) -> anyhow::Result<Work> {
+        Ok(match self {
+            Cmd::Cp { target, urls, .. } if target.is_empty() => {
+                if urls.len() < 2 {
+                    anyhow::bail!(
+                        "cp needs a source and at least one target \
+                         (or -t <URL> to copy every URL into one directory)"
+                    );
+                }
+                Work::Single {
+                    src: urls[0].clone(),
+                    dsts: urls[1..].to_vec(),
+                }
+            }
+            Cmd::Cp { target, urls, .. } => Work::Many(
+                urls.iter()
+                    .map(|u| JobSpec {
+                        src: u.clone(),
+                        dsts: target.clone(),
+                    })
+                    .collect(),
+            ),
+            Cmd::Batch { file, format, .. } => {
+                let (text, name) = if file.as_os_str() == "-" {
+                    let mut text = String::new();
+                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+                        .context("reading the job list from stdin")?;
+                    (text, None)
+                } else {
+                    let text = std::fs::read_to_string(file)
+                        .with_context(|| format!("reading the job list {}", file.display()))?;
+                    (text, file.file_name().and_then(|n| n.to_str()))
+                };
+                let format = format.unwrap_or_else(|| mpt::batch::jobs::detect(name, &text));
+                tracing::debug!(%format, "job list");
+                Work::Many(mpt::batch::jobs::parse(&text, format)?)
+            }
+            Cmd::Ls { url } => Work::Urls(vec![url.clone()]),
+            _ => Work::Urls(Vec::new()),
+        })
+    }
+
+    fn batch_args(&self) -> Option<&BatchArgs> {
+        match self {
+            Cmd::Cp { batch, .. } | Cmd::Batch { batch, .. } => Some(batch),
+            _ => None,
         }
     }
 }
@@ -228,6 +334,7 @@ struct Settings {
     resume: bool,
     hash: Option<HashAlgo>,
     json: bool,
+    parallel: usize,
 }
 
 impl Settings {
@@ -263,6 +370,16 @@ impl Settings {
             atomic: !cli.no_atomic && d.atomic.unwrap_or(true),
             resume: cli.resume || d.resume.unwrap_or(false),
             json: cli.json || d.json.unwrap_or(false),
+            parallel: match cli
+                .cmd
+                .batch_args()
+                .and_then(|b| b.parallel)
+                .or(d.parallel)
+                .unwrap_or(4)
+            {
+                0 => anyhow::bail!("parallel must be at least 1"),
+                n => n,
+            },
             hash: match &d.hash {
                 _ if cli.hash.is_some() => cli.hash,
                 Some(v) => {
@@ -294,21 +411,54 @@ fn exit_code(err: &anyhow::Error) -> u8 {
         return INTERRUPTED;
     }
     for cause in err.chain() {
+        if let Some(e) = cause.downcast_ref::<ExitWith>() {
+            return e.code;
+        }
         if let Some(e) = cause.downcast_ref::<mpt::Error>() {
-            return match e {
-                mpt::Error::ChecksumMismatch { .. } | mpt::Error::Signature(_) => UNTRUSTED,
-                mpt::Error::Auth(_) => DENIED,
-                mpt::Error::Config(_)
-                | mpt::Error::InvalidUrl(_)
-                | mpt::Error::InvalidOption { .. }
-                | mpt::Error::UnsupportedScheme(_)
-                | mpt::Error::UnsupportedOperation { .. } => USAGE,
-                _ => FAILED,
-            };
+            return code_of(e);
         }
     }
     FAILED
 }
+
+/// The exit code a library error stands for.
+fn code_of(e: &mpt::Error) -> u8 {
+    match e {
+        mpt::Error::ChecksumMismatch { .. } | mpt::Error::Signature(_) => UNTRUSTED,
+        mpt::Error::Auth(_) => DENIED,
+        mpt::Error::Cancelled => INTERRUPTED,
+        mpt::Error::Config(_)
+        | mpt::Error::InvalidUrl(_)
+        | mpt::Error::InvalidOption { .. }
+        | mpt::Error::UnsupportedScheme(_)
+        | mpt::Error::UnsupportedOperation { .. } => USAGE,
+        _ => FAILED,
+    }
+}
+
+/// The exit code of a batch: what every failed job agrees on, else 1.
+fn batch_code(codes: &[u8]) -> u8 {
+    match codes {
+        [] => 0,
+        [first, rest @ ..] if rest.iter().all(|c| c == first) => *first,
+        _ => FAILED,
+    }
+}
+
+/// A failure whose exit code is already decided, with the message to print.
+#[derive(Debug)]
+struct ExitWith {
+    code: u8,
+    msg: String,
+}
+
+impl std::fmt::Display for ExitWith {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.msg)
+    }
+}
+
+impl std::error::Error for ExitWith {}
 
 /// Marks a run that was stopped with Ctrl-C, so `main` can exit with 130.
 #[derive(Debug)]
@@ -325,6 +475,20 @@ impl std::error::Error for Interrupted {}
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
+    if cli.password_stdin && matches!(&cli.cmd, Cmd::Batch { file, .. } if file.as_os_str() == "-")
+    {
+        eprintln!("error: the job list and the password cannot both come from stdin");
+        return ExitCode::from(USAGE);
+    }
+    // The job list is read first: its endpoints decide which credentials
+    // are needed.
+    let work = match cli.cmd.work() {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            return ExitCode::from(USAGE);
+        }
+    };
     // The configuration decides the log level and the colors, so it is read
     // before either is set up; its own complaints are logged afterwards.
     let mut cfg = match mpt::Config::load(cli.config.as_deref()) {
@@ -351,16 +515,13 @@ async fn main() -> ExitCode {
     }
     // Credentials are fetched before anything connects, and only those the
     // endpoints of this command actually need.
-    if let Err(e) = cfg
-        .resolve_secrets(&cli.cmd.urls(), cli.sign.is_some())
-        .await
-    {
+    if let Err(e) = cfg.resolve_secrets(&work.urls(), cli.sign.is_some()).await {
         anstream::eprintln!("{FAIL}error:{FAIL:#} {e}");
         return ExitCode::from(exit_code(&anyhow::Error::new(e)));
     }
     mpt::config::install(cfg);
     mpt::init_crypto();
-    match run(cli, settings).await {
+    match run(cli, settings, work).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             anstream::eprintln!("{FAIL}error:{FAIL:#} {e:#}");
@@ -418,7 +579,7 @@ fn read_password(cli: &Cli) -> anyhow::Result<Option<secrecy::SecretString>> {
     Ok(cli.password.clone().map(secrecy::SecretString::from))
 }
 
-async fn run(cli: Cli, settings: Settings) -> anyhow::Result<()> {
+async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
     if cli.refuse_plaintext_auth {
         mpt::policy::set_refuse_plaintext_auth(true);
     }
@@ -430,8 +591,7 @@ async fn run(cli: Cli, settings: Settings) -> anyhow::Result<()> {
     }
     let password = read_password(&cli)?;
     // A profile can ask for signing and a checksum of its own; the flags win.
-    let profiles: Vec<&mpt::config::Profile> = cli
-        .cmd
+    let profiles: Vec<&mpt::config::Profile> = work
         .urls()
         .iter()
         .filter_map(|u| mpt::config::profile_of(u))
@@ -460,7 +620,7 @@ async fn run(cli: Cli, settings: Settings) -> anyhow::Result<()> {
             }
         });
     }
-    let open = |url: &str| -> anyhow::Result<Box<dyn mpt::Endpoint>> {
+    let locate = |url: &str| -> anyhow::Result<mpt::Location> {
         let mut loc = mpt::config::locate(url)?;
         if cli.insecure {
             loc.set_option("insecure", "true");
@@ -480,7 +640,10 @@ async fn run(cli: Cli, settings: Settings) -> anyhow::Result<()> {
             use secrecy::ExposeSecret;
             loc.set_password(pw.expose_secret());
         }
-        Ok(mpt::protocols::open(loc)?)
+        Ok(loc)
+    };
+    let open = |url: &str| -> anyhow::Result<Box<dyn mpt::Endpoint>> {
+        Ok(mpt::protocols::open(locate(url)?)?)
     };
 
     let sign = match cli.sign.as_deref().or_else(|| {
@@ -534,24 +697,32 @@ async fn run(cli: Cli, settings: Settings) -> anyhow::Result<()> {
     }
 
     match &cli.cmd {
-        Cmd::Cp { src, dst } => {
-            let targets = dst
-                .iter()
-                .map(|d| open(d))
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            let src = open(src)?;
-            // The bar watches the counters the copy fills in; it draws only
-            // while the copy runs and wipes its line when it is done.
-            let bar = opts.progress.clone().map(spawn_progress);
-            let outcome = do_copy(src, targets, &opts, settings.json).await;
-            if let Some(bar) = bar {
-                bar.abort();
-                if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
-                    anstream::eprint!("\r\u{1b}[2K");
-                }
+        Cmd::Cp { batch, .. } | Cmd::Batch { batch, .. } => match work {
+            Work::Single { src, dsts } => {
+                let targets = dsts
+                    .iter()
+                    .map(|d| open(d))
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                let src = open(&src)?;
+                // The bar watches the counters the copy fills in; it draws
+                // only while the copy runs and wipes its line when it is done.
+                let bar = opts.progress.clone().map(spawn_progress);
+                let outcome = do_copy(src, targets, &opts, settings.json).await;
+                clear_progress(bar);
+                outcome
             }
-            outcome
-        }
+            Work::Many(jobs) => {
+                // The batch shares one byte counter across its jobs, so the
+                // single-copy progress is switched off.
+                let mut opts = opts;
+                let progress = opts
+                    .progress
+                    .take()
+                    .map(|_| mpt::batch::BatchProgress::new());
+                do_batch(jobs, &locate, opts, &settings, batch, progress).await
+            }
+            Work::Urls(_) => unreachable!("cp and batch always have work"),
+        },
         Cmd::Ls { url } => {
             let ep = open(url)?;
             let entries = ep
@@ -688,56 +859,65 @@ async fn do_copy(
     if json {
         println!("{}", serde_json::to_string_pretty(&report_json(&report))?);
     }
+    match print_report(&report, opts, "") {
+        None => Ok(()),
+        Some((INTERRUPTED, msg)) => Err(anyhow::Error::new(Interrupted).context(msg)),
+        Some((code, msg)) => Err(anyhow::Error::new(ExitWith { code, msg })),
+    }
+}
+
+/// Print the outcome of one copy the way a person reads it, every line
+/// starting with `prefix`. Returns the exit code and the message of a
+/// failure, if there was one; 130 means the copy was cancelled.
+fn print_report(
+    report: &mpt::FanoutReport,
+    opts: &CopyOptions,
+    prefix: &str,
+) -> Option<(u8, String)> {
     let cancelled = report
         .targets
         .iter()
         .any(|t| matches!(t.result, Err(mpt::Error::Cancelled)));
     if report.targets.len() == 1 {
         let t = &report.targets[0];
-        if t.result.is_err() {
-            if cancelled {
-                return Err(anyhow::Error::new(Interrupted));
-            }
-            // Hand on the error itself, not its text: the exit code is read
-            // off its type.
-            let mut report = report;
-            let t = report.targets.remove(0);
-            let what = format!("copy {} -> {}", report.source, t.target);
-            return Err(anyhow::Error::new(t.result.unwrap_err()).context(what));
+        if let Err(e) = &t.result {
+            let what = format!("copy {} -> {}: {e}", report.source, t.target);
+            let code = if cancelled { INTERRUPTED } else { code_of(e) };
+            return Some((code, what));
         }
         anstream::eprintln!(
-            "{DIM}{}{DIM:#} -> {DIM}{}{DIM:#}: {NUM}{}{NUM:#} bytes in {NUM}{:.2?}{NUM:#}",
+            "{prefix}{DIM}{}{DIM:#} -> {DIM}{}{DIM:#}: {NUM}{}{NUM:#} bytes in {NUM}{:.2?}{NUM:#}",
             report.source,
             t.target,
             t.bytes,
             report.elapsed
         );
         if let Some(sc) = &t.sidecar {
-            anstream::eprintln!("{DIM}+ {sc}{DIM:#}");
+            anstream::eprintln!("{prefix}{DIM}+ {sc}{DIM:#}");
         }
         if let Some(sg) = &t.signature {
-            anstream::eprintln!("{DIM}+ {sg}{DIM:#}");
+            anstream::eprintln!("{prefix}{DIM}+ {sg}{DIM:#}");
         }
-        return print_checksums(&report, opts);
+        return print_checksums(report, opts, prefix);
     }
     for t in &report.targets {
         match &t.result {
             Ok(()) => {
                 anstream::eprintln!(
-                    "{OK}ok    {OK:#}  {NUM}{:>12}{NUM:#} bytes  {NUM}{:>9.2?}{NUM:#}  {DIM}{}{DIM:#}",
+                    "{prefix}{OK}ok    {OK:#}  {NUM}{:>12}{NUM:#} bytes  {NUM}{:>9.2?}{NUM:#}  {DIM}{}{DIM:#}",
                     t.bytes,
                     t.elapsed,
                     t.target
                 );
                 if let Some(sc) = &t.sidecar {
-                    anstream::eprintln!("{DIM}        + {sc}{DIM:#}");
+                    anstream::eprintln!("{prefix}{DIM}        + {sc}{DIM:#}");
                 }
                 if let Some(sg) = &t.signature {
-                    anstream::eprintln!("{DIM}        + {sg}{DIM:#}");
+                    anstream::eprintln!("{prefix}{DIM}        + {sg}{DIM:#}");
                 }
             }
             Err(e) => anstream::eprintln!(
-                "{FAIL}FAILED{FAIL:#}  {NUM}{:>12}{NUM:#} bytes  {NUM}{:>9.2?}{NUM:#}  {DIM}{}{DIM:#}: {FAIL}{e}{FAIL:#}",
+                "{prefix}{FAIL}FAILED{FAIL:#}  {NUM}{:>12}{NUM:#} bytes  {NUM}{:>9.2?}{NUM:#}  {DIM}{}{DIM:#}: {FAIL}{e}{FAIL:#}",
                 t.bytes,
                 t.elapsed,
                 t.target
@@ -747,24 +927,169 @@ async fn do_copy(
     let failed = report.failures().count();
     let summary = if failed == 0 { OK } else { WARN };
     anstream::eprintln!(
-        "{DIM}{}{DIM:#}: {NUM}{}{NUM:#} bytes read, {summary}{}/{} targets ok{summary:#} in {NUM}{:.2?}{NUM:#}",
+        "{prefix}{DIM}{}{DIM:#}: {NUM}{}{NUM:#} bytes read, {summary}{}/{} targets ok{summary:#} in {NUM}{:.2?}{NUM:#}",
         report.source,
         report.bytes_read,
         report.targets.len() - failed,
         report.targets.len(),
         report.elapsed
     );
-    print_checksums(&report, opts)?;
+    if let Some(failure) = print_checksums(report, opts, prefix) {
+        return Some(failure);
+    }
     if cancelled {
-        return Err(anyhow::Error::new(Interrupted).context(format!(
-            "{failed} of {} targets unfinished",
-            report.targets.len()
-        )));
+        return Some((
+            INTERRUPTED,
+            format!("{failed} of {} targets unfinished", report.targets.len()),
+        ));
     }
     if failed > 0 {
-        anyhow::bail!("{failed} of {} targets failed", report.targets.len());
+        // What the failed targets agree on, else a plain failure.
+        let codes: Vec<u8> = report
+            .failures()
+            .map(|t| t.result.as_ref().err().map(code_of).unwrap_or(FAILED))
+            .collect();
+        return Some((
+            batch_code(&codes),
+            format!("{failed} of {} targets failed", report.targets.len()),
+        ));
+    }
+    None
+}
+
+/// Run a list of jobs, `settings.parallel` at a time, and print each as it
+/// finishes.
+async fn do_batch(
+    specs: Vec<JobSpec>,
+    locate: &dyn Fn(&str) -> anyhow::Result<mpt::Location>,
+    opts: CopyOptions,
+    settings: &Settings,
+    args: &BatchArgs,
+    progress: Option<std::sync::Arc<mpt::batch::BatchProgress>>,
+) -> anyhow::Result<()> {
+    let jobs = specs
+        .iter()
+        .enumerate()
+        .map(|(i, spec)| {
+            let job = || -> anyhow::Result<mpt::Job> {
+                Ok(mpt::Job {
+                    src: locate(&spec.src)?,
+                    dsts: spec
+                        .dsts
+                        .iter()
+                        .map(|d| locate(d))
+                        .collect::<anyhow::Result<Vec<_>>>()?,
+                })
+            };
+            job().with_context(|| format!("job {}", i + 1))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let n = jobs.len();
+    if n == 0 {
+        anstream::eprintln!("{WARN}nothing to do{WARN:#}: the job list is empty");
+        return Ok(());
+    }
+    mpt::batch::check_collisions(&jobs)?;
+    if args.dry_run {
+        for (i, job) in jobs.iter().enumerate() {
+            if settings.json {
+                let dst: Vec<String> = job.dsts.iter().map(|d| d.to_string()).collect();
+                println!(
+                    "{}",
+                    serde_json::json!({ "job": i + 1, "src": job.src.to_string(), "dst": dst })
+                );
+            } else {
+                let dsts: Vec<String> = job.dsts.iter().map(|d| d.to_string()).collect();
+                anstream::println!(
+                    "{DIM}[{}/{n}]{DIM:#} {} -> {}",
+                    i + 1,
+                    job.src,
+                    dsts.join(", ")
+                );
+            }
+        }
+        return Ok(());
+    }
+    let bar = progress.clone().map(spawn_batch_progress);
+    let batch_opts = mpt::BatchOptions {
+        parallel: settings.parallel,
+        fail_fast: args.fail_fast,
+        progress,
+    };
+    let open = |loc: &mpt::Location| mpt::protocols::open(loc.clone());
+    let mut codes: Vec<u8> = Vec::new();
+    let mut cancelled = false;
+    let json = settings.json;
+    let report = mpt::batch::run(jobs, &open, &opts, &batch_opts, |r| {
+        let prefix = format!("[{}/{n}] ", r.index + 1);
+        if json {
+            let mut line = match &r.result {
+                Ok(rep) => report_json(rep),
+                Err(e) => serde_json::json!({
+                    "source": r.job.src.to_string(),
+                    "ok": false,
+                    "error": e.to_string(),
+                    "cancelled": matches!(e, mpt::Error::Cancelled),
+                }),
+            };
+            line["job"] = serde_json::Value::from(r.index + 1);
+            println!("{line}");
+        }
+        match &r.result {
+            Ok(rep) => {
+                if let Some((code, msg)) = print_report(rep, &opts, &prefix) {
+                    if rep.targets.len() == 1 {
+                        anstream::eprintln!("{prefix}{FAIL}FAILED{FAIL:#} {msg}");
+                    }
+                    codes.push(code);
+                }
+            }
+            Err(e) => {
+                anstream::eprintln!(
+                    "{prefix}{FAIL}FAILED{FAIL:#} {}: {FAIL}{e}{FAIL:#}",
+                    r.job.src
+                );
+                codes.push(code_of(e));
+            }
+        }
+        cancelled |= r.cancelled();
+    })
+    .await;
+    clear_progress(bar);
+    let failed = report.failures().count();
+    let summary = if failed == 0 { OK } else { WARN };
+    anstream::eprintln!(
+        "{summary}{}/{n} jobs ok{summary:#} in {NUM}{:.2?}{NUM:#}{}",
+        n - failed,
+        report.elapsed,
+        if report.stopped_early {
+            " (stopped after the first failure)"
+        } else {
+            ""
+        }
+    );
+    if cancelled {
+        return Err(
+            anyhow::Error::new(Interrupted).context(format!("{failed} of {n} jobs unfinished"))
+        );
+    }
+    if failed > 0 {
+        return Err(anyhow::Error::new(ExitWith {
+            code: batch_code(&codes),
+            msg: format!("{failed} of {n} jobs failed"),
+        }));
     }
     Ok(())
+}
+
+/// Stop a progress task and wipe its line.
+fn clear_progress(bar: Option<tokio::task::JoinHandle<()>>) {
+    if let Some(bar) = bar {
+        bar.abort();
+        if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+            anstream::eprint!("\r\u{1b}[2K");
+        }
+    }
 }
 
 /// Whether to draw a progress line: `auto` means a terminal on stderr and no
@@ -781,6 +1106,46 @@ fn show_progress(cli: &Cli, settings: &Settings) -> bool {
 fn spawn_progress(
     progress: std::sync::Arc<mpt::transfer::Progress>,
 ) -> tokio::task::JoinHandle<()> {
+    spawn_progress_line(move |secs| {
+        let read = progress.read();
+        let rate = format!("{}/s", human_size((read as f64 / secs) as u64));
+        match progress.total() {
+            Some(total) if total > 0 => format!(
+                "{} / {} ({:>3.0}%)  {rate}",
+                human_size(read),
+                human_size(total),
+                read as f64 * 100.0 / total as f64
+            ),
+            _ => format!("{}  {rate}", human_size(read)),
+        }
+    })
+}
+
+/// The progress line of a batch: jobs done, jobs failed, bytes so far.
+fn spawn_batch_progress(
+    progress: std::sync::Arc<mpt::batch::BatchProgress>,
+) -> tokio::task::JoinHandle<()> {
+    spawn_progress_line(move |secs| {
+        let bytes = progress.bytes();
+        let rate = format!("{}/s", human_size((bytes as f64 / secs) as u64));
+        let failed = match progress.failed() {
+            0 => String::new(),
+            n => format!(", {n} failed"),
+        };
+        format!(
+            "{}/{} jobs{failed}, {}  {rate}",
+            progress.done(),
+            progress.total(),
+            human_size(bytes)
+        )
+    })
+}
+
+/// Draw whatever `line` renders, given the seconds elapsed, four times a
+/// second until the task is dropped.
+fn spawn_progress_line(
+    line: impl Fn(f64) -> String + Send + 'static,
+) -> tokio::task::JoinHandle<()> {
     // Redrawing in place needs a terminal; anywhere else (a log file, because
     // --progress always was asked for) each reading gets its own line.
     let tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
@@ -789,18 +1154,7 @@ fn spawn_progress(
         let mut tick = tokio::time::interval(Duration::from_millis(250));
         loop {
             tick.tick().await;
-            let read = progress.read();
-            let secs = started.elapsed().as_secs_f64().max(0.001);
-            let rate = format!("{}/s", human_size((read as f64 / secs) as u64));
-            let line = match progress.total() {
-                Some(total) if total > 0 => format!(
-                    "{} / {} ({:>3.0}%)  {rate}",
-                    human_size(read),
-                    human_size(total),
-                    read as f64 * 100.0 / total as f64
-                ),
-                _ => format!("{}  {rate}", human_size(read)),
-            };
+            let line = line(started.elapsed().as_secs_f64().max(0.001));
             if tty {
                 // \r and "erase to end of line": one line, redrawn in place.
                 anstream::eprint!("\r\u{1b}[2K{DIM}{line}{DIM:#}");
@@ -873,9 +1227,16 @@ fn report_json(report: &mpt::FanoutReport) -> serde_json::Value {
 }
 
 /// Print computed digests and the `--check` verdict; a mismatch is an error.
-fn print_checksums(report: &mpt::FanoutReport, opts: &CopyOptions) -> anyhow::Result<()> {
+fn print_checksums(
+    report: &mpt::FanoutReport,
+    opts: &CopyOptions,
+    prefix: &str,
+) -> Option<(u8, String)> {
     for (algo, hex) in &report.digests {
-        anstream::eprintln!("{HEAD}{:<7}{HEAD:#} {NUM}{hex}{NUM:#}", algo.to_string());
+        anstream::eprintln!(
+            "{prefix}{HEAD}{:<7}{HEAD:#} {NUM}{hex}{NUM:#}",
+            algo.to_string()
+        );
     }
     if let Some(s) = &opts.sign
         && report
@@ -884,28 +1245,29 @@ fn print_checksums(report: &mpt::FanoutReport, opts: &CopyOptions) -> anyhow::Re
             .any(|t| t.signature.is_some() || t.result.is_ok())
     {
         anstream::eprintln!(
-            "{HEAD}signed {HEAD:#} {DIM}{} ({}){DIM:#}",
+            "{prefix}{HEAD}signed {HEAD:#} {DIM}{} ({}){DIM:#}",
             s.identity(),
             s.format().label()
         );
     }
     if let Some(c) = &report.checked {
         if let Some(who) = &c.signer {
-            anstream::eprintln!("{OK}signature ok{OK:#} {DIM}{who}{DIM:#}");
+            anstream::eprintln!("{prefix}{OK}signature ok{OK:#} {DIM}{who}{DIM:#}");
         }
         if c.ok() {
-            anstream::eprintln!("{OK}check ok{OK:#} ({})", c.algo.label());
+            anstream::eprintln!("{prefix}{OK}check ok{OK:#} ({})", c.algo.label());
         } else {
             anstream::eprintln!(
-                "{FAIL}CHECK FAILED{FAIL:#} ({}): expected {NUM}{}{NUM:#}, got {NUM}{}{NUM:#}",
+                "{prefix}{FAIL}CHECK FAILED{FAIL:#} ({}): expected {NUM}{}{NUM:#}, got {NUM}{}{NUM:#}",
                 c.algo.label(),
                 c.expected,
                 c.actual
             );
-            return Err(c.error().into());
+            let e = c.error();
+            return Some((code_of(&e), e.to_string()));
         }
     }
-    Ok(())
+    None
 }
 
 /// Parse sizes like `512`, `64K`, `256M`, `2G` (binary units).
@@ -1023,6 +1385,7 @@ fn show_config(cfg: &mpt::Config) {
         "defaults".atomic = d.atomic,
         "defaults".resume = d.resume,
         "defaults".log = d.log,
+        "defaults".parallel = d.parallel,
         "policy".known_hosts = p.known_hosts,
         "policy".refuse_plaintext_auth = p.refuse_plaintext_auth,
         "policy".refuse_insecure_tls = p.refuse_insecure_tls,
@@ -1113,6 +1476,82 @@ mod tests {
         assert_eq!(human_size(1024), "1.0 KiB");
         assert_eq!(human_size(40_000_000), "38.1 MiB");
         assert_eq!(human_size(5 << 30), "5.0 GiB");
+    }
+
+    #[test]
+    fn a_batch_exits_with_what_its_failures_agree_on() {
+        assert_eq!(batch_code(&[]), 0);
+        assert_eq!(batch_code(&[DENIED]), DENIED);
+        assert_eq!(batch_code(&[DENIED, DENIED]), DENIED);
+        assert_eq!(batch_code(&[UNTRUSTED, UNTRUSTED]), UNTRUSTED);
+        assert_eq!(batch_code(&[DENIED, FAILED]), FAILED);
+        assert_eq!(batch_code(&[UNTRUSTED, DENIED]), FAILED);
+        let e = anyhow::Error::new(ExitWith {
+            code: DENIED,
+            msg: "2 of 3 jobs failed".into(),
+        });
+        assert_eq!(exit_code(&e), DENIED);
+        assert_eq!(format!("{e:#}"), "2 of 3 jobs failed");
+    }
+
+    #[test]
+    fn cp_with_a_target_flag_makes_a_job_per_source() {
+        let cli = Cli::parse_from([
+            "mpt",
+            "cp",
+            "-t",
+            "sftp://h/in/",
+            "-t",
+            "s3://b/",
+            "a",
+            "b",
+            "c",
+        ]);
+        let Work::Many(jobs) = cli.cmd.work().unwrap() else {
+            panic!("expected a job list");
+        };
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(jobs[2].src, "c");
+        assert_eq!(jobs[2].dsts, vec!["sftp://h/in/", "s3://b/"]);
+        assert_eq!(
+            cli.cmd.work().unwrap().urls(),
+            vec![
+                "a",
+                "sftp://h/in/",
+                "s3://b/",
+                "b",
+                "sftp://h/in/",
+                "s3://b/",
+                "c",
+                "sftp://h/in/",
+                "s3://b/"
+            ]
+        );
+
+        let cli = Cli::parse_from(["mpt", "cp", "a", "b", "c"]);
+        let Work::Single { src, dsts } = cli.cmd.work().unwrap() else {
+            panic!("expected a single copy");
+        };
+        assert_eq!(src, "a");
+        assert_eq!(dsts, vec!["b", "c"]);
+
+        let cli = Cli::parse_from(["mpt", "cp", "a"]);
+        let err = cli.cmd.work().unwrap_err().to_string();
+        assert!(err.contains("-t"), "{err}");
+    }
+
+    #[test]
+    fn parallel_comes_from_the_flag_then_the_configuration() {
+        let cli = Cli::parse_from(["mpt", "batch", "jobs.txt"]);
+        let s = Settings::resolve(&cli, &config("")).unwrap();
+        assert_eq!(s.parallel, 4);
+        let s = Settings::resolve(&cli, &config("[defaults]\nparallel = 8")).unwrap();
+        assert_eq!(s.parallel, 8);
+        let cli = Cli::parse_from(["mpt", "batch", "--parallel", "2", "jobs.txt"]);
+        let s = Settings::resolve(&cli, &config("[defaults]\nparallel = 8")).unwrap();
+        assert_eq!(s.parallel, 2);
+        let cli = Cli::parse_from(["mpt", "batch", "--parallel", "0", "jobs.txt"]);
+        assert!(Settings::resolve(&cli, &config("")).is_err());
     }
 
     #[test]

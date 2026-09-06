@@ -48,3 +48,24 @@ path = "fuzz_targets/scp_header.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "batch_lines"
+path = "fuzz_targets/batch_lines.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "batch_csv"
+path = "fuzz_targets/batch_csv.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "batch_jsonl"
+path = "fuzz_targets/batch_jsonl.rs"
+test = false
+doc = false
+bench = false
