@@ -348,6 +348,10 @@ impl Sender for ScpEndpoint {
         .await
     }
 
+    fn supports_remove(&self) -> bool {
+        true
+    }
+
     async fn remove(&self, name: &str) -> Result<()> {
         let path = self.sibling_path(name)?;
         self.run(&format!("rm -f {}", shell_quote(&path))).await

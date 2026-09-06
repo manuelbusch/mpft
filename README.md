@@ -86,6 +86,7 @@ mpt man                          the manual page in roff (mpt man | man -l -)
   --no-atomic                    write straight to the target name (see below)
   --resume                       continue an interrupted transfer from its .mpt-part file
   --skip-existing                leave targets alone that already hold the file (same name and size)
+  --delete-source                delete the source once every target has it
   --hash <ALGO>  --check        checksums (see below)     --sign <SPEC>  --verify-signers/--verify-keyring <FILE>
   -r  --parallel <N>  --fail-fast  --dry-run  --allow-empty   for cp and batch (see "Many files")
 ```
@@ -350,6 +351,22 @@ Each job is reported as it finishes, prefixed `[3/120]`; with `--json`, one
 JSON object per job goes to stdout as it completes (JSON Lines, with a `job`
 field holding the position in the list), which a script can follow with
 `jq -c`. The progress line shows jobs done, jobs failed and bytes so far.
+
+### Moving instead of copying
+
+`--delete-source` (`[defaults] delete_source`) deletes the source once every
+target has the file: all targets succeeded, the checksum matched if one was
+checked, and targets skipped with `--skip-existing` count as having it. If a
+single target is missing the file, nothing is deleted. A failure to delete
+after a successful copy is reported as such (exit code 1) and shows as
+`source_removed: false` in the JSON; the copy itself stands. The source has
+to be somewhere that can delete: file, sftp, scp, ftp, webdav or s3, which is
+checked before anything is transferred. With `-r` this empties an inbox tree
+of its files; the directories stay.
+
+```
+mpt cp -r --skip-existing --delete-source sftp://srv/outbox/ /data/inbox/   # drain a remote outbox
+```
 
 ## Single sign-on
 

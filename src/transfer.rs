@@ -117,6 +117,11 @@ pub struct CopyOptions {
     /// name and size, so a repeated run only sends what is new. Needs the
     /// source's size to be known; mail targets are never skipped.
     pub skip_existing: bool,
+    /// Delete the source once every target has the file (and the checksum,
+    /// if checked, matched). A target that was skipped because it already
+    /// had the file counts as having it. The source's endpoint must be able
+    /// to delete; that is checked before anything is transferred.
+    pub delete_source: bool,
 }
 
 impl std::fmt::Debug for CopyOptions {
@@ -148,6 +153,7 @@ impl Default for CopyOptions {
             progress: None,
             resume: false,
             skip_existing: false,
+            delete_source: false,
         }
     }
 }
@@ -217,6 +223,9 @@ pub struct FanoutReport {
     pub digests: Vec<(HashAlgo, String)>,
     /// Outcome of `check`, if requested.
     pub checked: Option<CheckReport>,
+    /// With `delete_source`: whether the source was deleted, and the error
+    /// if that failed. `None` when it was not attempted (a target failed).
+    pub source_removed: Option<Result<()>>,
 }
 
 impl FanoutReport {
@@ -288,6 +297,15 @@ pub async fn copy_many(
         .iter()
         .map(|d| d.sender())
         .collect::<Result<Vec<_>>>()?;
+    if opts.delete_source {
+        let can = src.as_sender().is_some_and(|s| s.supports_remove());
+        if !can || src.location().filename().is_none() {
+            return Err(Error::UnsupportedOperation {
+                scheme: src.location().scheme().to_string(),
+                op: "delete its source after the copy",
+            });
+        }
+    }
 
     let started = Instant::now();
     let size = receiver.size().await?;
@@ -345,14 +363,19 @@ pub async fn copy_many(
         .map(|(d, _)| d)
         .collect();
     if dsts.is_empty() {
-        return Ok(FanoutReport {
+        let mut report = FanoutReport {
             source: src.location().to_string(),
             bytes_read: 0,
             elapsed: started.elapsed(),
             targets: all_dsts.iter().map(|d| skipped_report(*d)).collect(),
             digests: Vec::new(),
             checked: None,
-        });
+            source_removed: None,
+        };
+        if opts.delete_source {
+            report.source_removed = Some(remove_source(src).await);
+        }
+        return Ok(report);
     }
 
     // Checksum file next to the source (for `check`), found before anything is transferred.
@@ -562,14 +585,30 @@ pub async fn copy_many(
             }
         })
         .collect();
-    Ok(FanoutReport {
+    let mut report = FanoutReport {
         source: src.location().to_string(),
         bytes_read: read_count.load(std::sync::atomic::Ordering::Relaxed),
         elapsed: started.elapsed(),
         targets,
         digests,
         checked,
-    })
+        source_removed: None,
+    };
+    // The source goes only when everything that was to hold it does.
+    if opts.delete_source && report.all_ok() && report.checked.as_ref().is_none_or(|c| c.ok()) {
+        report.source_removed = Some(remove_source(src).await);
+    }
+    Ok(report)
+}
+
+/// Delete the source file, once every target has it.
+async fn remove_source(src: &dyn Endpoint) -> Result<()> {
+    let name = src
+        .location()
+        .filename()
+        .ok_or_else(|| Error::InvalidUrl("the source has no file name to delete".into()))?;
+    info!(source = %src.location(), "deleting the source");
+    src.sender()?.remove(name).await
 }
 
 /// Run `fut`, but give up as soon as `cancel` fires. The future is dropped,
@@ -995,6 +1034,55 @@ mod tests {
             .unwrap();
         assert!(!report.targets[0].skipped);
         assert_eq!(report.targets[0].bytes, data.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn delete_source_only_after_every_target_has_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("src.bin");
+        std::fs::write(&src_path, b"payload").unwrap();
+        let src = crate::open(src_path.to_str().unwrap()).unwrap();
+        let good = crate::open(&format!("{}/a/", dir.path().display())).unwrap();
+        std::fs::write(dir.path().join("blocker"), b"x").unwrap();
+        let bad = crate::open(&format!("{}/blocker/c/", dir.path().display())).unwrap();
+        let opts = CopyOptions {
+            delete_source: true,
+            ..Default::default()
+        };
+
+        // One target fails: the source stays.
+        let report = copy_many(src.as_ref(), &[good.as_ref(), bad.as_ref()], &opts)
+            .await
+            .unwrap();
+        assert!(!report.all_ok());
+        assert!(report.source_removed.is_none());
+        assert!(src_path.exists());
+
+        // Every target has it: the source goes.
+        let report = copy_many(src.as_ref(), &[good.as_ref()], &opts)
+            .await
+            .unwrap();
+        assert!(report.all_ok());
+        assert!(matches!(report.source_removed, Some(Ok(()))));
+        assert!(!src_path.exists());
+        assert_eq!(
+            std::fs::read(dir.path().join("a/src.bin")).unwrap(),
+            b"payload"
+        );
+
+        // A target that already has the file counts: skipped, then deleted.
+        std::fs::write(&src_path, b"payload").unwrap();
+        let opts = CopyOptions {
+            delete_source: true,
+            skip_existing: true,
+            ..Default::default()
+        };
+        let report = copy_many(src.as_ref(), &[good.as_ref()], &opts)
+            .await
+            .unwrap();
+        assert!(report.targets[0].skipped);
+        assert!(matches!(report.source_removed, Some(Ok(()))));
+        assert!(!src_path.exists());
     }
 
     #[tokio::test]

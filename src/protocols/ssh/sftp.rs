@@ -188,6 +188,10 @@ impl Sender for SftpEndpoint {
         res
     }
 
+    fn supports_remove(&self) -> bool {
+        true
+    }
+
     async fn remove(&self, name: &str) -> Result<()> {
         let (handle, sftp) = self.session().await?;
         let path = strip_home(self.loc.sibling(name)?.path());

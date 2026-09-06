@@ -121,6 +121,11 @@ pub trait Sender: Send + Sync {
         })
     }
 
+    /// Whether [`Sender::remove`] is implemented.
+    fn supports_remove(&self) -> bool {
+        false
+    }
+
     /// Delete the file `name` in the directory of this endpoint's location.
     async fn remove(&self, name: &str) -> Result<()> {
         let _ = name;

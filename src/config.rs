@@ -91,6 +91,8 @@ pub struct Defaults {
     pub resume: Option<bool>,
     /// Leave targets alone that already hold a file of the same name and size.
     pub skip_existing: Option<bool>,
+    /// Delete the source once every target has it.
+    pub delete_source: Option<bool>,
     /// Log level, either a bare level or `RUST_LOG` syntax.
     pub log: Option<String>,
     /// Print the report as JSON on standard output.

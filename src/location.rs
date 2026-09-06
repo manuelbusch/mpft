@@ -489,7 +489,8 @@ impl Location {
                 format!("{}/{}", loc.path, name)
             };
         }
-        loc.dir_hint = rel.ends_with('/');
+        // Nothing appended leaves a directory a directory.
+        loc.dir_hint = rel.ends_with('/') || (rel.is_empty() && self.dir_hint);
         if loc.dir_hint && !loc.path.ends_with('/') {
             loc.path.push('/');
         }
@@ -747,6 +748,18 @@ fn masked(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joining_nothing_keeps_a_directory_a_directory() {
+        let dir = Location::parse("sftp://h/in/").unwrap();
+        let same = dir.join("").unwrap();
+        assert!(same.is_dir_target());
+        assert_eq!(same.path(), "/in/");
+        assert!(!dir.join("x.bin").unwrap().is_dir_target());
+        assert!(dir.join("sub/").unwrap().is_dir_target());
+        let file = Location::parse("sftp://h/in/x.bin").unwrap();
+        assert!(!file.join("").unwrap().is_dir_target());
+    }
 
     #[test]
     fn parent_is_the_directory_of_a_file_or_the_directory_itself() {

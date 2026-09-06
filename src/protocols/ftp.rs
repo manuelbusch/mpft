@@ -466,6 +466,10 @@ impl Sender for FtpEndpoint {
         res
     }
 
+    fn supports_remove(&self) -> bool {
+        true
+    }
+
     async fn remove(&self, name: &str) -> Result<()> {
         let path = self.loc.sibling(name)?.path().to_string();
         let mut ftp = self.connect().await?;

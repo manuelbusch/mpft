@@ -331,6 +331,18 @@ impl Sender for S3Endpoint {
         Ok(())
     }
 
+    fn supports_remove(&self) -> bool {
+        true
+    }
+
+    async fn remove(&self, name: &str) -> Result<()> {
+        let sibling = self.loc.sibling(name)?;
+        let key = sibling.path().split_once('/').map(|(_, k)| k).unwrap_or("");
+        let path = ObjPath::from(key);
+        debug!(bucket = %self.bucket, %path, "s3 delete");
+        self.store.delete(&path).await.map_err(s3_err)
+    }
+
     /// Keys are flat; a "directory" appears with its first object.
     fn supports_mkdir(&self) -> bool {
         true

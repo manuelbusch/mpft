@@ -146,6 +146,10 @@ impl Sender for FileEndpoint {
         Ok(fs::create_dir_all(path).await?)
     }
 
+    fn supports_remove(&self) -> bool {
+        true
+    }
+
     async fn remove(&self, name: &str) -> Result<()> {
         Ok(fs::remove_file(self.sibling_path(name)?).await?)
     }

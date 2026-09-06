@@ -109,6 +109,11 @@ struct Cli {
     #[arg(long, global = true)]
     skip_existing: bool,
 
+    /// Delete the source once every target has it (a move, in effect).
+    /// Nothing is deleted while a target is missing the file
+    #[arg(long, global = true)]
+    delete_source: bool,
+
     /// Compute a checksum while copying and write <name>.sha256|.sha512|.b3
     /// next to every target (sha256sum/b3sum format; mail gets it as attachment)
     #[arg(long, global = true, value_name = "ALGO")]
@@ -345,6 +350,7 @@ struct Settings {
     atomic: bool,
     resume: bool,
     skip_existing: bool,
+    delete_source: bool,
     hash: Option<HashAlgo>,
     json: bool,
     parallel: usize,
@@ -383,6 +389,7 @@ impl Settings {
             atomic: !cli.no_atomic && d.atomic.unwrap_or(true),
             resume: cli.resume || d.resume.unwrap_or(false),
             skip_existing: cli.skip_existing || d.skip_existing.unwrap_or(false),
+            delete_source: cli.delete_source || d.delete_source.unwrap_or(false),
             json: cli.json || d.json.unwrap_or(false),
             parallel: match cli
                 .cmd
@@ -694,6 +701,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
         atomic: settings.atomic,
         resume: settings.resume,
         skip_existing: settings.skip_existing,
+        delete_source: settings.delete_source,
         cancel: Some(cancel.clone()),
         progress: show_progress(&cli, &settings).then(mpt::transfer::Progress::new),
         hash: settings.hash.or(sign.as_ref().map(|_| HashAlgo::Sha256)),
@@ -932,7 +940,7 @@ fn print_report(
         if let Some(sg) = &t.signature {
             anstream::eprintln!("{prefix}{DIM}+ {sg}{DIM:#}");
         }
-        return print_checksums(report, opts, prefix);
+        return print_checksums(report, opts, prefix).or_else(|| print_removed(report, prefix));
     }
     for t in &report.targets {
         match &t.result {
@@ -977,6 +985,9 @@ fn print_report(
         report.elapsed
     );
     if let Some(failure) = print_checksums(report, opts, prefix) {
+        return Some(failure);
+    }
+    if let Some(failure) = print_removed(report, prefix) {
         return Some(failure);
     }
     if cancelled {
@@ -1276,6 +1287,8 @@ fn report_json(report: &mpt::FanoutReport) -> serde_json::Value {
         "targets": targets,
         "digests": digests,
         "check": check,
+        "source_removed": report.source_removed.as_ref().map(|r| r.is_ok()),
+        "remove_error": report.source_removed.as_ref().and_then(|r| r.as_ref().err().map(|e| e.to_string())),
     })
 }
 
@@ -1321,6 +1334,25 @@ fn print_checksums(
         }
     }
     None
+}
+
+/// What became of the source under `--delete-source`: a line either way,
+/// and a failure when it could not be deleted (the copy itself succeeded).
+fn print_removed(report: &mpt::FanoutReport, prefix: &str) -> Option<(u8, String)> {
+    match &report.source_removed {
+        None => None,
+        Some(Ok(())) => {
+            anstream::eprintln!("{prefix}{DIM}source deleted{DIM:#}");
+            None
+        }
+        Some(Err(e)) => Some((
+            FAILED,
+            format!(
+                "copied, but deleting the source {} failed: {e}",
+                report.source
+            ),
+        )),
+    }
 }
 
 /// Parse sizes like `512`, `64K`, `256M`, `2G` (binary units).
@@ -1438,6 +1470,7 @@ fn show_config(cfg: &mpt::Config) {
         "defaults".atomic = d.atomic,
         "defaults".resume = d.resume,
         "defaults".skip_existing = d.skip_existing,
+        "defaults".delete_source = d.delete_source,
         "defaults".log = d.log,
         "defaults".parallel = d.parallel,
         "policy".known_hosts = p.known_hosts,
@@ -1663,6 +1696,7 @@ mod tests {
             ],
             digests: vec![(HashAlgo::Sha256, "abc".into())],
             checked: None,
+            source_removed: None,
         };
         let j = report_json(&report);
         assert_eq!(j["ok"], false, "one target failed");

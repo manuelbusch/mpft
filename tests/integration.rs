@@ -1346,3 +1346,95 @@ async fn skip_existing_makes_a_tree_copy_repeatable() {
     let root = dir_url(&sftp, &format!("/skip_{tag}/tree"));
     assert_eq!(fetch(&root, "sub/two.txt").await, b"two, longer");
 }
+
+/// `--delete-source` on a remote source: the file is gone from the server
+/// after a successful copy, and stays when a target fails. An HTTP source
+/// is refused up front.
+#[tokio::test]
+async fn delete_source_drains_a_remote_directory() {
+    let Some(sftp) = env("MPT_IT_SFTP") else {
+        eprintln!("skipping: MPT_IT_SFTP not set");
+        return;
+    };
+    mpt::init_crypto();
+    let tag = std::process::id();
+    let dir = tempfile::tempdir().unwrap();
+    let remote_dir = dir_url(&sftp, &format!("/outbox_{tag}/"));
+    // Put two files there, through the library.
+    let ep = mpt::open(&remote_dir).unwrap();
+    ep.sender().unwrap().mkdir_all().await.unwrap();
+    for (name, body) in [("keep.txt", "keep"), ("go.txt", "go")] {
+        let meta = SendMeta::from_filename(name)
+            .unwrap()
+            .with_size(body.len() as u64);
+        ep.sender()
+            .unwrap()
+            .send(
+                Box::pin(std::io::Cursor::new(body.as_bytes().to_vec())),
+                &meta,
+            )
+            .await
+            .unwrap();
+    }
+    let names =
+        |entries: Vec<mpt::Entry>| -> Vec<String> { entries.into_iter().map(|e| e.name).collect() };
+
+    // One target cannot be written: the source stays.
+    std::fs::write(dir.path().join("blocker"), b"x").unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .args([
+            "cp",
+            "--delete-source",
+            &dir_url(&remote_dir, "keep.txt"),
+            &format!("{}/blocker/sub/", dir.path().display()),
+        ])
+        .output()
+        .expect("running mpt");
+    assert!(!out.status.success());
+    let listing = names(ep.receiver().unwrap().list().await.unwrap());
+    assert!(listing.contains(&"keep.txt".to_string()), "{listing:?}");
+
+    // The whole directory into a local one: files go, the directory stays.
+    let inbox = dir.path().join("inbox");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .args([
+            "cp",
+            "-r",
+            "--delete-source",
+            "--json",
+            &remote_dir,
+            &format!("{}/", inbox.display()),
+        ])
+        .output()
+        .expect("running mpt");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for line in stdout.lines() {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(v["source_removed"], true, "{line}");
+    }
+    assert_eq!(std::fs::read(inbox.join("go.txt")).unwrap(), b"go");
+    assert_eq!(std::fs::read(inbox.join("keep.txt")).unwrap(), b"keep");
+    let listing = names(ep.receiver().unwrap().list().await.unwrap());
+    assert!(listing.is_empty(), "{listing:?}");
+
+    // An HTTP source cannot be deleted: refused before anything moves.
+    if let Some(http) = env("MPT_IT_HTTP") {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+            .args([
+                "cp",
+                "--delete-source",
+                &dir_url(&http, "/whatever.txt"),
+                &format!("{}/", inbox.display()),
+            ])
+            .output()
+            .expect("running mpt");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
