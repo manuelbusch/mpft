@@ -286,6 +286,48 @@ fn a_stranger_a_bad_target_and_a_refused_flag() {
     assert!(err.contains("relay: I/O error"), "{err}");
     assert!(err.contains("1 of 1 jobs failed"), "{err}");
 
+    // The relay from the configuration, and --no-via against it.
+    std::fs::write(
+        relay.path("via.toml"),
+        format!(
+            "{}[defaults]\nvia = \"{}\"\n",
+            std::fs::read_to_string(relay.path("client.toml")).unwrap(),
+            relay.via("client")
+        ),
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
+            .env_remove("MPT_CONFIG")
+            .arg("--config")
+            .arg(relay.path("via.toml"))
+            .args(["--color", "never", "cp"])
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let (code, err) = run(&[src.to_str().unwrap(), "mpt://a/"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("1/1 jobs ok"),
+        "went through the relay:\n{err}"
+    );
+    let (code, err) = run(&["--no-via", src.to_str().unwrap(), "mpt://b/"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("jobs ok"), "copied from here:\n{err}");
+    // The blocked target above and the configured relay: two logins,
+    // none for --no-via.
+    assert_eq!(
+        relay.log().matches("relay login").count(),
+        2,
+        "{}",
+        relay.log()
+    );
+
     let (code, _, err) = relay.cp("client", &["--check", src.to_str().unwrap(), "mpt://a/"]);
     assert_eq!(code, 2, "{err}");
     assert!(err.contains("--check is not available with --via"), "{err}");

@@ -306,19 +306,28 @@ struct BatchArgs {
     /// Send the source once to this SSH host running `mpt relay` (an
     /// ssh:// URL or a profile with one) and let it deliver to the targets
     #[cfg(feature = "relay")]
-    #[arg(long, value_name = "URL")]
+    #[arg(long, value_name = "URL", conflicts_with = "no_via")]
     via: Option<String>,
+    /// Copy from here even though [defaults] via names a relay
+    #[cfg(feature = "relay")]
+    #[arg(long)]
+    no_via: bool,
 }
 
 impl BatchArgs {
-    /// The relay `cp --via` names, if the build has one.
-    fn via(&self) -> Option<&str> {
+    /// The relay to send through: the flag, else the configured default,
+    /// unless `--no-via` says none.
+    fn via<'a>(&'a self, configured: Option<&'a str>) -> Option<&'a str> {
         #[cfg(feature = "relay")]
         {
-            self.via.as_deref()
+            if self.no_via {
+                return None;
+            }
+            self.via.as_deref().or(configured)
         }
         #[cfg(not(feature = "relay"))]
         {
+            let _ = configured;
             None
         }
     }
@@ -482,6 +491,8 @@ struct Settings {
     hash: Option<HashAlgo>,
     json: bool,
     parallel: usize,
+    /// The relay `cp` and `batch` send through, if any.
+    via: Option<String>,
 }
 
 impl Settings {
@@ -519,6 +530,11 @@ impl Settings {
             skip_existing: cli.skip_existing || d.skip_existing.unwrap_or(false),
             delete_source: cli.delete_source || d.delete_source.unwrap_or(false),
             json: cli.json || d.json.unwrap_or(false),
+            via: cli
+                .cmd
+                .batch_args()
+                .and_then(|b| b.via(d.via.as_deref()))
+                .map(String::from),
             parallel: match cli
                 .cmd
                 .batch_args()
@@ -677,9 +693,8 @@ async fn main() -> ExitCode {
     }
     // Credentials are fetched before anything connects, and only those the
     // endpoints of this command actually need.
-    let via = cli.cmd.batch_args().and_then(|b| b.via());
     if let Err(e) = cfg
-        .resolve_secrets(&work.urls(via), cli.sign.is_some())
+        .resolve_secrets(&work.urls(settings.via.as_deref()), cli.sign.is_some())
         .await
     {
         anstream::eprintln!("{FAIL}error:{FAIL:#} {e}");
@@ -907,7 +922,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
     // A relay does the copying for `--via`; every job goes through the
     // batch machinery then, a single `cp` as a batch of one.
     #[cfg(feature = "relay")]
-    let via = match cli.cmd.batch_args().and_then(|b| b.via()) {
+    let via = match settings.via.as_deref() {
         Some(url) => Some(Via::new(url, &locate, &opts, &settings)?),
         None => None,
     };
@@ -2199,6 +2214,7 @@ fn show_config(cfg: &mpt::Config) {
         "defaults".delete_source = d.delete_source,
         "defaults".log = d.log,
         "defaults".parallel = d.parallel,
+        "defaults".via = d.via,
         "policy".known_hosts = p.known_hosts,
         "policy".refuse_plaintext_auth = p.refuse_plaintext_auth,
         "policy".refuse_insecure_tls = p.refuse_insecure_tls,

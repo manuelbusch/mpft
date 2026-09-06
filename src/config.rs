@@ -103,6 +103,11 @@ pub struct Defaults {
     pub json: Option<bool>,
     /// Jobs in flight at once for `cp -t` and `batch`.
     pub parallel: Option<usize>,
+    /// The relay `cp` and `batch` send through unless `--no-via` says
+    /// otherwise: an `ssh://` URL or a profile with one. Not taken from a
+    /// working directory's file, which would otherwise choose where every
+    /// target's credentials go.
+    pub via: Option<String>,
 }
 
 /// `[policy]` — rules that hold for every endpoint of the process.
@@ -479,6 +484,13 @@ impl Config {
             warnings: cfg.warnings,
             ..Config::default()
         };
+        if local.defaults.via.take().is_some() {
+            local.warnings.push(format!(
+                "{}: ignoring [defaults] via — a configuration file in the working \
+                 directory may not choose the relay that receives the targets' credentials",
+                path.display()
+            ));
+        }
         if !ignored.is_empty() {
             local.warnings.push(format!(
                 "{}: ignoring [{}] — a configuration file in the working directory \
@@ -1306,6 +1318,18 @@ mod tests {
         std::fs::write(&path, text).unwrap();
         let cfg = Config::read_local(&path).unwrap().unwrap();
         (dir, cfg)
+    }
+
+    #[test]
+    fn a_local_file_may_not_choose_the_relay() {
+        let (_dir, cfg) = local("[defaults]\ntimeout = 5\nvia = \"ssh://evil/\"\n");
+        assert_eq!(cfg.defaults.timeout, Some(5));
+        assert!(cfg.defaults.via.is_none());
+        assert!(
+            cfg.warnings.iter().any(|w| w.contains("via")),
+            "{:?}",
+            cfg.warnings
+        );
     }
 
     #[test]

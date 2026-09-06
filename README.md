@@ -145,6 +145,7 @@ hash        = "sha256"
 color       = "auto"          # auto | always | never
 log         = "warn"          # level, or RUST_LOG syntax; -v and RUST_LOG win
 json        = false           # print the result as JSON on stdout
+via         = "ssh://relay@fast.example:2222"   # send through this relay (see "Relay"); --no-via copies from here
 
 [policy]                      # rules for every endpoint of the process
 known_hosts           = "strict"   # default for sftp/scp: strict|accept-new|off
@@ -515,6 +516,9 @@ mpt cp --via ssh://relay@fast.example:2222 report.pdf mpt://prod/ mpt://archive/
 
 `--via` takes an `ssh://` URL, or a profile whose `url` is one; the key,
 the agent, `known_hosts` and `?hostkey=` work as they do for `sftp://`.
+`[defaults] via` makes it the rule, `--no-via` the exception; a
+`./mpt.toml` may not set it, since it would decide where the targets'
+credentials go.
 It is a batch option: `cp -t`, `batch` (also `batch - --follow`) and a
 `cp` with a pattern or `-r` send every file of the list through the relay,
 one SSH session per file, `--parallel` of them at once, with `--fail-fast`
