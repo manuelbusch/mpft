@@ -80,9 +80,3 @@ A batch stopped by `--fail-fast` currently exits **130**, the code for Ctrl-C,
 rather than the code of the failure that stopped it. A script that treats 130
 as "a person interrupted this" needs to account for that when it passes
 `--fail-fast`.
-
-## Next
-
-That is the reference. The appendix covers [the
-library](../appendix/library.md), [Windows](../appendix/windows.md) and
-[troubleshooting](../appendix/troubleshooting.md).

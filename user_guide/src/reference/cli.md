@@ -177,8 +177,3 @@ see [Precedence](../configuration/file.md#precedence).
 | `--sign` | `[signing] key` | – |
 | `--verify-signers` | `[verify] allowed_signers` | – |
 | `--verify-keyring` | `[verify] keyring` | – |
-
-## Next
-
-[Configuration keys](configuration.md), [environment
-variables](environment.md), [exit codes](exit-codes.md).

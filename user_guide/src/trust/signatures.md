@@ -190,10 +190,11 @@ otherwise removing the line would be enough to escape the rule.
 
 ## Practical notes
 
-- **Mail targets** get the signature as a third attachment, after the payload
-  and the checksum.
-- **The backends are cargo features**, `sign-ssh` and `sign-pgp`, both on by
-  default. A binary built without one says so:
+- [**Mail targets**](../protocols/mail.md#the-message) get the signature as a
+  third attachment.
+- **The backends are [cargo features](../getting-started/installation.md#choosing-protocols)**,
+  `sign-ssh` and `sign-pgp`, both on by default. A binary built without one
+  says so:
 
   ```
   error: unsupported scheme 'OpenSSH signatures (compiled without the 'sign-ssh' feature)'
@@ -201,8 +202,3 @@ otherwise removing the line would be enough to escape the rule.
 
 - **Signing costs one signature per transfer**, over a file of one or two
   lines, so its cost does not depend on the size of the payload.
-
-## Next
-
-[Securing the connection](connections.md) is about the layer below: proving
-the server is the right server before any of this is exchanged.

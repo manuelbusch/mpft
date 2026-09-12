@@ -32,11 +32,8 @@ stands in the argument list and is therefore visible in `ps` like a password
 in the URL. It is there for a quick test on a machine nobody shares; the other
 three are the ones to use.
 
-SSH keys need none of this. If no key is named, `mpt` tries a running ssh-agent
-and then `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`; a password is only used if
-none of that worked. Naming a key with `?key=`, `[ssh] key` or `$MPT_SSH_KEY`
-means *that* key and no other — see [SFTP and
-SCP](../protocols/ssh.md#authentication).
+SSH keys need none of this: the agent and the default keys are found on their
+own, in the order [SFTP and SCP](../protocols/ssh.md#authentication) lists.
 
 ## For every run: references
 
@@ -144,11 +141,9 @@ Two consequences:
 - **Keep the file to yourself.** `mpt` warns when a file that holds or points
   at credentials is readable by others, and `[policy] strict_permissions = true`
   makes it an error. See [Policies](policies.md).
-- **A `./mpt.toml` cannot carry a credential command.** A file in the working
-  directory contributes `[defaults]` and `[policy]` and nothing else, so a
-  directory you happen to be standing in cannot make `mpt` run something on
-  your behalf. See [the file in the working
-  directory](file.md#the-file-in-the-working-directory).
+- **A [`./mpt.toml`](file.md#the-file-in-the-working-directory) cannot carry
+  a credential command**, so a directory you happen to be standing in cannot
+  make `mpt` run something on your behalf.
 
 The provider passes the string to `sh -c` (on Windows, `cmd /C`), so pipes and
 quoting work as usual. Only the first line of standard output is used, and a
@@ -169,24 +164,18 @@ warned about instead.
 ## Single sign-on
 
 Where a protocol has an answer that is better than a long-lived password, `mpt`
-uses it — and in every case the token arrives through the same providers:
+uses it, and the token arrives through the same providers as a password would:
 
-- **S3**: the AWS credential chain, with the `s3-aws-auth` feature — the SSO
-  cache that `aws sso login` fills, `~/.aws` profiles, AssumeRole, web identity,
-  instance metadata. Used only when an AWS profile is named, so nothing reaches
-  for the metadata service unbidden.
-- **SMTP**: `auth = "xoauth2"` with the token in `[mail] password`, which is
-  what Microsoft 365 and Google now require.
-- **HTTP and WebDAV**: `[http] token` as a bearer token, typically
-  `{ cmd = "az account get-access-token …" }`.
-- **SFTP and SCP**: OpenSSH certificates, from an agent or a file. A CA vouches
-  for a key that `authorized_keys` never lists.
+- **S3**: the [AWS credential chain](../protocols/s3.md#single-sign-on-and-roles),
+  with the `s3-aws-auth` feature.
+- **SMTP**: [`auth = "xoauth2"`](../protocols/mail.md#encryption-and-login)
+  with the token in `[mail] password`.
+- **HTTP and WebDAV**: [`[http] token`](../protocols/http.md#authentication)
+  as a bearer token.
+- **SFTP and SCP**: [OpenSSH certificates](../protocols/ssh.md#certificates),
+  from an agent or a file.
 
-In each case the token is a credential reference like any other, so nothing
-about the mechanism above changes. The protocol pages have the worked
-examples: [S3](../protocols/s3.md),
-[E-mail](../protocols/mail.md), [HTTP and WebDAV](../protocols/http.md),
-[SFTP and SCP](../protocols/ssh.md).
+The protocol pages have the worked examples.
 
 ## In memory
 
@@ -194,7 +183,3 @@ Passwords and passphrases are held in a type that redacts itself in debug
 output and overwrites its memory when dropped, so a secret does not linger
 after use or appear in a log line by accident. Every log line that mentions a
 URL shows the password as `***`.
-
-## Next
-
-[Policies](policies.md) is about the rules that no URL option can switch off.

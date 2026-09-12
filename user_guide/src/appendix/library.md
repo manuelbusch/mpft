@@ -239,7 +239,3 @@ the same as for the binary: `ssh`, `ftp`, `http`, `webdav`, `s3`, `mail`,
 `sign-ssh`, `sign-pgp` by default, and `keyring`, `vault`, `s3-aws-auth` on
 request. A protocol that was not compiled in returns
 `Error::UnsupportedScheme` naming the missing feature.
-
-## Next
-
-[Windows](windows.md) and [troubleshooting](troubleshooting.md).

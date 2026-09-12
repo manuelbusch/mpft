@@ -114,15 +114,7 @@ means.
 
 ## Running many jobs against one server
 
-`--parallel` is also the number of simultaneous logins. An `sshd` with the
-default `MaxStartups 10:30:100` starts refusing connections beyond ten
-unauthenticated at once, so a high parallelism against a single host produces
-failures rather than speed. Single digits are the useful range, and
-`?connect_retries=1` absorbs the occasional refusal.
-
-Each job opens its own SSH connection; connections are not shared between
-jobs.
-
-## Next
-
-[FTP and FTPS](ftp.md), the other protocol that predates most of this.
+Each job opens its own SSH connection, so
+[`--parallel`](../guide/many-files.md#parallelism) is also the number of
+simultaneous logins, and `sshd`'s `MaxStartups` caps it. Single digits are
+the useful range, and `?connect_retries=1` absorbs the occasional refusal.

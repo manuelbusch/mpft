@@ -46,11 +46,9 @@ rejected password will fail again in five minutes, a refused connection may
 not. Code 3 deserves its own branch — it means the bytes arrived but cannot be
 trusted, which is not the same kind of problem as a transfer that failed.
 
-With **several targets** the code is 1 when the outcomes are mixed, and the
-specific code when every failed target failed the same way. A fan-out that
-failed entirely on authentication exits 4. A **batch** follows the same rule
-over its jobs. [Exit codes](../reference/exit-codes.md) has the precise
-statement.
+With several targets or jobs the code is [aggregated](../reference/exit-codes.md#when-several-things-fail-at-once):
+1 when the outcomes are mixed, the specific code when every failure was of the
+same kind.
 
 ```sh
 #!/bin/sh
@@ -215,16 +213,7 @@ absence of a terminal, which is what a CI system that renders ANSI codes needs.
 
 ## Interruption and exit code 130
 
-Ctrl-C — or any `SIGINT` — stops the transfer, removes partial files, reports
-every unfinished target as `cancelled`, and exits 130. In a batch, jobs that
-had not started never start. A script that runs `mpt` under a supervisor
-should treat 130 as "someone stopped this", not as a transfer failure.
-
-`--resume` changes one thing about this: the partial file on the target is kept
-so the next run can continue it. See
-[Interrupted and repeated transfers](../guide/reliability.md).
-
-## Next
-
-[Scheduled and triggered runs](scheduling.md) puts this to work in cron, in a
-systemd timer, and behind a file-system watcher.
+`SIGINT` stops the run and exits 130; a script that runs `mpt` under a
+supervisor should treat that as "someone stopped this", not as a transfer
+failure. What is left behind, and what `--resume` keeps, is under
+[Ctrl-C](../guide/reliability.md#ctrl-c).

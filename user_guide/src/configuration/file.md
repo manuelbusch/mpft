@@ -230,9 +230,3 @@ The check applies only when the file actually mentions a secret, so a file with
 nothing but timeouts in it is never complained about. On Windows there are no
 mode bits, and the file's location is judged instead; see the
 [Windows appendix](../appendix/windows.md).
-
-## Next
-
-[Profiles](profiles.md) turns a long URL into `mpt://prod/`, and
-[Credentials and secrets](credentials.md) covers how passwords get into a run
-without being written down.

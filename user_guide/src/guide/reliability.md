@@ -138,22 +138,12 @@ are never skipped.
 
 ## Timeouts and connect retries
 
-`--timeout` (30 seconds) counts **inactivity**, not total duration. It applies
-to connecting, to logging in, to every stream, to the FTP control channel, and
-to a fan-out target that has stopped draining its queue. A transfer that is
-making progress is never cut off, however long it takes; one that has genuinely
-stalled fails instead of hanging until someone notices.
-
-`?connect_retries=<n>` repeats connecting and logging in, which is safe because
-no payload has been read at that point, and only for transient failures — a
-rejected password is not retried. That covers the common overnight case of a
-server that is briefly unreachable while it restarts. `--retries` sets it too,
-but also retries the transfer itself and therefore needs `--cache`;
-[Time limits](copying.md#time-limits) has the two side by side.
-
-Both can be set per endpoint (`?timeout=`, `?connect_retries=`) and in the
-[configuration file](../configuration/file.md), which is the right place for a
-value that should hold for every run on a machine.
+`--timeout` counts inactivity, not total duration, so a slow but steady
+transfer is never cut off and a stalled one fails instead of hanging.
+`?connect_retries=` covers the overnight case of a server that is briefly
+unreachable while it restarts. Both are described under [Time
+limits](copying.md#time-limits), and both belong in the [configuration
+file](../configuration/file.md) when they should hold for every run.
 
 ## Example: a repeatable nightly job
 
@@ -178,8 +168,3 @@ drained, and check the [exit code](../reference/exit-codes.md) rather than the
 output in whatever calls it. [Scheduled and triggered
 runs](../automation/scheduling.md) puts a command like this into cron or a
 systemd timer.
-
-## Next
-
-That is everyday use. [Checksums](../trust/checksums.md) is about knowing that
-what arrived is what was sent.

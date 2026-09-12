@@ -56,9 +56,9 @@ API's own parameters travel:
 mpt cp https://api.example.com/export?format=csv&range=30d ./
 ```
 
-That convenience has a cost worth knowing: a misspelled `mpt` option becomes a
-query parameter instead of an error. `?timeuot=5` reaches the server, which
-ignores it, and the timeout stays at its default.
+The cost is that a [misspelled `mpt`
+option](../getting-started/addressing.md#options-belong-to-one-endpoint)
+becomes a query parameter instead of an error.
 
 The options `mpt` keeps for itself are `method`, `header`, `token`, `insecure`,
 `timeout` and `connect_retries`.
@@ -113,7 +113,3 @@ server that sends neither still transfers fine; the progress display shows
 bytes and a rate without a percentage, and
 [`--skip-existing`](../guide/reliability.md#skipping-with---skip-existing)
 cannot skip a target it cannot measure.
-
-## Next
-
-[S3](s3.md), where a "directory" is only ever a prefix.

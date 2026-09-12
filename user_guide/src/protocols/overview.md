@@ -63,27 +63,19 @@ Reading the columns as features:
 | `?connect_retries=<n>` | retry connecting and logging in this often |
 | `?insecure=true` | skip TLS certificate verification (where TLS is involved) |
 
-The protocol pages list what is specific to each. A **misspelled option is
-ignored rather than reported**, so check it against the page or `mpt schemes`
-if something has no effect.
+The protocol pages list what is specific to each. A [misspelled option is
+ignored rather than reported](../getting-started/addressing.md#options-belong-to-one-endpoint).
 
 ## Choosing between near-equivalents
 
-Three pairs come up often.
+Three pairs come up often, and the protocol pages compare each in detail:
 
-**`sftp://` or `scp://`** — take SFTP unless the far side genuinely offers
-nothing else. It lists, it reports sizes, it resumes; SCP does none of those
-and needs the size before it can start. They use the same connection, the same
-keys and the same host-key checking.
-
-**`webdav://` or `http://`** — take WebDAV when the server speaks it. It adds
-listing, renaming and directory creation, which means `mpt ls`, patterns, `-r`
-and atomic finishing all start working. Plain HTTP is for a server that only
-offers GET and PUT.
-
-**`ftps://` or `ftp://`** — take FTPS. It is the same server and the same
-commands with the credentials and the data encrypted. Plain FTP with a password
-[warns for good reason](../trust/connections.md#credentials-in-the-clear).
+- [**`sftp://` over `scp://`**](ssh.md#sftp-versus-scp): SFTP lists, reports
+  sizes and resumes; SCP does none of those.
+- [**`webdav://` over `http://`**](http.md#http-versus-webdav): WebDAV adds
+  listing, renaming and directory creation.
+- [**`ftps://` over `ftp://`**](ftp.md#tls-modes): the same server with the
+  credentials and the data encrypted.
 
 ## Mixing them
 
@@ -97,9 +89,3 @@ mpt cp ftps://partner.example.com/out/data.csv \
     "s3://archive/2026/" \
     "mailto:team@example.com?subject=Received"
 ```
-
-## Next
-
-The pages that follow take one scheme each: [local files](local.md),
-[SFTP and SCP](ssh.md), [FTP and FTPS](ftp.md), [HTTP and WebDAV](http.md),
-[S3](s3.md), [e-mail](mail.md).

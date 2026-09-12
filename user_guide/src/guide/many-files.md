@@ -66,8 +66,8 @@ where it would otherwise expand it itself.
 
 Details worth knowing:
 
-- It works on any protocol that can list a directory, which is everything
-  except `scp://`, `http://` and mail.
+- It works on any protocol with `list` in the [capability
+  matrix](../protocols/overview.md#what-each-one-can-do).
 - **`?` is not a pattern character.** It starts the query part of a URL, so it
   could not be one. Use `*` or a character class.
 - Dotfiles need a literal dot in the pattern, as in a shell: `*` does not match
@@ -111,14 +111,8 @@ The tree is listed first, the directories are created on the target — empty
 ones included — and then every file is a job, so `--parallel` applies to a tree
 exactly as it does to a list.
 
-What this needs from the two ends:
-
-- **The target must be able to create directories**: local, `sftp://`,
-  `scp://`, `ftp://`, `webdav://`, and `s3://`, where a key with slashes in it
-  is all a "directory" ever was. An `http://` target refuses.
-- **The source must be able to list**, which rules out `scp://` and `http://`
-  as tree sources. Use `sftp://` instead of `scp://`; it is the same
-  connection.
+The source must be able to `list` and the target to `mkdir`; the [capability
+matrix](../protocols/overview.md#what-each-one-can-do) says which schemes can.
 
 Symbolic links are whatever the source's listing says they are: a link that
 looks like a file has its content copied, a link that looks like a directory is
@@ -205,8 +199,3 @@ throttle.
 `--fail-fast` stops starting new jobs after the first failure and cancels the
 ones that are running, for a batch where a single failure makes the rest
 pointless.
-
-## Next
-
-When the jobs come from somewhere else — a file, an export, another program —
-see [Job lists and pipelines](job-lists.md).

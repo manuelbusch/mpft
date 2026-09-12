@@ -24,17 +24,17 @@ written to **stderr**, not stdout, which matters later — a script can read a
 machine-readable report from stdout while a person watches this on the
 terminal.
 
-The trailing slash on `backup/` is not decoration. It says *directory*, so the
-source's file name is appended and the copy lands at `backup/report.pdf`.
-Without the slash the target is the file name itself:
+The trailing slash on `backup/` says *directory*, so the copy lands at
+`backup/report.pdf`. Without it the target is the file name itself:
 
 ```
 $ mpt cp report.pdf backup/2026-09-10.pdf
 report.pdf -> backup/2026-09-10.pdf: 40000 bytes in 8.93ms
 ```
 
-That rule holds for every protocol, and it is the single most important thing
-to internalise — [Thinking in URLs](addressing.md) returns to it.
+The rule holds for every protocol; [Thinking in
+URLs](addressing.md#the-trailing-slash-decides-where-a-file-lands) states it in
+full.
 
 ## 2. An upload that is refused
 
@@ -55,19 +55,8 @@ rather than accepted with a shrug. A machine that answers on port 22 is not
 yet a machine you have any reason to trust, and the moment before you hand it
 a password or a file is exactly the moment to say so.
 
-The message tells you the three ways forward. Which one is right depends on
-whether you can verify the fingerprint:
-
-**You can check the fingerprint** — ask the machine's owner, or read it on the
-console with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`. If it matches,
-record it:
-
-```
-ssh-keyscan srv.example.com >> ~/.ssh/known_hosts
-```
-
-**You cannot check it right now** and the network between you is one you
-trust. Accept the key on first use, the way `ssh` itself offers to:
+The message names the three ways forward. For this walk-through, accept the
+key on first use, the way `ssh` itself offers to:
 
 ```
 $ mpt cp report.pdf "sftp://deploy@srv.example.com/incoming/?known_hosts=accept-new"
@@ -75,17 +64,10 @@ WARN adding new host key for srv.example.com:22 to known_hosts: SHA256:GFb3ByRBz
 report.pdf -> sftp://deploy@srv.example.com/incoming/?known_hosts=accept-new&timeout=30: 40000 bytes in 92.26ms
 ```
 
-The key is written to `known_hosts` and announced. From then on it is checked
-strictly: a *changed* key is still refused, which is the case that matters.
-
-**You are writing a script or a CI job** where no `known_hosts` file is
-maintained. Pin the fingerprint in the URL and skip the file entirely:
-
-```
-mpt cp report.pdf "sftp://deploy@srv.example.com/incoming/?hostkey=SHA256:GFb3ByRBzc3…"
-```
-
-[Securing the connection](../trust/connections.md) covers all three in full.
+The key is now in `known_hosts` and is checked strictly from here on; a
+*changed* key is still refused. When you can verify the fingerprint, or when a
+script needs to pin it in the URL, [Securing the
+connection](../trust/connections.md#ssh-host-keys) has the other two ways.
 
 ## 3. The upload succeeds
 
@@ -102,9 +84,9 @@ defaults. Seeing them is useful when a configuration file is in play and you
 want to know what a run really used.
 
 **Authentication happened without being mentioned.** No key was named, so
-`mpt` looked in the usual places: `$MPT_SSH_KEY`, then a running ssh-agent,
-then `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`, and only then would it have
-asked for a password. To name a key explicitly, put it in the URL:
+`mpt` tried the ssh-agent and the default keys under `~/.ssh`, in the order
+[SFTP and SCP](../protocols/ssh.md#authentication) lists. To name a key
+explicitly, put it in the URL:
 
 ```
 mpt cp report.pdf "sftp://deploy@srv.example.com/incoming/?key=~/.ssh/deploy_ed25519"
@@ -117,9 +99,9 @@ $ mpt ls sftp://deploy@srv.example.com/incoming/
 -        40000  report.pdf
 ```
 
-The columns are type (`-` file, `d` directory), size and name. `ls` works on
-every scheme that can list a directory, which is all of them except `scp://`,
-`http://` and the mail schemes.
+The columns are type (`-` file, `d` directory), size and name. Which schemes
+can list is the `list` column of the [capability
+matrix](../protocols/overview.md#what-each-one-can-do).
 
 ## 5. Downloading
 
@@ -177,13 +159,10 @@ ok             40000 bytes    32.14ms  mailto:boss@example.com?subject=Report
 report.pdf: 40000 bytes read, 3/3 targets ok in 123.12ms
 ```
 
-The source was read **once**. The three targets received the bytes
-concurrently, each with its own result line, and the `40000 bytes read` in the
-summary is what actually came off the disk — not three times that. A failing
-target would print `FAILED` on its own line and leave the others alone.
-
-That is the feature that most often replaces a shell script, and
-[Several targets at once](../guide/fan-out.md) is about nothing else.
+The source was read **once** and the three targets received the bytes
+concurrently, each with its own result line. [Several targets at
+once](../guide/fan-out.md) explains the output, the buffering and what happens
+when one target fails.
 
 ## When something goes wrong
 
@@ -195,19 +174,9 @@ $ mpt cp report.pdf sftp://deploy@srv.example.com/incoming/ ; echo $?
 4
 ```
 
-`4` is authentication: the host key was not trusted. `0` is success, `1` a
-failed transfer, `2` a wrong command, `3` a checksum or signature that did not
-hold up, and `130` a run stopped with Ctrl-C. The [full
-table](../reference/exit-codes.md) says which error counts as which.
-
-The mistake of asking a send-only endpoint for data is caught before any
-connection is made, and lands in the "wrong command" category:
-
-```
-$ mpt cp mailto:x@example.com ./ ; echo $?
-error: copy mailto:x@example.com?timeout=30: scheme 'mailto' cannot receive
-2
-```
+`4` is authentication: the host key was not trusted. [Exit
+codes](../reference/exit-codes.md) lists the others and says which error counts
+as which.
 
 **Turn up the log.** `-v` adds an info line per operation, `-vv` shows the
 protocol conversation, `-vvv` everything:
@@ -228,9 +197,3 @@ and what to do about it.
 
 [Troubleshooting](../appendix/troubleshooting.md) collects the errors that come
 up, what each one means and what to do about it.
-
-## Next
-
-[Thinking in URLs](addressing.md) sets out the addressing model properly: the
-trailing slash, per-endpoint options, quoting, and which schemes can do what.
-It is the shortest chapter in the guide and the one the rest depends on.

@@ -16,13 +16,9 @@ to spare can still move a file that would not fit on it.
 
 ## Where the file lands
 
-The trailing slash decides, on every protocol:
-
-```
-$ mpt cp report.pdf backup/                    # backup/report.pdf
-$ mpt cp report.pdf backup/2026-09-10.pdf      # renamed on the way
-report.pdf -> backup/2026-09-10.pdf: 40000 bytes in 8.93ms
-```
+The [trailing slash](../getting-started/addressing.md#the-trailing-slash-decides-where-a-file-lands)
+decides: `backup/` puts the file at `backup/report.pdf`,
+`backup/2026-09-10.pdf` renames it on the way.
 
 A **local** target creates the directories it needs. A **remote** one does not:
 
@@ -73,12 +69,9 @@ interrupted, stopping and cleaning up…
 error: copy big.bin -> sftp://srv.example.com/in/: cancelled: interrupted
 ```
 
-Open connections are dropped, the partial file on the target is removed, and
-the exit code is 130. Nothing is left under the final name, because a transfer
-in progress never had that name to begin with —
-[atomic finishing](reliability.md#a-file-appears-only-when-it-is-whole)
-explains why. With `--resume` the partial file is kept on purpose, so the next
-run can continue it.
+The partial file is removed and the exit code is 130; nothing is left under
+the final name. [Interrupted and repeated transfers](reliability.md#ctrl-c)
+has the details, including what `--resume` keeps.
 
 ## Time limits
 
@@ -149,23 +142,6 @@ directory as if it were a file and fails. Copying directories is
 
 ## Flag placement
 
-Most flags are global and may stand before or after the subcommand:
-
-```
-mpt --json cp report.pdf backup/
-mpt cp --hash sha256 report.pdf backup/
-```
-
-The flags that belong to copying many files — `-r`, `--parallel`,
-`--fail-fast`, `--dry-run`, `--allow-empty`, and `--format`/`--follow` for
-`batch` — belong to the subcommand and must follow it:
-
-```
-mpt cp -r /data/export/ sftp://srv/in/     # right
-mpt -r cp /data/export/ sftp://srv/in/     # error: unexpected argument
-```
-
-## Next
-
-One source and one target is the simple case. The reason `cp` takes more
-arguments is [Several targets at once](fan-out.md).
+Most flags are global and may stand before or after the subcommand. The
+[job flags](../reference/cli.md#job-flags) — `-r`, `--parallel`, `--dry-run`
+and their kin — belong to `cp` and `batch` and must follow the subcommand.

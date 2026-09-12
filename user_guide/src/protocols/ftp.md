@@ -22,14 +22,9 @@ Implicit is the older arrangement and is usually announced by the port: if the
 server says 990, it means implicit. The port is filled in from the mode, so
 `ftps://host/?tls=implicit` needs no `:990`.
 
-`ftp://` with a password hands it to anyone on the path and
-[warns](../trust/connections.md#credentials-in-the-clear). Anonymous FTP has
-nothing to lose and is not warned about. `[policy] refuse_plaintext_auth = true`
-turns the warning into a refusal.
-
-For a server whose certificate does not check out, `?insecure=true` applies to
-that one endpoint. Prefer installing the CA; see
-[TLS certificates](../trust/connections.md#tls-certificates).
+`ftp://` with a password [warns](../trust/connections.md#credentials-in-the-clear);
+anonymous FTP does not. A certificate that does not check out is handled as
+under [TLS certificates](../trust/connections.md#tls-certificates).
 
 ## Passive mode and NAT
 
@@ -51,10 +46,9 @@ transfers hang after the listing works, this is the first thing to try.
 ## Capabilities
 
 FTP supports more than its age suggests: listing, sizes (`SIZE`), renaming
-(`RNFR`/`RNTO`), appending (`APPE`) and directory creation (`MKD`). So
-[atomic finishing](../guide/reliability.md#a-file-appears-only-when-it-is-whole),
-[`--resume`](../guide/reliability.md#resuming-with---resume) and
-[`-r`](../guide/many-files.md#whole-directories-with--r) all work.
+(`RNFR`/`RNTO`), appending (`APPE`) and directory creation (`MKD`), so every
+column of the [capability matrix](overview.md#what-each-one-can-do) is
+ticked.
 
 Renaming onto an existing name is refused by most servers, so `mpt` deletes the
 target first and then renames — which is what makes atomic finishing behave the
@@ -74,7 +68,3 @@ account is often the same thing.
 FTP uses two connections, a control channel and a data channel, and the
 inactivity timeout covers both. A server that accepts the command and then
 never opens the data connection is the failure mode `--timeout` exists for.
-
-## Next
-
-[HTTP and WebDAV](http.md).

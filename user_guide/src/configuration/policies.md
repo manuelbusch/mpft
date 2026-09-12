@@ -22,15 +22,7 @@ All six are optional, and the defaults are the ones listed above.
 Credentials that would travel unprotected [produce a
 warning](../trust/connections.md#credentials-in-the-clear).
 `refuse_plaintext_auth = true` makes that a refusal instead, before any
-connection is made:
-
-```
-error: authentication failed: ftp://ftp.example.com: FTP without TLS sends the password
-       unencrypted (refused by policy; switch to the TLS variant of the scheme, or drop
-       --refuse-plaintext-auth / MPT_REFUSE_PLAINTEXT_AUTH)
-```
-
-`--refuse-plaintext-auth` and `MPT_REFUSE_PLAINTEXT_AUTH=1` do the same for one
+connection is made; that page shows the message. `--refuse-plaintext-auth` and `MPT_REFUSE_PLAINTEXT_AUTH=1` do the same for one
 run, which is the way to find out what it would break before committing to
 it.
 
@@ -54,21 +46,12 @@ answer is to fix the certificate or install the internal CA, since
 
 ## The host-key policy for the machine
 
-`known_hosts` sets the default for `sftp://` and `scp://`:
-
-| Value | Meaning |
-|---|---|
-| `strict` (default) | only keys already in `known_hosts` are accepted |
-| `accept-new` | a new key is recorded and reported; a *changed* key is still refused |
-| `off` | no verification at all |
-
-Setting it in `[policy]` changes the default for every SSH endpoint of every
-run. A URL may still name its own `?known_hosts=`, so this is a default rather
-than a prohibition — the way to make `accept-new` the norm on a workstation, or
-to keep `strict` explicit on a server where somebody might be tempted otherwise.
-
-[Securing the connection](../trust/connections.md) has the whole picture,
-including `?hostkey=` pinning, which needs no `known_hosts` file at all.
+`known_hosts` sets the default host-key policy for `sftp://` and `scp://`:
+`strict`, `accept-new` or `off`, as described under [SSH host
+keys](../trust/connections.md#ssh-host-keys). A URL may still name its own
+`?known_hosts=`, so this is a default rather than a prohibition — the way to
+make `accept-new` the norm on a workstation, or to keep `strict` explicit on a
+server where somebody might be tempted otherwise.
 
 ## Requiring signatures
 
@@ -113,10 +96,9 @@ of the current one. An attacker who cannot forge a signature can still replay
 one, and a nightly export that is three weeks old is usually a problem whether
 or not somebody arranged it.
 
-With the policy set, a checksum file that carries no signing time is refused as
-well — otherwise the check would be trivial to defeat by removing the
-timestamp. [Signatures](../trust/signatures.md) explains where
-the line comes from and why `sha256sum -c` ignores it.
+[Signing time](../trust/signatures.md#signing-time) explains where the
+timestamp comes from and why a checksum file without one is refused under this
+policy.
 
 ## Strict file permissions
 
@@ -140,8 +122,3 @@ stricter or looser alike.
 Because `[policy]` is process-wide, it applies to every endpoint of a run,
 including the ones a [profile](profiles.md) or a
 [job list](../guide/job-lists.md) named rather than you.
-
-## Next
-
-That is the configuration. [Using mpt in scripts](../automation/scripting.md)
-is about making a program act on all of it.

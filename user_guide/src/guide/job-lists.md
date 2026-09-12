@@ -190,17 +190,7 @@ Every job that never ran is listed as cancelled, so the output accounts for the
 whole list. Use it when one failure makes the rest pointless — bad credentials,
 a full disk — and leave it off when each job stands on its own.
 
-> **Note.** A run stopped by `--fail-fast` currently exits with **130**, the
-> code for Ctrl-C, rather than the code of the failure that stopped it. A
-> script that treats 130 as "a person interrupted this" needs to account for
-> that when it passes `--fail-fast`.
-
-Without `--fail-fast` the exit code follows the same rule as a fan-out: if
-every failed job failed for the same reason, that reason's code is used, and
-otherwise it is 1. A batch that failed entirely on authentication exits 4, and
-a script can tell that apart from a batch where one file was missing.
-
-## Next
-
-[Interrupted and repeated transfers](reliability.md) is about what happens when
-a run does not finish, and how the next one continues.
+Note that a run stopped by `--fail-fast` [exits with
+130](../reference/exit-codes.md#--fail-fast), the code for Ctrl-C. Without
+the flag the exit code is aggregated over the jobs as [Exit
+codes](../reference/exit-codes.md#when-several-things-fail-at-once) describes.

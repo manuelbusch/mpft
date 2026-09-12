@@ -119,21 +119,16 @@ Two details inside a URL:
 
 ## Credentials in a URL, and why not to
 
-`user:password@host` is understood, and it is the wrong place for a password:
-it is visible in `ps` to every user on the machine and it lands in the shell
-history. `mpt` warns when it sees one.
-
-The user name alone is fine and often necessary:
+`user:password@host` is understood, and `mpt` warns when it sees it: the
+password is visible in the process list and the shell history. The user name
+alone is fine and often necessary:
 
 ```
 mpt cp report.pdf sftp://deploy@srv.example.com/incoming/
 ```
 
-For the password itself use `--password-stdin`, `--password-file`, the
-`MPT_PASSWORD` environment variable, or a
-[credential reference](../configuration/credentials.md) in the configuration
-file. SSH keys are found automatically; see
-[SFTP and SCP](../protocols/ssh.md).
+[Credentials and secrets](../configuration/credentials.md) covers where the
+password goes instead.
 
 ## Send-only and receive-only schemes
 
@@ -149,12 +144,8 @@ schemes` has the exact table; the exceptions are worth knowing up front:
   [atomic finishing](../guide/reliability.md). Use `webdav://` against a server
   that speaks it.
 
-Asking for the impossible fails immediately, before any connection:
-
-```
-$ mpt cp mailto:x@example.com ./
-error: copy mailto:x@example.com?timeout=30: scheme 'mailto' cannot receive
-```
+Asking for the impossible fails immediately, before any connection, with exit
+code 2.
 
 ## Paths on the far side
 
@@ -178,25 +169,9 @@ scheme.
 A URL that recurs — with its key, its host-key pin, its timeout — can be given
 a name in the configuration file and used as `mpt://<name>/`:
 
-```toml
-[profiles.prod]
-url         = "sftp://deploy@srv.example.com/data/"
-key         = "~/.ssh/prod_ed25519"
-hostkey     = "SHA256:f29GJDwDP5hekqa22VhNdaNPBM+q6AzG3FvQaBCJnmg"
-timeout     = 60
-```
-
 ```
 mpt cp report.pdf mpt://prod/incoming/
 ```
 
-The path of the reference is appended to the profile's own path, and it cannot
-climb out of it. [Profiles](../configuration/profiles.md) covers this in
-full.
-
-## Next
-
-That is the whole model. With it, the rest of the guide is about what to do
-once the endpoints are named: [copying a file](../guide/copying.md), then
-[several targets at once](../guide/fan-out.md) and
-[many files](../guide/many-files.md).
+The path of the reference is appended to the profile's own path.
+[Profiles](../configuration/profiles.md) covers how to define one.

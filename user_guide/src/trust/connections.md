@@ -118,18 +118,11 @@ verification off for that one endpoint:
 mpt cp report.pdf "ftps://upload@ftp.internal/in/?insecure=true"
 ```
 
-`?insecure=true` belongs to one URL. That matters in a fan-out, where the
-alternative would be to lower the bar for every target at once:
-
-```
-mpt cp report.pdf "ftps://old.internal/in/?insecure=true" ftps://partner.example.com/in/
-```
-
-The old server is trusted blindly; the partner is still checked properly.
-
-There is also a global `--insecure`, which is **deprecated** for exactly this
-reason: it applies to every endpoint of the run, including the ones you were
-not thinking about when you added it. It warns when used.
+`?insecure=true` [belongs to one
+URL](../getting-started/addressing.md#options-belong-to-one-endpoint), so in a
+fan-out the other targets are still checked. The global `--insecure` is
+**deprecated** for that reason: it lowers the bar for every endpoint of the
+run, and it warns when used.
 
 Remember what it switches off: not just the CA chain but the hostname check
 too, which is the part that distinguishes the right server from any server with
@@ -165,16 +158,12 @@ there is no password to lose.
 
 ## Passwords in the process list
 
-A password in a URL is visible in `ps` to every user on the machine and stays
-in the shell history, so it gets [a warning of its
-own](../configuration/credentials.md) — and that page covers the alternatives,
-from `--password-stdin` for one run to a credential reference that is resolved
-when the endpoint is used.
-
-Inside the process, passwords and passphrases are held in a type that redacts
-itself in debug output and overwrites its memory when dropped. Every log line
-and every error that mentions a URL shows the password as `***` — including the
-policy message above, which quotes the URL it is refusing.
+A password in a URL is visible in `ps` and in the shell history, so it gets a
+warning of its own. [Credentials and secrets](../configuration/credentials.md)
+covers the alternatives and how passwords are [handled in
+memory](../configuration/credentials.md#in-memory); every log line and error
+that quotes a URL shows the password as `***`, as the policy message above
+does.
 
 ## What is checked, and when
 
@@ -188,8 +177,3 @@ policy message above, which quotes the URL it is refusing.
 
 The order is deliberate: everything that can be decided without exchanging
 data is decided first, and the cheapest way to fail is the earliest one.
-
-## Next
-
-That is trust. [The configuration file](../configuration/file.md) is about not
-having to type any of it — or any of the rest — twice.

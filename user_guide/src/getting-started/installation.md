@@ -115,9 +115,3 @@ platform-specific code beyond paths and the ssh-agent transport.
 
 There are no pre-built binaries at present. Building from source is the only
 installation path.
-
-## Next
-
-With the binary in place, [your first transfer](first-transfer.md) walks
-through a real upload, including the host-key check that stops the first
-attempt on purpose.

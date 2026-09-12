@@ -102,18 +102,10 @@ Options on the reference win over the profile's own:
 mpt cp report.pdf "mpt://prod/incoming/?timeout=300"     # this one transfer may take longer
 ```
 
-That is the general rule from [the previous
-page](file.md#precedence): the more specific the place, the more it
-counts. Note that this also puts a profile above a command-line flag, since the
-profile belongs to one endpoint and the flag to the whole run:
-
-```
-$ mpt --timeout 7 ls mpt://prod/     # → timeout=120, the profile's value
-```
-
-The reserved keys behave the other way round, because they are run-wide
-settings rather than endpoint options: `--hash sha256` beats `hash = "blake3"`,
-and `--no-atomic` cannot be undone by `atomic = true`.
+That is the general [precedence rule](file.md#precedence): the more specific
+the place, the more it counts, which also puts a profile's endpoint options
+above a command-line flag. The reserved keys are run-wide settings and go the
+other way: `--hash sha256` beats `hash = "blake3"`.
 
 ## When to define one
 
@@ -159,8 +151,3 @@ one place instead of in everyone's habits.
   $ mpt ls mpt://nosuch/
   error: configuration: no profile 'nosuch' (known: boss, prod)
   ```
-
-## Next
-
-[Credentials and secrets](credentials.md) is about the one key a profile should
-never spell out: the password.

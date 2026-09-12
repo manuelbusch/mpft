@@ -82,7 +82,3 @@ Two settings people look for here and will not find:
 - **The known-hosts file** is `[ssh] known_hosts_file`, not an environment
   variable. `MPT_SSH_KNOWN_HOSTS` sets the *policy*, not the path.
 - **The parallelism** is `--parallel` or `[defaults] parallel`.
-
-## Next
-
-[Exit codes](exit-codes.md).

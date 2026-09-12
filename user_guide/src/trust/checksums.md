@@ -47,21 +47,9 @@ with a tool they already have, on a machine that has never heard of `mpt`.
 
 ## In a fan-out
 
-Every target that took the file gets its own copy of the checksum file:
-
-```
-$ mpt cp --hash sha256 report.pdf sftp://srv/in/ "s3://bucket/reports/"
-ok             40000 bytes    79.43ms  sftp://srv/in/
-        + sftp://srv/in/report.pdf.sha256
-ok             40000 bytes     7.13ms  s3://bucket/reports/
-        + s3://bucket/reports/report.pdf.sha256
-report.pdf: 40000 bytes read, 2/2 targets ok in 123.12ms
-sha256  4dc21b974cc293d0dfbb25326f0df4ac461f29d69ccc2c2dc5391f4f39a45aed
-```
-
-The digest is printed once, since the payload was one payload.
-
-Two details matter in practice:
+Every target that took the file gets its own copy of the checksum file, and
+the digest is printed once, since there was one payload; [Several targets at
+once](../guide/fan-out.md) shows the output. Two details matter in practice:
 
 - **The checksum file is written after the transfer**, through a second
   connection to the same target. Combined with
@@ -72,8 +60,8 @@ Two details matter in practice:
   explicitly — the file itself arrived, the checksum beside it did not — so you
   can tell the two situations apart.
 
-**Mail targets** cannot have a file written next to them. They receive the
-checksum as a second attachment, plus a line in the body.
+[Mail targets](../protocols/mail.md#the-message) receive the checksum as a
+second attachment instead.
 
 ## Verifying a download with `--check`
 
@@ -133,8 +121,3 @@ verifies perfectly.
 
 For a file that came from somewhere you do not control, that is the question
 that matters, and it needs [Signatures](signatures.md).
-
-## Next
-
-[Signatures](signatures.md) closes that gap, and
-[Securing the connection](connections.md) deals with the layer below both.

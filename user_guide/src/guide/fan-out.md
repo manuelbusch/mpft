@@ -71,24 +71,12 @@ up the others. Leave it alone for anything large.
 ## Retrying a target
 
 `--retries <n>` repeats a **transfer** that failed, which is only possible when
-the payload can be replayed — hence the cache:
+the payload can be replayed — hence the cache. Each target is retried on its
+own, with the backoff described under [Time limits](copying.md#time-limits).
 
-```
-$ mpt --retries 2 cp report.pdf sftp://srv.example.com/in/
-error: copy report.pdf: invalid option 'retries': retries need the memory cache (a stream cannot be replayed)
-```
-
-Attempts are spaced by a linear backoff — one second before the second
-attempt, two before the third, and so on — so `--retries 3` adds up to six
-seconds of waiting before it gives up.
-
-Retrying the connection is a different thing and always available; see
-[time limits](copying.md#time-limits).
-
-One caveat: **a retried mail target may deliver twice.** SMTP has no way to
-find out whether a message that failed halfway was accepted, so a second
-attempt may produce a second mail. Nothing else in the fan-out has that
-problem, because every other target writes to a name that can be overwritten.
+One caveat: [a retried mail target may deliver
+twice](../protocols/mail.md#in-a-fan-out), because SMTP cannot say whether a
+message that failed halfway was accepted.
 
 ## When a target fails
 
@@ -102,10 +90,10 @@ report.pdf: 40000 bytes read, 1/2 targets ok in 4.60ms
 error: 1 of 2 targets failed
 ```
 
-The exit code is 1 when the outcomes are mixed. When every failed target failed
-for the same reason — all authentication, say — that reason's code is used
-instead, so a script can react to "the credentials are wrong" without parsing
-messages. [Using mpt in scripts](../automation/scripting.md) has the rules.
+The exit code is 1 when the outcomes are mixed, and the specific code when
+every failed target failed the same way; [Exit
+codes](../reference/exit-codes.md#when-several-things-fail-at-once) has the
+rule.
 
 Nothing is rolled back. The targets that succeeded keep the file; re-running
 the command with [`--skip-existing`](reliability.md#skipping-with---skip-existing)
@@ -136,12 +124,5 @@ file, through a second connection, after the transfer succeeded. If that write
 fails, only that target is reported as failed — the file itself is already
 there.
 
-Mail targets cannot have a file written next to them, so they receive the
-checksum as a second attachment, and a signature as a third.
-[Checksums](../trust/checksums.md) and [Signatures](../trust/signatures.md)
-have the detail.
-
-## Next
-
-One source to many targets is one job. Many sources is
-[Many files](many-files.md), where each job is a fan-out of its own.
+[Mail targets](../protocols/mail.md#the-message) receive the checksum and the
+signature as further attachments instead.

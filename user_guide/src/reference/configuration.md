@@ -157,14 +157,9 @@ password = { vault = "secret/data/mpt/prod#password" }    # HashiCorp Vault (fea
 | path | may start with `~/` | `"~/.ssh/id_ed25519"` |
 | any string | may contain `${VAR}` | `"${SECRETS_DIR}/key"` |
 
-`${VAR}` is replaced by that environment variable **after** the file is parsed,
-so it can only change values, never keys or structure. A variable that is not
-set is an error:
-
-```
-error: configuration: config.toml: '${SECRETS_DIR}/id_ed25519' refers to ${SECRETS_DIR},
-       which is not set
-```
+`${VAR}` is replaced after the file is parsed, so it can only change values,
+never keys or structure, and an unset variable is an error; see [Value
+formats](../configuration/file.md#value-formats).
 
 ## A complete example
 
@@ -223,7 +218,3 @@ path_style = true
 url     = "mailto:boss@example.com"
 subject = "Report"
 ```
-
-## Next
-
-[Environment variables](environment.md).

@@ -160,18 +160,11 @@ matters against a server's own limit rather than against this one.
 
 A mail target behaves like any other, with two differences.
 
-**It pauses the stream at the start**, while it connects and negotiates, the
-same as SCP does. That is
-[head-of-line blocking](../guide/fan-out.md#slow-targets-stalled-targets) and
-it passes.
+**It pauses the stream at the start** while it connects and negotiates, which
+is [head-of-line blocking](../guide/fan-out.md#slow-targets-stalled-targets)
+and passes.
 
 **A retried mail may be delivered twice**, because SMTP cannot say whether a
 message that failed halfway was accepted. Every other kind of target overwrites
-a name and is safe to retry; see
-[Retrying a target](../guide/fan-out.md#retrying-a-target). If duplicates would
-be a problem, leave `--retries` off when a mail target is in the list.
-
-## Next
-
-That is the last protocol. The [reference](../reference/cli.md) is the lookup
-material: every flag, key, variable and exit code.
+a name and is safe to retry. If duplicates would be a problem, leave
+`--retries` off when a mail target is in the list.

@@ -15,24 +15,24 @@ mpt cp -r --skip-existing --allow-empty \
     sftp://srv.example.com/outbox/ /data/incoming/
 ```
 
-- **`--skip-existing`** leaves alone anything the target already holds under
-  the same name and size, so a run that follows a partial one sends only what
-  is missing, and a run over an unchanged tree sends nothing at all.
-- **`--allow-empty`** stops a pattern that matched nothing from being an error.
-  An inbox is empty most nights, and a job that alerts every night is a job
-  nobody reads.
+- [**`--skip-existing`**](../guide/reliability.md#skipping-with---skip-existing)
+  makes a run that follows a partial one send only what is missing.
+- [**`--allow-empty`**](../guide/many-files.md#patterns-on-the-far-side) stops
+  a pattern that matched nothing from being an error. An inbox is empty most
+  nights, and a job that alerts every night is a job nobody reads.
 
-Add `--resume` when the files are large enough that finishing half of one is
-worth keeping, and `--delete-source` when the point is to drain the source
-rather than mirror it:
+Add [`--resume`](../guide/reliability.md#resuming-with---resume) when the
+files are large enough that finishing half of one is worth keeping, and
+[`--delete-source`](../guide/many-files.md#skipping-existing-files-and-deleting-the-source)
+when the point is to drain the source rather than mirror it:
 
 ```
 mpt cp -r --skip-existing --resume --delete-source \
     sftp://srv.example.com/outbox/ /data/incoming/
 ```
 
-`--dry-run` first, especially with `--delete-source`. See
-[Many files](../guide/many-files.md).
+[`--dry-run`](../guide/many-files.md#dry-run) first, especially with
+`--delete-source`.
 
 ## cron
 
@@ -177,10 +177,8 @@ the watcher in the same pipeline, so both come back together.
 ## Parallelism and load
 
 [`--parallel`](../guide/many-files.md#parallelism) is also the number of
-simultaneous logins on the far side, which is why single digits are the useful
-range against one server. Two limits matter on a shared machine: with
-`--cache`, memory is the cache limit times the parallelism, and every job holds
-its own connections for as long as it runs.
+simultaneous logins on the far side and, with `--cache`, a multiplier on
+memory; that section has the limits.
 
 If the far side is a partner's server, the polite arrangement is a small
 `--parallel`, a `RandomizedDelaySec`, and a `--timeout` generous enough that
@@ -199,8 +197,3 @@ mpt --json cp -r --skip-existing /data/export/ mpt://prod/incoming/ \
 The JSON tells you later which files moved and what their checksums were, which
 is the question that actually gets asked when a partner says something did not
 arrive. [Using mpt in scripts](scripting.md) has the fields.
-
-## Next
-
-The [protocol pages](../protocols/overview.md) collect what is specific to each
-scheme, and the [reference](../reference/cli.md) is the lookup material.

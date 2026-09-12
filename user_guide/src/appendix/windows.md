@@ -102,7 +102,3 @@ is usually not Windows.
   ```
   mpt completions powershell > $PROFILE.CurrentUserAllHosts
   ```
-
-## Next
-
-[Troubleshooting](troubleshooting.md).

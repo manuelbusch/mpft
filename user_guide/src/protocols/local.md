@@ -17,12 +17,7 @@ is worth writing only when a path could be mistaken for something else.
 Relative paths are resolved against the working directory, absolute ones are
 taken as they are. The [trailing
 slash](../getting-started/addressing.md#the-trailing-slash-decides-where-a-file-lands)
-decides whether a target is a directory or a file name, exactly as elsewhere:
-
-```
-mpt cp report.pdf backup/                 # backup/report.pdf
-mpt cp report.pdf backup/2026-09-10.pdf   # renamed
-```
+decides whether a target is a directory or a file name, exactly as elsewhere.
 
 A `~` in a local path is expanded by the shell, so write it unquoted. Inside a
 URL option (`?key=~/.ssh/id_ed25519`) it is `mpt` that expands it; see
@@ -30,20 +25,10 @@ URL option (`?key=~/.ssh/id_ed25519`) it is `mpt` that expands it; see
 
 ## Directories are created
 
-A local target creates the directories it needs:
-
-```
-$ mpt cp report.pdf backup/2026/09/10/
-report.pdf -> backup/2026/09/10/: 40000 bytes in 4.85ms
-```
-
-This is the one place where `mpt` differs from remote targets, which refuse a
-path whose parent does not exist. It follows what a person expects of a local
-copy, and it is why a date-stamped archive directory needs no `mkdir` in front
-of it.
-
-If something that is not a directory is in the way, the copy fails for that
-target only:
+A local target creates the directories it needs, [unlike a remote
+one](../guide/copying.md#where-the-file-lands), so a date-stamped archive
+directory needs no `mkdir` in front of it. If something that is not a
+directory is in the way, the copy fails for that target only:
 
 ```
 FAILED             0 bytes   254.50µs  blocker/sub/: I/O error: Not a directory (os error 20)
@@ -51,14 +36,9 @@ FAILED             0 bytes   254.50µs  blocker/sub/: I/O error: Not a directory
 
 ## Capabilities
 
-Local files can do all of it: listing, sizes, renaming, appending, creating
-directories, deleting. In practice that means every feature works without a
-caveat — [atomic finishing](../guide/reliability.md#a-file-appears-only-when-it-is-whole),
-[`--resume`](../guide/reliability.md#resuming-with---resume),
-[`-r`](../guide/many-files.md#whole-directories-with--r),
-[patterns](../guide/many-files.md#patterns-on-the-far-side),
-[`--skip-existing`](../guide/reliability.md#skipping-with---skip-existing) and
-[`--delete-source`](../guide/many-files.md#skipping-existing-files-and-deleting-the-source).
+Local files have every capability in the
+[matrix](overview.md#what-each-one-can-do), so every feature works without a
+caveat.
 
 ```
 $ mpt ls .
@@ -95,18 +75,5 @@ arrived, which is usually what an inbox on the far side wants to sort by.
 
 ## Windows
 
-Local paths on Windows work the way they look:
-
-```
-mpt cp C:\data\report.pdf sftp://srv.example.com/in/
-mpt cp \\fileserver\share\report.pdf "s3://bucket/in/"
-```
-
-A drive letter or a UNC path is recognised as a local file rather than mistaken
-for a scheme, and `\` counts as a path separator, so checksum and `.mpt-part`
-files land next to their file. See the [Windows
-appendix](../appendix/windows.md).
-
-## Next
-
-[SFTP and SCP](ssh.md), the other end of most commands on this page.
+Drive letters, UNC paths and `\` as a separator are recognised; see the
+[Windows appendix](../appendix/windows.md#paths).
