@@ -63,7 +63,7 @@ impl Secret {
         match self {
             Secret::Literal(v) => {
                 warn!(
-                    "{what} stands in the configuration file in the clear; \
+                    "{what} is in the configuration file in the clear; \
                      prefer {{ env = … }}, {{ file = … }} or {{ cmd = … }}"
                 );
                 Ok(SecretString::from(v.clone()))

@@ -141,6 +141,6 @@ directory as if it were a file and fails. Copying directories is
 
 ## Flag placement
 
-Most flags are global and may stand before or after the subcommand. The
+Most flags are global and may come before or after the subcommand. The
 [job flags](../reference/cli.md#job-flags) — `-r`, `--parallel`, `--dry-run`
 and their kin — belong to `cp` and `batch` and must follow the subcommand.

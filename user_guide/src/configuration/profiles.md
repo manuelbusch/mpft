@@ -113,7 +113,7 @@ above a command-line flag. The reserved keys are run-wide settings and go the
 other way: `--hash sha256` beats `hash = "blake3"`. `via` is the exception
 among them, because it is about this endpoint and not about the run: a
 profile's `via` wins over `--via` and `[defaults] via`, and only `--no-via`
-switches every relay off at once.
+switches every relay off together.
 
 ## When to define one
 

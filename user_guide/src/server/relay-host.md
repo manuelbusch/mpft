@@ -34,7 +34,7 @@ restart.
 | `--listen [ADDR]` | – | `0.0.0.0:2222` | listen here instead of reading one upload from stdin |
 | `--host-key <PATH>` | `host_key` | `~/.local/state/mpt/relay_host_key` | the host key; generated when missing |
 | `--authorized-keys <PATH>` | `authorized_keys` | `~/.config/mpt/authorized_keys` | who may relay |
-| `--parallel <N>` | `parallel` | `4` | relays running at once; further sessions wait |
+| `--parallel <N>` | `parallel` | `4` | relays running concurrently; further sessions wait |
 | `--max-size <SIZE>` | `max_size` | `0` (no limit) | refuse larger uploads |
 | `--grace <SECONDS>` | `grace` | `30` | how long a shutdown waits for running relays |
 | `--credentials <MODE>` | `credentials` | `header` | how clients may send the targets' passwords: `header`, `on-demand` or `any` |

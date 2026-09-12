@@ -19,11 +19,26 @@ it in that state:
 3. **Descriptive headings, plain prose.** A heading says what the section
    covers, so the table of contents and the search index are usable, and so
    that anchors stay stable. Prose states the fact; it does not argue for it
-   outside `why-mpt.md`.
+   outside `why-mpt.md`. In the reference and protocol pages headings are
+   noun phrases; the guide chapters may use a sentence.
+4. **Overview pages summarise and link.** The security overview, the
+   deployment patterns, the quick reference and the glossary repeat nothing
+   in full: each entry is a sentence or a row and a link to the page that
+   owns the fact (rule 1 still holds). The compatibility page is the one
+   place that states what is kept stable; a change that breaks something
+   listed there is noted in the release notes.
+
+The prose is British English; flags and keys keep the program's spelling.
+Two phrasings to avoid, because they read as translations or are ambiguous:
+"stands in" for "is in", and "at once" where "immediately" or "in parallel"
+is meant.
 
 `python3 user_guide/tools/linkcheck.py user_guide/src` checks relative links
 and heading anchors; run it after renaming a heading. `mdbook build` in
-`user_guide/` must pass without warnings.
+`user_guide/` must pass without warnings, and needs `mdbook-mermaid`
+(`cargo install mdbook-mermaid`) for the diagrams on the deployment page;
+`mermaid.min.js` and `mermaid-init.js` in `user_guide/` are what
+`mdbook-mermaid install` put there.
 
 ## Test servers
 

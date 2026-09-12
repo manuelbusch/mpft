@@ -34,7 +34,7 @@ it may contribute is limited; see
 [defaults]                    # values for the flags of the same name
 timeout      = 60             # seconds of inactivity, 0 disables it
 retries      = 2
-parallel     = 8              # jobs at once for cp -t and batch
+parallel     = 8              # jobs in parallel for cp -t and batch
 hash         = "sha256"
 cache        = false
 cache_limit  = "256M"
@@ -137,7 +137,7 @@ sha256  98ea…
 ```
 
 **Per-endpoint options** (`timeout`, `key`, `known_hosts`, `hostkey`,
-`insecure`, `connect_retries` and everything else that can stand in a URL)
+`insecure`, `connect_retries` and everything else that can appear in a URL)
 follow the opposite principle: the more specific the place it was written, the
 more it counts.
 

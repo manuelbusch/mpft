@@ -86,7 +86,7 @@ error: 1 of 2 jobs failed
 
 The whole list is checked for [colliding
 targets](many-files.md#colliding-targets) before the first byte moves, so a
-list that would have two jobs writing one file fails at once with exit code 2.
+list that would have two jobs writing one file fails immediately with exit code 2.
 
 ## Reading from a pipe
 

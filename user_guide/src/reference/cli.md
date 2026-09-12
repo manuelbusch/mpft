@@ -59,7 +59,7 @@ HTTP](../server/serve.md).
 | `--token-env <VAR>` | – | environment variable holding the bearer token |
 | `--journal <PATH>` | – | JSONL journal; jobs left open are run again after a restart |
 | `--retention <SPAN>` | `24h` | how long finished jobs stay available; `0` keeps them until the server stops |
-| `--parallel <N>` | `4` | transfers in flight at once, over all jobs |
+| `--parallel <N>` | `4` | transfers in flight at a time, over all jobs |
 | `--grace <SECONDS>` | `30` | how long a shutdown waits for running jobs before cancelling them |
 | `--allow-any-url` | off | take any URL in a job, not only `mpt://<profile>/` ones |
 | `--allow-delete` | off | let jobs set `delete_source` |
@@ -80,7 +80,7 @@ global flags apply to every relay the process runs. The table is under
 
 ## Flags
 
-All flags below are **global**: they may stand before or after the subcommand,
+All flags below are **global**: they may come before or after the subcommand,
 and they are accepted by every subcommand even where they do nothing (`--hash`
 on `mpt ls` is ignored). The exceptions are listed under
 [Job flags](#job-flags), which belong to `cp` and `batch` and must follow the
@@ -146,7 +146,7 @@ These belong to `cp` and `batch` and must come **after** the subcommand.
 |---|---|---|
 | `-t`, `--target <URL>` | – | `cp` only: a target directory; every positional URL becomes a source. Repeatable |
 | `-r`, `--recursive` | off | copy directories with everything below them |
-| `--parallel <N>` | `4` | jobs in flight at once |
+| `--parallel <N>` | `4` | jobs in flight at a time |
 | `--fail-fast` | off | stop starting jobs after the first failure and cancel the running ones |
 | `--dry-run` | off | print the jobs that would run, and run nothing |
 | `--allow-empty` | off | a source pattern that matches nothing is not an error |
@@ -162,7 +162,7 @@ mpt cp -r --parallel 8 /data/export/ sftp://srv/in/     # right
 mpt -r cp /data/export/ sftp://srv/in/                  # error: unexpected argument
 ```
 
-## Flags that exclude each other
+## Conflicting flags
 
 | Combination | Why |
 |---|---|
@@ -197,7 +197,7 @@ error: --check is not available with a relay: it needs what only this side has
        (the checksum file, the source, the key)
 ```
 
-## Where each flag can also come from
+## Flags and their configuration keys
 
 Most flags have a `[defaults]` key of the same name and, for the per-endpoint
 ones, a URL option. The precedence differs between the two groups —

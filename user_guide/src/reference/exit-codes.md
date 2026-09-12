@@ -13,7 +13,7 @@ Code 2 is also clap's own code for a malformed command line, which is why a bad
 URL and a bad configuration file join it there: all three mean "the request was
 wrong", and none of them will come right on a retry.
 
-## Which errors count as which
+## Error kinds and their codes
 
 | Kind of failure | Code |
 |---|---|
@@ -27,7 +27,7 @@ A host-key refusal counts as authentication (4), because that is the stage it
 happens at and because the answer is the same: something about how you are
 identifying the other side needs attention before a retry can help.
 
-## When several things fail at once
+## Several failures
 
 **A fan-out** collects the code of every failed target. If they all agree, that
 code is used; otherwise the result is 1.
@@ -55,7 +55,7 @@ counts as a failed job with code 4 or 1, like any other endpoint.
 **`mpt serve` and `mpt relay --listen`** exit 0 after Ctrl-C or `SIGTERM`,
 whatever the jobs they were running did; those outcomes are in the API and in the log.
 
-## Success that is not a copy
+## Zero without a transfer
 
 Some outcomes are 0 although nothing was transferred:
 
@@ -68,7 +68,7 @@ A script that needs to know whether bytes actually moved should read
 `bytes_read` from the [JSON report](../automation/scripting.md#the-json-report)
 rather than infer it from the exit code.
 
-## Failures that leave a completed copy
+## Failures after a completed copy
 
 `--delete-source` can fail after the transfer succeeded. The copy stands, the
 source is still there, and the run exits **1**:

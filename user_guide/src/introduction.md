@@ -21,6 +21,15 @@ the library.
 
 This guide describes `mpt` 0.1. `mpt --version` prints the version you have,
 and `mpt --help` is always authoritative for the binary in front of you.
+[Compatibility and stability](reference/compatibility.md) says what a script
+may rely on from one version to the next, and [Licensing and
+support](appendix/support.md) says under which terms and where to report a
+problem.
+
+The prose uses British spelling; the flags and keys are spelled as the
+program spells them (`--color`, `[defaults] color`). Words the guide uses
+with a fixed meaning — job, transfer, target, sidecar, via — are in the
+[glossary](appendix/glossary.md).
 
 ## Who this guide is for
 
@@ -40,11 +49,17 @@ No Rust knowledge is needed.
   and that the far side is who it claims to be.
 - **Configuration** is how to stop typing all of that on every command line,
   and **Automation** how to let a machine run it unattended.
-- **Server and relay** covers the two ways `mpt` runs as a service: taking
-  jobs over HTTP, and taking one upload over SSH and fanning it out from a
-  host with the bandwidth.
+- **Services** covers the two ways `mpt` runs as a service — taking jobs over
+  HTTP, and taking one upload over SSH and fanning it out from a host with
+  the bandwidth — and the patterns in which the pieces are deployed.
+- **Security** is one page for a reviewer: what is trusted, what is checked
+  and when, where a secret is at each moment, and a hardening checklist.
 - **Protocols** collects what is specific to each scheme.
-- **Reference** is the lookup material: every flag, key, variable and exit code.
+- **Reference** is the lookup material: a quick reference, every flag, key,
+  variable and exit code, the HTTP API and the relay protocol, and what is
+  kept stable between versions.
+- **Appendix** has the library, Windows, troubleshooting, the glossary and
+  the licence.
 
 Read the first three chapters in order; after that, each chapter stands on its
 own.

@@ -142,7 +142,7 @@ pub fn check_credentials(loc: &Location) -> Result<()> {
     if loc.password_in_url() {
         warn_once(
             format!("urlpassword:{}", loc.scheme()),
-            "the password stands in the URL, where the process list and the shell history \
+            "the password is in the URL, where the process list and the shell history \
              can read it. Use MPT_PASSWORD, --password-file or --password-stdin instead",
         );
     }

@@ -57,7 +57,7 @@ control frame is logged and ignored; a malformed frame ends the session.
 In version 1 the payload is exactly `size` raw bytes after the header, with no
 frames, no questions, no `src` and no chained targets.
 
-## The lines back
+## Lines from the relay
 
 The relay writes JSON lines to its standard output:
 

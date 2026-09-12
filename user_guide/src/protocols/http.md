@@ -93,7 +93,7 @@ secrets](../configuration/credentials.md).
 A device-code flow with a refresh token in the key store is not built in; a
 script that prints a token covers the same ground.
 
-## Listing requires WebDAV
+## Listing
 
 `mpt ls` on `http://` fails, and says what to do about it:
 

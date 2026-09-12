@@ -59,7 +59,7 @@ cargo build --release --features keyring,s3-aws-auth
 cargo build --release --features server
 ```
 
-A URL whose protocol was not compiled in fails at once, before any connection
+A URL whose protocol was not compiled in fails immediately, before any connection
 is attempted, and the message names the missing feature:
 
 ```

@@ -46,7 +46,7 @@ rejected password will fail again in five minutes, a refused connection may
 not. Code 3 deserves its own branch: the bytes arrived but cannot be trusted,
 which is a different problem from a transfer that failed.
 
-With several targets or jobs the code is [aggregated](../reference/exit-codes.md#when-several-things-fail-at-once):
+With several targets or jobs the code is [aggregated](../reference/exit-codes.md#several-failures):
 1 when the outcomes are mixed, the specific code when every failure was of the
 same kind.
 
@@ -113,7 +113,7 @@ $ mpt --json cp --check out/report.pdf back/ 2>/dev/null
 | `targets[].ok`, `.error`, `.cancelled` | that target's outcome |
 | `targets[].bytes`, `.elapsed_ms`, `.attempts` | what it took and how often it was tried |
 | `targets[].skipped` | it already had the file (`--skip-existing`) |
-| `targets[].sidecar`, `.signature` | the extra files written beside it, or `null` |
+| `targets[].sidecar`, `.signature` | the extra files written beside it — the [checksum file](../appendix/glossary.md) and the signature — or `null` |
 | `digests` | algorithm → hex, empty unless a checksum was computed |
 | `check` | `algo`, `ok`, `expected`, `actual`, `signer`; `null` without `--check` |
 | `source_removed`, `remove_error` | `--delete-source`: whether the source went, and why not |

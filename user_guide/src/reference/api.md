@@ -127,7 +127,7 @@ stable part.
 | 503 | `shutting_down` | the server is draining and takes no new jobs |
 
 A job that fails after it was accepted carries the same shape in its `error`
-field, with the kinds of the [exit-code table](exit-codes.md#which-errors-count-as-which):
+field, with the kinds of the [exit-code table](exit-codes.md#error-kinds-and-their-codes):
 `io`, `remote`, `transport`, `auth`, `checksum_mismatch`, `signature`,
 `config`, `invalid_url`, `invalid_option`, `unsupported_scheme`,
 `unsupported_operation`, `cancelled`, plus `too_many_transfers` when a pattern

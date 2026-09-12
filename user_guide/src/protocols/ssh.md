@@ -26,7 +26,7 @@ SFTP is a subsystem of the same SSH server, so if `sftp://` fails where
 `scp://` works, the server has the subsystem switched off. That is the one
 situation where SCP is the right choice.
 
-### SCP needs the size up front
+### SCP and the source size
 
 The SCP protocol announces the length of a file before sending it. When the
 source cannot say how large it is (a `scp://` source, an HTTP server without a
@@ -106,7 +106,7 @@ mpt cp report.pdf "sftp://deploy@srv/in/?key=/tmp/k&cert=/tmp/k-cert.pub"
 
 If the server refuses the certificate, the bare key still gets its turn.
 
-### When a relay does the logging in
+### Authentication through a relay
 
 A target written by a [relay](../server/relay.md) is logged into from there,
 so the order is the relay's: the key its own configuration names, then the

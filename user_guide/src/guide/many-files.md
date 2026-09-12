@@ -185,7 +185,7 @@ has two consequences:
 
 - **It is also the number of simultaneous logins on a host.** An `sshd` with
   the default `MaxStartups 10:30:100` starts refusing connections beyond ten
-  unauthenticated at once. Against a single SSH server, stay below ten;
+  unauthenticated connections at a time. Against a single SSH server, stay below ten;
   a higher value produces failures rather than speed.
 - **With `--cache`, memory is the limit times the parallelism.** Four jobs at
   256M is a gigabyte.

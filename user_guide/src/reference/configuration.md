@@ -133,7 +133,7 @@ of `mpt serve` wins over its key here.
 | `token` | secret | none | the bearer token every request must carry |
 | `journal` | path | none | JSONL file of submitted jobs; those left open are run again after a restart |
 | `retention` | duration | `"24h"` | how long finished jobs stay available; `"0"` keeps them until the server stops |
-| `parallel` | integer, at least 1 | `4` | transfers in flight at once, over all jobs |
+| `parallel` | integer, at least 1 | `4` | transfers in flight at a time, over all jobs |
 | `grace` | duration | `"30s"` | how long a shutdown waits for running jobs before cancelling them |
 | `max_body` | size | `"8M"` | largest request body |
 | `urls` | `"profiles"`, `"any"` | `profiles` | which URLs a job may name |
@@ -151,7 +151,7 @@ Settings for [`mpt relay --listen`](../server/relay-host.md#on-the-relay-host)
 |---|---|---|---|
 | `host_key` | path | `~/.local/state/mpt/relay_host_key` | the server's host key; generated when the file is missing |
 | `authorized_keys` | path | `~/.config/mpt/authorized_keys` | who may relay, in OpenSSH format |
-| `parallel` | integer, at least 1 | `4` | relays running at once; further sessions wait |
+| `parallel` | integer, at least 1 | `4` | relays running concurrently; further sessions wait |
 | `grace` | duration | `"30s"` | how long a shutdown waits for running relays |
 | `max_size` | size | `"0"` (no limit) | refuse larger uploads |
 | `credentials` | `"header"`, `"on-demand"`, `"any"` | `"header"` | which way a client may send the targets' passwords |

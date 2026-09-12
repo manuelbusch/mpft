@@ -95,7 +95,7 @@ error: 1 of 2 targets failed
 
 The exit code is 1 when the outcomes are mixed, and the specific code when
 every failed target failed the same way; [Exit
-codes](../reference/exit-codes.md#when-several-things-fail-at-once) has the
+codes](../reference/exit-codes.md#several-failures) has the
 rule.
 
 Nothing is rolled back. The targets that succeeded keep the file; re-running

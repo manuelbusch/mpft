@@ -70,7 +70,8 @@ keys](../reference/configuration.md#server) lists them with their defaults.
 ## Jobs and batches
 
 A **job** is one source with one or more targets, the same thing `mpt cp`
-does, and goes to `POST /v1/jobs`. A **batch** is a list of them, the same
+does, and goes to `POST /v1/jobs` (the [glossary](../appendix/glossary.md)
+keeps the server's *job* and *transfer* apart from the command line's). A **batch** is a list of them, the same
 thing `mpt batch` does, and goes to `POST /v1/batches` either as JSON or as a
 [job list](../guide/job-lists.md#three-ways-to-write-a-list) in one of the
 three text forms:
@@ -168,7 +169,7 @@ Two things a job may not do without the operator's say-so:
   A server started with `--delete-source` and without `--allow-delete` does
   not start, since every job would delete its source.
 - **Grow without bound.** `max_transfers` caps what one job may hold after
-  patterns and trees are expanded. A list longer than that is refused at once;
+  patterns and trees are expanded. A list longer than that is refused immediately;
   a pattern or a tree that turns out that large fails the job with kind
   `too_many_transfers`, and the listing stops there rather than reading a huge
   tree to the end. `max_queued` caps the jobs not yet finished; a `POST`
@@ -261,7 +262,7 @@ by default; `"0"` keeps them until the server stops.
 ## Stopping it
 
 Ctrl-C stops the server taking jobs, waits `grace` for the running ones and
-exits 0. A second Ctrl-C cancels them at once. Those cancelled jobs are the
+exits 0. A second Ctrl-C cancels them immediately. Those cancelled jobs are the
 ones a journal runs again.
 
 ```

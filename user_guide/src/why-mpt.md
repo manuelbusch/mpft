@@ -25,7 +25,7 @@ mpt cp --hash sha256 export.csv \
 
 The URL is the address, and the prefix decides the protocol. Everything else —
 how to authenticate, whether to checksum, how long to wait, how many transfers
-run at once — is expressed the same way no matter what the far side speaks.
+run in parallel — is expressed the same way no matter what the far side speaks.
 A flag learned for SFTP works for S3; a habit formed on HTTP carries to FTP.
 
 That also means one place to look when something fails. The error messages,

@@ -43,7 +43,7 @@ were compiled in.
 |---|---|---|
 | receive | can be a source | any download; mail cannot, and asking fails before any connection |
 | list | the directory can be listed | `mpt ls`, [patterns](../guide/many-files.md#patterns-on-the-far-side), `-r` with this scheme as the *source* |
-| size | the source can say how large it is | the progress percentage, `--skip-existing`; SCP cannot, with [consequences](ssh.md#scp-needs-the-size-up-front) |
+| size | the source can say how large it is | the progress percentage, `--skip-existing`; SCP cannot, with [consequences](ssh.md#scp-and-the-source-size) |
 | send | can be a target | any upload |
 | rename | a file can be renamed in place | [atomic finishing](../guide/reliability.md#a-file-appears-only-when-it-is-whole); S3 does not need it, an object appears only when its upload is complete |
 | append | a file can be appended to | [`--resume`](../guide/reliability.md#resuming-with---resume) |

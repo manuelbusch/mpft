@@ -1,11 +1,11 @@
 # Credentials and secrets
 
-A password on a command line is public. It stands in `ps` for every user on the
+A password on a command line is public. It is visible in `ps` to every user on the
 machine, it lands in the shell history, and it turns up in CI logs that nobody
 meant to keep. `mpt` warns when it sees one:
 
 ```
-WARN mpt::policy: the password stands in the URL, where the process list and the shell
+WARN mpt::policy: the password is in the URL, where the process list and the shell
      history can read it. Use MPT_PASSWORD, --password-file or --password-stdin instead
 ```
 
@@ -28,7 +28,7 @@ apply to `sftp`, `scp`, `ftp`, `ftps`, `http` and `webdav`; SMTP has
 `MPT_SMTP_PASSWORD` of its own.
 
 There is also `--password <PW>`, which is the same as `MPT_PASSWORD` but
-stands in the argument list and is therefore visible in `ps` like a password
+is in the argument list and is therefore visible in `ps` like a password
 in the URL. It is there for a quick test on a machine nobody shares; the other
 three are the ones to use.
 
@@ -72,7 +72,7 @@ error: authentication failed: password of profile 'k': keyring credentials need
 
 [Installation](../getting-started/installation.md) covers how to build them in.
 
-### Where a reference may stand
+### Where a reference may be used
 
 The same syntax works for every secret in the file:
 
