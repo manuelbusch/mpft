@@ -6,7 +6,7 @@ and the only one that needs no scheme:
 ```
 mpt cp report.pdf sftp://srv.example.com/in/
 mpt cp /var/log/app.log "s3://bucket/logs/"
-mpt cp ./exports/ -r sftp://srv.example.com/in/exports/
+mpt cp -r ./exports/ sftp://srv.example.com/in/exports/
 ```
 
 A bare path is a local file. `file:///var/log/app.log` means the same thing

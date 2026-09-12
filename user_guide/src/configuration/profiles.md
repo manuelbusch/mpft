@@ -148,7 +148,9 @@ the command asks for it: the decision is recorded in one place.
 ## Limits
 
 - **Profiles do not chain.** A profile's `url` may not be another `mpt://`
-  reference.
+  reference. `via` is the one key that may name another profile — the relay
+  the endpoint is reached through — and that profile's `url` has to be an
+  `ssh://` URL of its own.
 - **`./mpt.toml` may not define profiles.** A file in the working directory
   can tune how a transfer runs, never where it goes; see
   [the file in the working directory](file.md#the-file-in-the-working-directory).

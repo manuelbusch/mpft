@@ -106,9 +106,13 @@ mpt man | man -l -
 
 | Platform | Status | Build requirements |
 |---|---|---|
-| Linux (x86_64, aarch64) | built and tested | Rust toolchain, C linker |
-| macOS (Apple silicon, Intel) | built and tested | Rust toolchain, Xcode command-line tools |
-| Windows | builds; not yet covered by automated tests | MSVC toolchain. NASM is not required |
+| Linux (x86_64, aarch64) | built and tested by the maintainer | Rust toolchain, C linker |
+| macOS (Apple silicon, Intel) | built and tested by the maintainer | Rust toolchain, Xcode command-line tools |
+| Windows | builds; not yet covered by the test suite | MSVC toolchain. NASM is not required |
+
+The tests are run before a release rather than by a continuous-integration
+service, so there is no public build status to point at; a deployment should
+run `cargo test` on its own platform once.
 
 Windows has a handful of behavioural differences, all listed in [the Windows
 appendix](../appendix/windows.md). Cross-compiling works for targets whose
@@ -116,4 +120,5 @@ cryptography crates can be built for them; the pure-Rust parts have no
 platform-specific code beyond paths and the ssh-agent transport.
 
 There are no pre-built binaries at present. Building from source is the only
-installation path.
+installation path, and [Licensing and support](../appendix/support.md) says
+how to audit what a build pulls in.

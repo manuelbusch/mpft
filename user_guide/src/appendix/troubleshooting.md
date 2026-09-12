@@ -356,6 +356,8 @@ A header without `"v"` means version 2, which expects framed payload. Write
 
 ## Reporting a problem
 
+[Licensing and support](support.md#reporting-a-problem) says where a report
+goes, and what to do instead when the problem has a security consequence.
 Include in a report:
 
 - the exact command, with credentials removed

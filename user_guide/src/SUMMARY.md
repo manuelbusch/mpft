@@ -63,3 +63,5 @@
 - [Using mpt as a library](appendix/library.md)
 - [Windows](appendix/windows.md)
 - [Troubleshooting](appendix/troubleshooting.md)
+- [Glossary](appendix/glossary.md)
+- [Licensing and support](appendix/support.md)
