@@ -1,7 +1,8 @@
 //! Shared SSH session handling for `sftp://` and `scp://`.
 //!
-//! Authentication order: explicit key (`?key=` / `MPT_SSH_KEY`) → ssh-agent
-//! (`SSH_AUTH_SOCK`) → default key files in `~/.ssh` → password.
+//! Authentication order: explicit key (`?key=` / `MPT_SSH_KEY`) → the
+//! ssh-agent a relay client forwarded → the local ssh-agent (`SSH_AUTH_SOCK`)
+//! → default key files in `~/.ssh` → password.
 //! Host keys are verified against `~/.ssh/known_hosts` according to the
 //! `known_hosts` option: `strict` (default), `accept-new` or `off`.
 //! `?hostkey=SHA256:…` pins one or more expected host keys and then replaces
@@ -16,6 +17,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use russh::client::{self, Handle};
+use russh::keys::agent::AgentIdentity;
+use russh::keys::agent::client::AgentClient;
 use russh::keys::known_hosts::{
     check_known_hosts, check_known_hosts_path, learn_known_hosts, learn_known_hosts_path,
 };
@@ -26,6 +29,7 @@ use russh::keys::{
 use secrecy::{ExposeSecret, SecretString};
 use tracing::{debug, info, warn};
 
+use crate::broker::{AgentStream, Brokers};
 use crate::{Error, Location, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +79,9 @@ pub struct SshConfig {
     pub idle: Option<Duration>,
     /// How often to retry connecting after a transient failure.
     pub connect_retries: u32,
+    /// Where to get the password and an agent at login time when the
+    /// location does not carry them: the client behind a relay session.
+    pub brokers: Brokers,
 }
 
 impl SshConfig {
@@ -157,6 +164,7 @@ impl SshConfig {
             timeout,
             idle,
             connect_retries: loc.connect_retries()?,
+            brokers: loc.brokers().clone(),
         })
     }
 
@@ -220,16 +228,37 @@ impl SshConfig {
                 return Ok(());
             }
         } else {
-            // 2. ssh-agent
-            if agent::available() {
-                tried.push("ssh-agent".into());
-                match self.try_agent(handle, rsa_hash).await {
-                    Ok(true) => return Ok(()),
-                    Ok(false) => {}
-                    Err(e) => warn!("ssh-agent authentication failed: {e}"),
+            // 2. the agent a relay client forwarded
+            if let Some(source) = &self.brokers.agent {
+                tried.push("forwarded ssh-agent".into());
+                match source.open().await {
+                    Ok(stream) => match self.try_agent(handle, rsa_hash, stream).await {
+                        Ok(true) => {
+                            info!("ssh: authenticated via the forwarded ssh-agent");
+                            return Ok(());
+                        }
+                        Ok(false) => {}
+                        Err(e) => warn!("forwarded ssh-agent authentication failed: {e}"),
+                    },
+                    Err(e) => warn!("forwarded ssh-agent: {e}"),
                 }
             }
-            // 3. default key files
+            // 3. the local ssh-agent
+            if agent::available() {
+                tried.push("ssh-agent".into());
+                match agent::connect_raw().await {
+                    Ok(stream) => match self.try_agent(handle, rsa_hash, Box::new(stream)).await {
+                        Ok(true) => {
+                            info!("ssh: authenticated via ssh-agent");
+                            return Ok(());
+                        }
+                        Ok(false) => {}
+                        Err(e) => warn!("ssh-agent authentication failed: {e}"),
+                    },
+                    Err(e) => warn!("{e}"),
+                }
+            }
+            // 4. default key files
             if let Some(home) = dirs::home_dir() {
                 for name in ["id_ed25519", "id_ecdsa", "id_rsa"] {
                     let path = home.join(".ssh").join(name);
@@ -245,7 +274,7 @@ impl SshConfig {
             }
         }
 
-        // 4. password
+        // 5. password
         if let Some(pw) = &self.password {
             tried.push("password".into());
             let res = handle
@@ -314,25 +343,46 @@ impl SshConfig {
         Ok(res.success())
     }
 
+    /// Offer every identity the agent holds. A certificate is offered as a
+    /// certificate: the server may trust its CA without knowing the key.
     async fn try_agent(
         &self,
         handle: &mut Handle<ClientHandler>,
         rsa_hash: Option<HashAlg>,
+        stream: AgentStream,
     ) -> Result<bool> {
-        let mut agent = agent::connect().await?;
+        let mut agent = AgentClient::connect(stream);
         let identities = agent
             .request_identities()
             .await
             .map_err(|e| Error::Auth(format!("ssh-agent: {e}")))?;
         debug!(count = identities.len(), "ssh-agent identities");
         for id in identities {
-            let key: PublicKey = id.public_key().into_owned();
-            let res = handle
-                .authenticate_publickey_with(self.user.clone(), key, rsa_hash, &mut agent)
-                .await
-                .map_err(|e| Error::Auth(format!("ssh-agent: {e}")))?;
+            let res = match &id {
+                AgentIdentity::Certificate { certificate, .. } => {
+                    debug!(key_id = certificate.key_id(), "ssh-agent certificate");
+                    handle
+                        .authenticate_certificate_with(
+                            self.user.clone(),
+                            certificate.clone(),
+                            rsa_hash,
+                            &mut agent,
+                        )
+                        .await
+                }
+                AgentIdentity::PublicKey { key, .. } => {
+                    handle
+                        .authenticate_publickey_with(
+                            self.user.clone(),
+                            key.clone(),
+                            rsa_hash,
+                            &mut agent,
+                        )
+                        .await
+                }
+            }
+            .map_err(|e| Error::Auth(format!("ssh-agent: {e}")))?;
             if res.success() {
-                info!("ssh: authenticated via ssh-agent");
                 return Ok(true);
             }
         }

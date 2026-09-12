@@ -58,6 +58,19 @@ CFG
 fi
 start sshd 2222 /usr/sbin/sshd -f "$WORK/ssh/sshd_config" -D -e
 
+# An ssh-agent of its own holding cert_key and its certificate, for the tests
+# that authenticate through an agent rather than from a key file. The socket
+# lives under /tmp: a Unix socket path has to stay short.
+AGENT_SOCK=$(cat agent.sock.path 2>/dev/null)
+if [ -z "$AGENT_SOCK" ] || [ ! -S "$AGENT_SOCK" ]; then
+  AGENT_SOCK=$(mktemp -d /tmp/mpt-agent.XXXXXX)/sock
+  echo "$AGENT_SOCK" > agent.sock.path
+  nohup ssh-agent -D -a "$AGENT_SOCK" > logs/ssh-agent.log 2>&1 &
+  echo $! >> pids
+  for _ in $(seq 1 50); do [ -S "$AGENT_SOCK" ] && break; sleep 0.1; done
+  SSH_AUTH_SOCK=$AGENT_SOCK ssh-add -q ssh/cert_key 2>/dev/null
+fi
+
 sleep 2
 # create the S3 bucket
 curl -s -X PUT http://127.0.0.1:9000/testbucket > /dev/null
@@ -84,6 +97,8 @@ export MPT_IT_SCP="scp://$USER@127.0.0.1:2222/$WORK/ssh/scp/?key=$WORK/ssh/clien
 # Certificate authentication: cert_key is not in authorized_keys, so this URL
 # only works if the certificate is presented.
 export MPT_IT_SFTP_CERT="sftp://$USER@127.0.0.1:2222/$WORK/ssh/data/?key=$WORK/ssh/cert_key&cert=$WORK/ssh/cert_key-cert.pub&known_hosts=off"
+# An agent that holds cert_key together with its certificate.
+export MPT_IT_SSH_AGENT="$AGENT_SOCK"
 export MPT_IT_SSH_HOSTKEY="$(ssh-keygen -lf "$WORK/ssh/host_key.pub" | cut -d' ' -f2)"
 ENV
 echo "servers started; logs in $WORK/logs"

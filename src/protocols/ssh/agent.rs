@@ -5,8 +5,8 @@
 //!   (`\\.\pipe\openssh-ssh-agent`, or whatever `$SSH_AUTH_SOCK` names, since
 //!   Git for Windows sets it to a pipe path), then PuTTY's Pageant.
 //!
-//! Everything else in the crate goes through [`connect`] and [`Stream`], so no
-//! call site needs a `cfg`.
+//! Everything else in the crate goes through [`connect`], [`connect_raw`]
+//! and [`Stream`], so no call site needs a `cfg`.
 
 use russh::keys::agent::client::AgentClient;
 
@@ -22,15 +22,25 @@ pub fn available() -> bool {
     std::env::var_os("SSH_AUTH_SOCK").is_some()
 }
 
+/// The bare socket to the agent, for callers that speak the protocol
+/// themselves or hand the connection on.
+#[cfg(unix)]
+pub async fn connect_raw() -> Result<Stream> {
+    let path = std::env::var_os("SSH_AUTH_SOCK")
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| Error::Auth("ssh-agent: SSH_AUTH_SOCK is not set".into()))?;
+    tokio::net::UnixStream::connect(&path)
+        .await
+        .map_err(|e| Error::Auth(format!("ssh-agent: {}: {e}", path.to_string_lossy())))
+}
+
 #[cfg(unix)]
 pub async fn connect() -> Result<AgentClient<Stream>> {
-    AgentClient::connect_env()
-        .await
-        .map_err(|e| Error::Auth(format!("ssh-agent: {e}")))
+    Ok(AgentClient::connect(connect_raw().await?))
 }
 
 #[cfg(windows)]
-pub use windows::{Stream, available, connect};
+pub use windows::{Stream, available, connect, connect_raw};
 
 #[cfg(windows)]
 mod windows {
@@ -100,6 +110,12 @@ mod windows {
     }
 
     pub async fn connect() -> Result<AgentClient<Stream>> {
+        Ok(AgentClient::connect(connect_raw().await?))
+    }
+
+    /// The bare pipe to the agent, for callers that speak the protocol
+    /// themselves or hand the connection on.
+    pub async fn connect_raw() -> Result<Stream> {
         // $SSH_AUTH_SOCK first: Git for Windows and some tools point it at
         // their own pipe.
         let named = std::env::var("SSH_AUTH_SOCK")
@@ -110,14 +126,14 @@ mod windows {
         match open_pipe(&named).await {
             Ok(pipe) => {
                 debug!(pipe = %named, "ssh-agent: named pipe");
-                return Ok(AgentClient::connect(Stream::Pipe(pipe)));
+                return Ok(Stream::Pipe(pipe));
             }
             Err(e) => why.push(format!("{named}: {e}")),
         }
         match pageant::PageantStream::new().await {
             Ok(stream) => {
                 debug!("ssh-agent: pageant");
-                Ok(AgentClient::connect(Stream::Pageant(stream)))
+                Ok(Stream::Pageant(stream))
             }
             Err(e) => {
                 why.push(format!("pageant: {e}"));
@@ -143,5 +159,16 @@ mod windows {
             std::io::ErrorKind::TimedOut,
             format!("{path} stayed busy"),
         ))
+    }
+}
+
+/// The agent of this machine as an [`AgentSource`](crate::broker::AgentSource):
+/// what every login uses when nothing forwarded one.
+pub struct LocalAgent;
+
+#[async_trait::async_trait]
+impl crate::broker::AgentSource for LocalAgent {
+    async fn open(&self) -> Result<crate::broker::AgentStream> {
+        Ok(Box::new(connect_raw().await?))
     }
 }

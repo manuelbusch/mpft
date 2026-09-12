@@ -38,11 +38,19 @@ fn random_payload(len: usize) -> Vec<u8> {
 
 /// The URL without one query option.
 fn drop_option(url: &str, name: &str) -> String {
+    let Some((path, query)) = url.split_once('?') else {
+        return url.to_string();
+    };
     let prefix = format!("{name}=");
-    url.split('&')
+    let kept: Vec<&str> = query
+        .split('&')
         .filter(|p| !p.starts_with(&prefix))
-        .collect::<Vec<_>>()
-        .join("&")
+        .collect();
+    if kept.is_empty() {
+        path.to_string()
+    } else {
+        format!("{path}?{}", kept.join("&"))
+    }
 }
 
 fn dir_url(base: &str, name: &str) -> String {
@@ -774,6 +782,42 @@ async fn sftp_authenticates_with_a_certificate() {
         err.to_string().contains("no accepted method"),
         "unexpected error: {err}"
     );
+}
+
+/// An agent that holds a certificate offers it as a certificate: the same
+/// `cert_key` that `authorized_keys` does not list gets in through the agent
+/// alone, with no key file anywhere in the URL. The agent is reached the way a
+/// relay reaches the one its client forwarded: as a broker on the location.
+#[cfg(unix)]
+#[tokio::test]
+async fn sftp_authenticates_with_a_certificate_from_an_agent() {
+    let (Some(url), Some(sock)) = (env("MPT_IT_SFTP_CERT"), env("MPT_IT_SSH_AGENT")) else {
+        eprintln!("skipping: MPT_IT_SFTP_CERT / MPT_IT_SSH_AGENT not set");
+        return;
+    };
+    mpt::init_crypto();
+
+    struct Socket(String);
+    #[async_trait::async_trait]
+    impl mpt::broker::AgentSource for Socket {
+        async fn open(&self) -> mpt::Result<mpt::broker::AgentStream> {
+            Ok(Box::new(tokio::net::UnixStream::connect(&self.0).await?))
+        }
+    }
+
+    let bare = drop_option(&drop_option(&url, "cert"), "key");
+    let mut loc = Location::parse(&bare).unwrap();
+    loc.set_brokers(mpt::broker::Brokers {
+        password: None,
+        agent: Some(std::sync::Arc::new(Socket(sock))),
+    });
+    mpt::protocols::open(loc)
+        .unwrap()
+        .receiver()
+        .unwrap()
+        .list()
+        .await
+        .expect("the certificate in the agent lets the key in");
 }
 
 /// `?token=` travels as `Authorization: Bearer …`, which is what an OAuth2

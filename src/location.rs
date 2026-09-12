@@ -7,6 +7,7 @@ use percent_encoding::percent_decode_str;
 use secrecy::{ExposeSecret, SecretString};
 use url::Url;
 
+use crate::broker::{Brokers, PasswordRequest};
 use crate::{Error, Result};
 
 /// Supported protocol prefixes.
@@ -256,6 +257,9 @@ pub struct Location {
     /// True when the password came from the URL itself, which means it is
     /// visible in the process list and the shell history.
     password_from_url: bool,
+    /// Ways to get a secret at login time instead of carrying it here. Not
+    /// part of the URL in any form.
+    brokers: Brokers,
 }
 
 impl Location {
@@ -348,6 +352,7 @@ impl Location {
             path,
             options,
             dir_hint,
+            brokers: Brokers::default(),
         })
     }
 
@@ -372,6 +377,7 @@ impl Location {
             options: Vec::new(),
             dir_hint: path.ends_with('/') || (cfg!(windows) && path.ends_with('\\')),
             password_from_url: false,
+            brokers: Brokers::default(),
         }
     }
 
@@ -434,6 +440,40 @@ impl Location {
     /// and the shell history can see it.
     pub fn password_in_url(&self) -> bool {
         self.password_from_url
+    }
+
+    /// The brokers this location asks at login time.
+    pub fn brokers(&self) -> &Brokers {
+        &self.brokers
+    }
+    pub fn set_brokers(&mut self, brokers: Brokers) {
+        self.brokers = brokers;
+    }
+
+    /// The password for a login: the one this location carries, otherwise
+    /// what its password broker hands out for this attempt, otherwise
+    /// nothing. Fetched at every login and meant to be dropped right after
+    /// it, so a relay never holds a password longer than one authentication.
+    pub async fn login_password(&self, attempt: u32) -> Result<Option<SecretString>> {
+        if let Some(pw) = &self.password {
+            return Ok(Some(pw.clone()));
+        }
+        match &self.brokers.password {
+            Some(source) => {
+                source
+                    .password(&PasswordRequest {
+                        target: self,
+                        attempt,
+                    })
+                    .await
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Whether a login could get a password at all, from either source.
+    pub fn has_password(&self) -> bool {
+        self.password.is_some() || self.brokers.password.is_some()
     }
     pub fn set_option(&mut self, key: impl Into<String>, value: impl Into<String>) {
         self.options.push((key.into(), value.into()));

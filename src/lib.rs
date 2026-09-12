@@ -6,6 +6,7 @@
 //! Protocols that can only send (e-mail) simply return `None` for the receiver.
 
 pub mod batch;
+pub mod broker;
 pub mod config;
 pub mod credentials;
 pub mod endpoint;
