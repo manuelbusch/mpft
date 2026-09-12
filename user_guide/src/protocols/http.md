@@ -1,0 +1,119 @@
+# HTTP and WebDAV
+
+Two schemes over the same client. `http(s)://` is a plain GET or PUT against
+whatever the server offers. `webdav(s)://` speaks the WebDAV extensions on top,
+which is what turns a URL into something that can be listed, renamed and walked.
+
+```
+mpt cp https://example.com/data.json ./
+mpt cp report.pdf "https://api.example.com/upload?method=post"
+mpt cp report.pdf webdavs://cloud.example.com/documents/
+mpt ls webdavs://cloud.example.com/documents/
+```
+
+## Take WebDAV where the server speaks it
+
+| | `http(s)://` | `webdav(s)://` |
+|---|---|---|
+| GET, PUT | ✓ | ✓ |
+| list a directory | – | ✓ (`PROPFIND`) |
+| rename, and therefore atomic finishing | – | ✓ (`MOVE`) |
+| create directories, and therefore `-r` as a target | – | ✓ (`MKCOL`) |
+| size of a source | ✓ (`HEAD`) | ✓ |
+
+Nextcloud, ownCloud, SharePoint and most NAS boxes speak WebDAV on the same
+URL where plain HTTP would work, so the choice is usually just which prefix you
+type. `webdavs://` is WebDAV over HTTPS, which is what you want.
+
+Plain HTTP cannot rename, so a PUT goes straight to the final name. There is no
+`.mpt-part` and no `--resume`; an interrupted upload leaves whatever the server
+kept.
+
+## Sending
+
+GET is used for reading. For writing, the method is `PUT` unless you say
+otherwise:
+
+```
+mpt cp report.pdf "https://api.example.com/files/report.pdf"                # PUT
+mpt cp report.pdf "https://api.example.com/upload?method=post"              # POST
+mpt cp report.pdf "https://api.example.com/files/report.pdf?method=patch"   # PATCH
+```
+
+The payload is streamed, so uploading a large file does not need memory for it.
+
+## Headers and query parameters
+
+```
+mpt cp report.pdf "https://api.example.com/upload?header=X-Api-Key:abc123&header=X-Run:42"
+```
+
+`?header=Name:Value` may be repeated. Anything else in the query that `mpt`
+does not recognise is **passed through to the server**, which is what lets an
+API's own parameters travel:
+
+```
+mpt cp https://api.example.com/export?format=csv&range=30d ./
+```
+
+That convenience has a cost worth knowing: a misspelled `mpt` option becomes a
+query parameter instead of an error. `?timeuot=5` reaches the server, which
+ignores it, and the timeout stays at its default.
+
+The options `mpt` keeps for itself are `method`, `header`, `token`, `insecure`,
+`timeout` and `connect_retries`.
+
+## Authentication
+
+Basic authentication with `user:password@` works, and over `http://` it
+[warns](../trust/connections.md#credentials-in-the-clear), because that sends
+the credentials in the clear.
+
+For anything modern the answer is a bearer token:
+
+```
+mpt cp report.pdf "https://graph.example.com/upload?token=eyJ0eXAi…"
+```
+
+Better, keep it out of the command line and let it be fetched when it is
+needed:
+
+```toml
+[http]
+token = { cmd = "az account get-access-token --resource https://graph.microsoft.com --query accessToken -o tsv" }
+```
+
+The token is sent as `Authorization: Bearer …`, the header is marked sensitive
+so it stays out of logs, and it is fetched once per run. Anything that prints a
+token on standard output works the same way —
+`gcloud auth print-access-token`, a script wrapped around a client-credentials
+flow. See [Credentials and secrets](../configuration/credentials.md).
+
+A device-code flow with a refresh token in the key store is not built in; a
+script that prints a token covers the same ground.
+
+## What `mpt ls` needs
+
+`mpt ls` on `http://` fails, and says what to do about it:
+
+```
+$ mpt ls https://example.com/files/
+error: listing https://example.com/files/?timeout=30: scheme 'http' cannot list
+       (use webdav:// for PROPFIND)
+```
+
+The same applies to [patterns](../guide/many-files.md#patterns-on-the-far-side)
+and to `-r` with an HTTP source: both need a listing. An HTTP *target* refuses
+`-r` for the other reason — there are no directories to create.
+
+## Sizes and progress
+
+A source's size comes from `HEAD`, or from `Content-Length` on the GET. A
+server that sends neither still transfers fine; the progress display shows
+bytes and a rate without a percentage, and
+[`--skip-existing`](../guide/reliability.md#skipping-what-is-already-there)
+cannot skip a target it cannot measure.
+
+## Next
+
+[S3](s3.md), where a "directory" is only ever a prefix.

@@ -1,0 +1,105 @@
+# Overview
+
+Every protocol answers to the same commands and the same flags. What differs is
+what the far side can actually do — a mailbox cannot be listed, HTTP cannot
+rename, S3 has no directories — and those differences show up as capabilities
+rather than as separate commands.
+
+`mpt schemes` prints this table for the binary you have, which is also how you
+find out which [cargo features](../getting-started/installation.md#choosing-protocols)
+were compiled in.
+
+## The schemes
+
+| Prefix | Protocol | Port | Feature |
+|---|---|---|---|
+| `file://`, or a bare path | [local file system](local.md) | – | always |
+| `sftp://` | [SFTP over SSH](ssh.md) | 22 | `ssh` |
+| `scp://` | [SCP over SSH](ssh.md) | 22 | `ssh` |
+| `ftp://` | [FTP without TLS](ftp.md) | 21 | `ftp` |
+| `ftps://` | [FTP with TLS](ftp.md) | 21, or 990 implicit | `ftp` |
+| `http://`, `https://` | [HTTP GET and PUT](http.md) | 80, 443 | `http` |
+| `webdav://`, `webdavs://` | [WebDAV](http.md) | 80, 443 | `webdav` |
+| `s3://` | [S3-compatible storage](s3.md) | – | `s3` |
+| `mailto:` | [e-mail, server from the configuration](mail.md) | – | `mail` |
+| `smtp://` | [e-mail, server in the URL](mail.md) | 587 | `mail` |
+| `mpt://` | a [named target](../configuration/profiles.md) — resolves to one of the above | – | always |
+
+## What each one can do
+
+| | receive | list | size | send | rename | append | mkdir |
+|---|---|---|---|---|---|---|---|
+| local | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `sftp://` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `scp://` | ✓ | – | – | ✓ | ✓ | – | ✓ |
+| `ftp://`, `ftps://` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `http://`, `https://` | ✓ | – | ✓ | ✓ | – | – | – |
+| `webdav://`, `webdavs://` | ✓ | ✓ | ✓ | ✓ | ✓ | – | ✓ |
+| `s3://` | ✓ | ✓ | ✓ | ✓ | – | – | n/a |
+| `mailto:`, `smtp://` | – | – | – | ✓ | – | – | – |
+
+Reading the columns as features:
+
+- **receive** — can be a source. Mail cannot; asking fails before any
+  connection is made.
+- **list** — `mpt ls` works, and so do [patterns](../guide/many-files.md#patterns-on-the-far-side)
+  and `-r` with this scheme as the *source*.
+- **size** — the source can say how large it is, which the progress percentage
+  and `--skip-existing` need. SCP cannot, which has
+  [consequences](ssh.md#scp-needs-the-size-up-front).
+- **rename** — [atomic finishing](../guide/reliability.md#a-file-appears-only-when-it-is-whole)
+  is possible. S3 does not need it: an object appears only when its upload is
+  complete.
+- **append** — [`--resume`](../guide/reliability.md#continuing-where-it-stopped)
+  is possible.
+- **mkdir** — can be the *target* of a tree copy. S3 needs nothing, since a key
+  containing slashes is all a directory ever was there.
+
+## Options every scheme understands
+
+| Option | Meaning |
+|---|---|
+| `?timeout=<seconds>` | inactivity limit for this endpoint; `0` disables it |
+| `?connect_retries=<n>` | retry connecting and logging in this often |
+| `?insecure=true` | skip TLS certificate verification (where TLS is involved) |
+
+The protocol pages list what is specific to each. A **misspelled option is
+ignored rather than reported**, so check it against the page or `mpt schemes`
+if something has no effect.
+
+## Choosing between near-equivalents
+
+Three pairs come up often.
+
+**`sftp://` or `scp://`** — take SFTP unless the far side genuinely offers
+nothing else. It lists, it reports sizes, it resumes; SCP does none of those
+and needs the size before it can start. They use the same connection, the same
+keys and the same host-key checking.
+
+**`webdav://` or `http://`** — take WebDAV when the server speaks it. It adds
+listing, renaming and directory creation, which means `mpt ls`, patterns, `-r`
+and atomic finishing all start working. Plain HTTP is for a server that only
+offers GET and PUT.
+
+**`ftps://` or `ftp://`** — take FTPS. It is the same server and the same
+commands with the credentials and the data encrypted. Plain FTP with a password
+[warns for good reason](../trust/connections.md#credentials-in-the-clear).
+
+## Mixing them
+
+Nothing in a command has to agree on protocol. A fan-out may send to five
+different ones, a job list may name a different one per line, and a copy
+between two remote systems never touches the local disk:
+
+```
+mpt cp ftps://partner.example.com/out/data.csv \
+    sftp://internal.example.com/import/ \
+    "s3://archive/2026/" \
+    "mailto:team@example.com?subject=Received"
+```
+
+## Next
+
+The pages that follow take one scheme each: [local files](local.md),
+[SFTP and SCP](ssh.md), [FTP and FTPS](ftp.md), [HTTP and WebDAV](http.md),
+[S3](s3.md), [e-mail](mail.md).

@@ -1,0 +1,127 @@
+# Windows
+
+`mpt` is written to build and run on Windows. Most of it is platform-agnostic
+Rust, and the places where the operating system genuinely differs are handled
+explicitly rather than by hoping. This page collects those places — and says
+plainly what has not been verified.
+
+> **Not built here.** The development machine has no Windows target, and the
+> cryptography crates cannot be cross-compiled to one from macOS. Everything
+> below is what the code does; none of it has been run on Windows. The Windows
+> job of the CI workflow is what will settle it, and that workflow is still
+> outstanding.
+
+## Building
+
+The MSVC toolchain alone is enough:
+
+```
+cargo build --release
+```
+
+NASM is **not** required. The TLS stack turns on its own pre-built assembly
+(`aws-lc-rs/prebuilt-nasm`), which is what usually trips a Windows build of a
+Rust project that uses rustls.
+
+## ssh-agent
+
+Unix has one answer, `$SSH_AUTH_SOCK`. Windows has two, and `mpt` tries both:
+
+1. **The named pipe in `$SSH_AUTH_SOCK`**, if it is set. Git for Windows and
+   several other tools point it at a pipe rather than a socket.
+2. **`\\.\pipe\openssh-ssh-agent`**, the default pipe of the Windows OpenSSH
+   agent service, when the variable is unset.
+3. **Pageant**, PuTTY's agent, if neither pipe answers.
+
+On Windows the agent is always tried, because neither the service pipe nor
+Pageant needs an environment variable to be found — unlike Unix, where the
+absence of `$SSH_AUTH_SOCK` is taken as "no agent". When none of the three
+answers, the error names each one that was tried and why it failed.
+
+Signing works through the same path: SSHSIG is assembled on the client side, so
+an agent that can sign at all can sign here.
+
+## Credential commands
+
+`{ cmd = "…" }` runs through `cmd /C` instead of `sh -c`. What that means in
+practice:
+
+```toml
+# Unix
+password = { cmd = "pass show hosting/partner | head -1" }
+# Windows
+password = { cmd = "op read op://Infra/prod/password" }
+```
+
+Pipes and redirection follow `cmd` rules rather than shell rules, quoting is
+`cmd` quoting, and PowerShell is not involved unless you invoke it yourself
+(`powershell -Command "…"`). Everything else about the provider is
+[as it is elsewhere](../configuration/credentials.md#cmd-runs-what-the-file-says).
+
+## File permissions
+
+There are no mode bits to check, so the question "can anyone else read this?"
+is answered by location instead: a key, password file or configuration file
+that holds secrets and lies **outside the user's profile directory** produces a
+warning.
+
+```
+WARN … holds a secret and lies outside your profile directory; check who else can read it
+```
+
+That is a weaker check than the Unix one, and it is deliberately conservative
+rather than clever. A file inside `%USERPROFILE%` is assumed to be as private
+as the profile itself; a proper ACL check is a later refinement.
+`[policy] strict_permissions` still applies to the Unix check only.
+
+## Paths
+
+Local paths work as they look:
+
+```
+mpt cp C:\data\report.pdf sftp://srv.example.com/in/
+mpt cp \\fileserver\share\report.pdf "s3://bucket/in/"
+```
+
+- **A drive letter is not a scheme.** `C:\data\x.bin` is recognised as a local
+  path rather than mistaken for a URL, and so is a UNC path.
+- **`\` is a path separator.** That matters for the files `mpt` writes beside
+  yours: a checksum file and a `.mpt-part` land next to their file rather than
+  in the working directory.
+- **A trailing `\` marks a directory target**, exactly as `/` does.
+
+Remote paths are unaffected — an `sftp://` path is the server's, and the server
+is usually not Windows.
+
+## Everything else
+
+- **Colour** works: the terminal is put into the right mode automatically, and
+  `NO_COLOR` is honoured as elsewhere.
+- **Ctrl-C** stops a transfer, cleans up part files and exits 130 as it does on
+  Unix.
+- **The configuration file** is looked for in `%USERPROFILE%\.config\mpt\config.toml`
+  when `XDG_CONFIG_HOME` is unset, since that is what the home directory
+  resolves to.
+- **Completions** include `powershell`:
+
+  ```
+  mpt completions powershell > $PROFILE.CurrentUserAllHosts
+  ```
+
+## Testing
+
+The local test servers under `tests/local/` are Unix shell scripts and do not
+run on Windows. The unit tests do:
+
+```
+cargo test --lib
+```
+
+They cover the parsers, the configuration, the fan-out and the stream
+utilities, which is most of what is platform-independent. The end-to-end tests
+need the servers; a PowerShell equivalent of the setup script — the same Python
+servers plus the Windows OpenSSH server — is what would close that gap.
+
+## Next
+
+[Troubleshooting](troubleshooting.md).

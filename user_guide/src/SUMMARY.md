@@ -1,0 +1,59 @@
+# Summary
+
+[Introduction](introduction.md)
+[Why mpt?](why-mpt.md)
+
+# Getting started
+
+- [Installation](getting-started/installation.md)
+- [Your first transfer](getting-started/first-transfer.md)
+- [Thinking in URLs](getting-started/addressing.md)
+
+# Everyday use
+
+- [Copying a file](guide/copying.md)
+- [Several targets at once](guide/fan-out.md)
+- [Many files](guide/many-files.md)
+- [Job lists and pipelines](guide/job-lists.md)
+- [Interrupted and repeated transfers](guide/reliability.md)
+
+# Integrity and trust
+
+- [Checksums](trust/checksums.md)
+- [Signatures](trust/signatures.md)
+- [Securing the connection](trust/connections.md)
+
+# Configuration
+
+- [The configuration file](configuration/file.md)
+- [Named targets](configuration/profiles.md)
+- [Credentials and secrets](configuration/credentials.md)
+- [Policies](configuration/policies.md)
+
+# Automation
+
+- [Using mpt in scripts](automation/scripting.md)
+- [Scheduled and triggered runs](automation/scheduling.md)
+
+# Protocols
+
+- [Overview](protocols/overview.md)
+    - [Local files](protocols/local.md)
+    - [SFTP and SCP](protocols/ssh.md)
+    - [FTP and FTPS](protocols/ftp.md)
+    - [HTTP and WebDAV](protocols/http.md)
+    - [S3](protocols/s3.md)
+    - [E-mail](protocols/mail.md)
+
+# Reference
+
+- [Command line](reference/cli.md)
+- [Configuration keys](reference/configuration.md)
+- [Environment variables](reference/environment.md)
+- [Exit codes](reference/exit-codes.md)
+
+# Appendix
+
+- [Using mpt as a library](appendix/library.md)
+- [Windows](appendix/windows.md)
+- [Troubleshooting](appendix/troubleshooting.md)

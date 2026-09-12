@@ -1,0 +1,130 @@
+# SFTP and SCP
+
+Two ways over one SSH connection. Both authenticate the same way, check the
+host key the same way, and take the same options — they differ in what they can
+do once connected.
+
+```
+mpt cp report.pdf sftp://deploy@srv.example.com/var/spool/incoming/
+mpt ls sftp://deploy@srv.example.com/var/spool/incoming/
+mpt cp sftp://deploy@srv.example.com/var/log/app.log ./
+```
+
+## Take SFTP unless you cannot
+
+| | `sftp://` | `scp://` |
+|---|---|---|
+| list a directory (`mpt ls`, patterns, `-r` as source) | ✓ | – |
+| report the size of a source | ✓ | – |
+| resume an interrupted upload | ✓ | – |
+| atomic finishing | ✓ | ✓ (via `mv` on the same connection) |
+| directory creation as a tree target | ✓ | ✓ (via `mkdir -p`) |
+
+SFTP is a subsystem of the same SSH server, so if `sftp://` fails where
+`scp://` works, the server has the subsystem switched off — which is the one
+situation where SCP earns its place.
+
+### SCP needs the size up front
+
+The SCP protocol announces the length of a file before sending it. When the
+source cannot say how large it is — a `scp://` source, an HTTP server without a
+`Content-Length` — the payload has to be spooled first:
+
+```
+WARN scp: source size unknown, spooling to a temporary file
+     (use the memory cache to avoid disk I/O)
+```
+
+That is a temporary file on the local disk. `--cache` keeps it in memory
+instead, at the cost of holding the whole payload. In a fan-out, an SCP target
+also pauses the stream at the start while it connects and sends its header;
+that is [head-of-line blocking](../guide/fan-out.md#slow-targets-stalled-targets),
+not a hang.
+
+## Paths
+
+SSH paths are absolute on the server. To address something relative to the
+login directory, use `/~/`:
+
+```
+mpt cp report.pdf sftp://deploy@srv.example.com/~/incoming/
+```
+
+The user comes from the URL, then `$MPT_SSH_USER`, then `[ssh] user`, then the
+local user name.
+
+## Authentication
+
+The order is worth knowing, because it is not simply a list of fallbacks:
+
+1. **The key you named** — `?key=`, `[ssh] key`, or `$MPT_SSH_KEY`. If a key is
+   named, the agent and the default keys are **not** tried: naming a key means
+   using that key.
+2. **The ssh-agent**, if `$SSH_AUTH_SOCK` points at one and no key was named.
+3. **`~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`**, in that order, again only if
+   no key was named.
+4. **A password**, if there is one, whatever happened above.
+
+```
+$ mpt ls sftp://deploy@srv.example.com/in/
+error: authentication failed: no accepted method for deploy@srv.example.com
+       (tried: ssh-agent, key /home/me/.ssh/id_ed25519)
+```
+
+The message lists what was actually attempted, which is usually enough to see
+what went wrong.
+
+| Option | Configuration | Meaning |
+|---|---|---|
+| `?key=<file>` | `[ssh] key` | private key file |
+| `?passphrase=` | `[ssh] passphrase` | passphrase for it (prefer the configuration, which takes a [credential reference](../configuration/credentials.md)) |
+| `?cert=<file>` | `[ssh] cert` | OpenSSH certificate for the key |
+| `?known_hosts=` | `[policy] known_hosts` | `strict`, `accept-new` or `off` |
+| `?hostkey=SHA256:…` | `[ssh] hostkey` | pin the host key; repeatable |
+
+Encrypted keys take their passphrase from the option, the configuration, or
+`$MPT_SSH_KEY_PASSPHRASE`. The key types that work are **Ed25519**, **ECDSA**
+on P-256 and P-384, and **RSA**, which is offered with the SHA-2 signature
+algorithm the server asks for. Keys in OpenSSH's own format are read directly — what `ssh-keygen` writes by
+default — and PuTTY's `.ppk` has to be converted first.
+
+### Certificates
+
+Short-lived OpenSSH certificates from Vault, Teleport or step-ca work, which
+lets a CA vouch for a key that `authorized_keys` never lists. An agent holding
+a certificate needs nothing extra. A key in a file takes `?cert=`, or nothing
+at all, since `<key>-cert.pub` next to the key is found the way OpenSSH finds
+it:
+
+```
+mpt cp report.pdf "sftp://deploy@srv/in/?key=~/.ssh/id_ed25519"          # uses id_ed25519-cert.pub
+mpt cp report.pdf "sftp://deploy@srv/in/?key=/tmp/k&cert=/tmp/k-cert.pub"
+```
+
+If the server refuses the certificate, the bare key still gets its turn.
+
+## Host keys
+
+The host key is checked before authentication, strictly by default: an unknown
+host, a changed key or an unreadable `known_hosts` aborts the connection. That
+is the first wall a new server puts up, and [Securing the
+connection](../trust/connections.md#ssh-host-keys) covers all of it — first
+contact, `accept-new`, pinning with `?hostkey=` for CI, and what a changed key
+means.
+
+## Running many jobs against one server
+
+`--parallel` is also the number of simultaneous logins. An `sshd` with the
+default `MaxStartups 10:30:100` starts refusing connections beyond ten
+unauthenticated at once, so a high parallelism against a single host produces
+failures rather than speed. Single digits are the useful range, and
+`?connect_retries=1` absorbs the occasional refusal.
+
+Each job opens its own connection. Sharing one SSH session between transfers
+was tried and withdrawn: under concurrency a dropped stream could poison the
+whole connection and fail a transfer mid-write, which is not a trade worth a
+hundred milliseconds.
+
+## Next
+
+[FTP and FTPS](ftp.md), the other protocol that predates most of this.
