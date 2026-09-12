@@ -91,6 +91,13 @@ impl S3Endpoint {
         }
         if let (Some(u), Some(p)) = (loc.username(), loc.password()) {
             b = b.with_access_key_id(u).with_secret_access_key(p);
+        } else if loc.username().is_some() && loc.brokers().password.is_some() {
+            // The store signs every request itself and is built once, so
+            // a key that is only handed out per login has nowhere to go.
+            return Err(Error::Auth(
+                "s3: the secret key cannot be asked for on demand; send it in the header                  (--via-credentials header) or let the relay use its own AWS credentials"
+                    .into(),
+            ));
         } else if let (Some(id), Some(key)) = (
             &cfg.resolved.s3_access_key_id,
             &cfg.resolved.s3_secret_access_key,

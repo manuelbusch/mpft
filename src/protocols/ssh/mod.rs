@@ -13,6 +13,7 @@ pub mod scp;
 pub mod sftp;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -56,12 +57,11 @@ impl KnownHostsPolicy {
 }
 
 /// Everything needed to open an SSH session, derived from a [`Location`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SshConfig {
     pub host: String,
     pub port: u16,
     pub user: String,
-    pub password: Option<SecretString>,
     pub key_file: Option<PathBuf>,
     /// OpenSSH certificate for `key_file` (`<key>-cert.pub`), which lets a CA
     /// vouch for the key instead of `authorized_keys` listing it.
@@ -82,6 +82,34 @@ pub struct SshConfig {
     /// Where to get the password and an agent at login time when the
     /// location does not carry them: the client behind a relay session.
     pub brokers: Brokers,
+    /// The location itself, for the password it carries or asks for.
+    loc: Location,
+    /// Logins so far, shared by the clones of this config, so a password
+    /// broker can tell the reconnects apart.
+    logins: Arc<AtomicU32>,
+}
+
+/// By hand, so the location's query options (a passphrase among them) stay
+/// out of the output.
+impl std::fmt::Debug for SshConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("password", &self.loc.has_password())
+            .field("key_file", &self.key_file)
+            .field("cert_file", &self.cert_file)
+            .field("key_passphrase", &self.key_passphrase.is_some())
+            .field("known_hosts", &self.known_hosts)
+            .field("pinned_host_keys", &self.pinned_host_keys)
+            .field("known_hosts_file", &self.known_hosts_file)
+            .field("timeout", &self.timeout)
+            .field("idle", &self.idle)
+            .field("connect_retries", &self.connect_retries)
+            .field("brokers", &self.brokers)
+            .finish()
+    }
 }
 
 impl SshConfig {
@@ -154,7 +182,6 @@ impl SshConfig {
             host,
             port: loc.port_or_default(),
             user,
-            password: loc.password().map(SecretString::from),
             key_file,
             cert_file,
             key_passphrase,
@@ -165,6 +192,8 @@ impl SshConfig {
             idle,
             connect_retries: loc.connect_retries()?,
             brokers: loc.brokers().clone(),
+            loc: loc.clone(),
+            logins: Arc::new(AtomicU32::new(0)),
         })
     }
 
@@ -274,8 +303,9 @@ impl SshConfig {
             }
         }
 
-        // 5. password
-        if let Some(pw) = &self.password {
+        // 5. password, fetched for this login only
+        let attempt = self.logins.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Some(pw) = self.loc.login_password(attempt).await? {
             tried.push("password".into());
             let res = handle
                 .authenticate_password(self.user.clone(), pw.expose_secret().to_string())

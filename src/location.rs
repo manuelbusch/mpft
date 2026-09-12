@@ -1331,4 +1331,75 @@ mod tests {
         assert!(loc.unmasked().contains("secret"));
         assert!(!loc.to_string().contains("secret"));
     }
+
+    /// A broker is asked at every login, told which attempt it is, and
+    /// leaves no trace in the URL or the debug output.
+    #[tokio::test]
+    async fn a_password_broker_is_asked_per_login() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        use crate::broker::{Brokers, PasswordRequest, PasswordSource};
+
+        struct Counting(AtomicU32);
+        #[async_trait::async_trait]
+        impl PasswordSource for Counting {
+            async fn password(&self, req: &PasswordRequest<'_>) -> Result<Option<SecretString>> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                assert_eq!(req.target.username(), Some("u"));
+                Ok(Some(SecretString::from(format!("pw{}", req.attempt))))
+            }
+        }
+        let source = Arc::new(Counting(AtomicU32::new(0)));
+        let mut loc = Location::parse("sftp://u@h/x").unwrap();
+        assert!(!loc.has_password());
+        assert!(loc.login_password(1).await.unwrap().is_none());
+        loc.set_brokers(Brokers {
+            password: Some(source.clone()),
+            agent: None,
+        });
+        assert!(loc.has_password());
+        assert_eq!(
+            loc.login_password(1)
+                .await
+                .unwrap()
+                .unwrap()
+                .expose_secret(),
+            "pw1"
+        );
+        assert_eq!(
+            loc.login_password(2)
+                .await
+                .unwrap()
+                .unwrap()
+                .expose_secret(),
+            "pw2"
+        );
+        assert_eq!(source.0.load(Ordering::Relaxed), 2);
+        assert!(loc.password().is_none(), "the broker's answer is not kept");
+        assert!(!loc.unmasked().contains("pw"));
+        assert!(format!("{loc:?}").contains("password: true"));
+
+        // The location's own password wins and the broker is left alone.
+        loc.set_password("own");
+        assert_eq!(
+            loc.login_password(3)
+                .await
+                .unwrap()
+                .unwrap()
+                .expose_secret(),
+            "own"
+        );
+        assert_eq!(source.0.load(Ordering::Relaxed), 2);
+
+        // Brokers survive the path arithmetic.
+        let child = Location::parse("sftp://u@h/dir/").unwrap();
+        let mut child = child;
+        child.set_brokers(Brokers {
+            password: Some(source.clone()),
+            agent: None,
+        });
+        assert!(child.join("x").unwrap().has_password());
+        assert!(child.sibling("y").unwrap().has_password());
+    }
 }

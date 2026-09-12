@@ -11,6 +11,7 @@ use reqwest::header::{
     AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue,
 };
 use reqwest::{Client, Method, Url};
+use secrecy::ExposeSecret;
 use tokio_util::io::{ReaderStream, StreamReader};
 use tracing::debug;
 
@@ -77,15 +78,18 @@ impl HttpEndpoint {
         Ok(url)
     }
 
-    fn request(&self, method: Method, url: Url) -> reqwest::RequestBuilder {
+    /// A request with the endpoint's headers and, for a user name, basic
+    /// authentication. The password is fetched for this request only.
+    async fn request(&self, method: Method, url: Url) -> Result<reqwest::RequestBuilder> {
         let mut rb = self
             .client
             .request(method, url)
             .headers(self.headers.clone());
         if let Some(user) = self.loc.username() {
-            rb = rb.basic_auth(user, self.loc.password());
+            let pw = self.loc.login_password(1).await?;
+            rb = rb.basic_auth(user, pw.as_ref().map(|p| p.expose_secret()));
         }
-        rb
+        Ok(rb)
     }
 }
 
@@ -185,6 +189,7 @@ impl Receiver for HttpEndpoint {
         debug!(%url, "http GET");
         let resp = self
             .request(Method::GET, url)
+            .await?
             .send()
             .await
             .map_err(http_err)?
@@ -206,7 +211,7 @@ impl Receiver for HttpEndpoint {
 
     async fn size(&self) -> Result<Option<u64>> {
         let url = self.url(None)?;
-        let resp = match self.request(Method::HEAD, url).send().await {
+        let resp = match self.request(Method::HEAD, url).await?.send().await {
             Ok(r) if r.status().is_success() => r,
             _ => return Ok(None),
         };
@@ -219,7 +224,7 @@ impl Sender for HttpEndpoint {
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()> {
         let url = self.url(meta.filename.as_deref())?;
         debug!(%url, method = %self.method, "http upload");
-        let mut rb = self.request(self.method.clone(), url);
+        let mut rb = self.request(self.method.clone(), url).await?;
         if !self.headers.contains_key(CONTENT_TYPE) {
             rb = rb.header(CONTENT_TYPE, meta.mime());
         }

@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use futures::TryStreamExt;
 use percent_encoding::percent_decode_str;
 use reqwest_dav::{Auth, Client, ClientBuilder, Depth, list_cmd::ListEntity};
+use secrecy::ExposeSecret;
 use tokio_util::io::{ReaderStream, StreamReader};
 use tracing::debug;
 
@@ -14,23 +15,40 @@ use crate::{
 
 pub struct WebDavEndpoint {
     loc: Location,
-    client: Client,
+    host: String,
+    /// The HTTP client with its connection pool, shared by every operation.
+    agent: reqwest::Client,
 }
 
 impl WebDavEndpoint {
     pub fn new(loc: Location) -> Result<Self> {
         let base = base_url(&loc, &["http", "https"])?;
-        let auth = match (loc.username(), loc.password()) {
-            (Some(u), p) => Auth::Basic(u.to_string(), p.unwrap_or("").to_string()),
-            _ => Auth::Anonymous,
+        let agent = build_client(&loc)?;
+        Ok(WebDavEndpoint {
+            host: base.to_string().trim_end_matches('/').to_string(),
+            loc,
+            agent,
+        })
+    }
+
+    /// A DAV client for one operation, with the password fetched for it
+    /// only. The underlying HTTP client is shared, so this costs no
+    /// connection.
+    async fn client(&self) -> Result<Client> {
+        let auth = match self.loc.username() {
+            Some(u) => {
+                let pw = self.loc.login_password(1).await?;
+                let pw = pw.as_ref().map(|p| p.expose_secret()).unwrap_or("");
+                Auth::Basic(u.to_string(), pw.to_string())
+            }
+            None => Auth::Anonymous,
         };
-        let client = ClientBuilder::new()
-            .set_host(base.to_string().trim_end_matches('/').to_string())
+        ClientBuilder::new()
+            .set_host(self.host.clone())
             .set_auth(auth)
-            .set_agent(build_client(&loc)?)
+            .set_agent(self.agent.clone())
             .build()
-            .map_err(dav_err)?;
-        Ok(WebDavEndpoint { loc, client })
+            .map_err(dav_err)
     }
 }
 
@@ -67,7 +85,12 @@ fn href_name(href: &str) -> String {
 impl Receiver for WebDavEndpoint {
     async fn receive(&self) -> Result<ByteStream> {
         debug!(path = self.loc.path(), "webdav GET");
-        let resp = self.client.get(self.loc.path()).await.map_err(dav_err)?;
+        let resp = self
+            .client()
+            .await?
+            .get(self.loc.path())
+            .await
+            .map_err(dav_err)?;
         let reader = StreamReader::new(resp.bytes_stream().map_err(std::io::Error::other));
         let reader = stream::Idle::maybe(reader, self.loc.timeout()?);
         Ok(stream::boxed(reader))
@@ -76,7 +99,8 @@ impl Receiver for WebDavEndpoint {
     async fn list(&self) -> Result<Vec<Entry>> {
         let path = self.loc.path();
         let entities = self
-            .client
+            .client()
+            .await?
             .list(path, Depth::Number(1))
             .await
             .map_err(dav_err)?;
@@ -110,7 +134,12 @@ impl Receiver for WebDavEndpoint {
     }
 
     async fn size(&self) -> Result<Option<u64>> {
-        let entities = match self.client.list(self.loc.path(), Depth::Number(0)).await {
+        let entities = match self
+            .client()
+            .await?
+            .list(self.loc.path(), Depth::Number(0))
+            .await
+        {
             Ok(e) => e,
             Err(_) => return Ok(None),
         };
@@ -127,7 +156,11 @@ impl Sender for WebDavEndpoint {
         let target = self.loc.target_path(meta.filename.as_deref())?;
         debug!(%target, "webdav PUT");
         let body = reqwest::Body::wrap_stream(ReaderStream::new(body));
-        self.client.put(&target, body).await.map_err(dav_err)
+        self.client()
+            .await?
+            .put(&target, body)
+            .await
+            .map_err(dav_err)
     }
 
     fn supports_rename(&self) -> bool {
@@ -138,7 +171,7 @@ impl Sender for WebDavEndpoint {
         let from = self.loc.sibling(from)?.path().to_string();
         let to = self.loc.sibling(to)?.path().to_string();
         debug!(%from, %to, "webdav MOVE");
-        self.client.mv(&from, &to).await.map_err(dav_err)
+        self.client().await?.mv(&from, &to).await.map_err(dav_err)
     }
 
     fn supports_remove(&self) -> bool {
@@ -148,7 +181,7 @@ impl Sender for WebDavEndpoint {
     async fn remove(&self, name: &str) -> Result<()> {
         let path = self.loc.sibling(name)?.path().to_string();
         debug!(%path, "webdav DELETE");
-        self.client.delete(&path).await.map_err(dav_err)
+        self.client().await?.delete(&path).await.map_err(dav_err)
     }
 
     fn supports_mkdir(&self) -> bool {
@@ -158,15 +191,16 @@ impl Sender for WebDavEndpoint {
     async fn mkdir_all(&self) -> Result<()> {
         let dir = self.loc.parent()?.path().to_string();
         // MKCOL one collection at a time; one that exists is left alone.
+        let client = self.client().await?;
         let mut path = String::new();
         for part in dir.split('/').filter(|p| !p.is_empty()) {
             path.push('/');
             path.push_str(part);
-            if self.client.list(&path, Depth::Number(0)).await.is_ok() {
+            if client.list(&path, Depth::Number(0)).await.is_ok() {
                 continue;
             }
             debug!(%path, "webdav MKCOL");
-            self.client.mkcol(&path).await.map_err(dav_err)?;
+            client.mkcol(&path).await.map_err(dav_err)?;
         }
         Ok(())
     }

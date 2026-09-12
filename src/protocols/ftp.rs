@@ -2,6 +2,7 @@
 //! port-990 style implicit TLS) via suppaftp.
 
 use async_trait::async_trait;
+use secrecy::ExposeSecret;
 use suppaftp::list::{File as FtpFile, ListParser};
 use suppaftp::tokio::{
     AsyncRustlsConnector, AsyncRustlsFtpStream, AsyncRustlsStream, TransferStream,
@@ -32,6 +33,9 @@ pub struct FtpEndpoint {
     passive: bool,
     nat_workaround: bool,
     timeout: std::time::Duration,
+    /// How many logins this endpoint has attempted, so a password broker
+    /// can tell the reconnects apart.
+    logins: std::sync::atomic::AtomicU32,
 }
 
 impl FtpEndpoint {
@@ -58,6 +62,7 @@ impl FtpEndpoint {
             nat_workaround: loc.opt_bool("nat")?.unwrap_or(false),
             loc,
             tls,
+            logins: std::sync::atomic::AtomicU32::new(0),
         })
     }
 
@@ -117,7 +122,17 @@ impl FtpEndpoint {
             }
         };
         let user = self.loc.username().unwrap_or("anonymous");
-        let pass = self.loc.password().unwrap_or("anonymous@");
+        // Fetched for this login only and dropped with it: behind a relay
+        // the password comes from the client every time.
+        let attempt = self
+            .logins
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        let pass = self.loc.login_password(attempt).await?;
+        let pass = pass
+            .as_ref()
+            .map(|p| p.expose_secret())
+            .unwrap_or("anonymous@");
         ftp.login(user, pass).await.map_err(|e| match e {
             FtpError::UnexpectedResponse(r) if r.status == Status::NotLoggedIn => {
                 Error::Auth(format!("ftp login failed for '{user}'"))

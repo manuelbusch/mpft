@@ -103,6 +103,11 @@ impl MailEndpoint {
             use secrecy::ExposeSecret;
             server.set_password(pw.expose_secret());
         }
+        // A recipient behind a relay asks its client for the server's
+        // password; the server it resolves to must ask the same way.
+        if server.brokers().is_empty() {
+            server.set_brokers(self.loc.brokers().clone());
+        }
         server.host_required()?;
         // The recipient URL was checked in `open`; the server it resolves to
         // carries the credentials, so it needs the same look.
@@ -155,7 +160,8 @@ impl MailEndpoint {
             .unwrap_or(DEFAULT_MAX_ATTACHMENT)
     }
 
-    fn transport(&self, cfg: &SmtpConfig) -> Result<AsyncSmtpTransport<Tokio1Executor>> {
+    /// The password is fetched here, for this transport only.
+    async fn transport(&self, cfg: &SmtpConfig) -> Result<AsyncSmtpTransport<Tokio1Executor>> {
         let host = cfg.server.host_required()?;
         let port = cfg.server.port().unwrap_or(match cfg.tls {
             SmtpTls::Implicit => 465,
@@ -182,8 +188,10 @@ impl MailEndpoint {
         if let Some(user) = cfg.server.username() {
             // For XOAUTH2 the "password" is the access token; lettre wraps it
             // in the user=…\x01auth=Bearer …\x01\x01 string itself.
-            let secret = cfg.server.password().unwrap_or("").to_string();
-            b = b.credentials(Credentials::new(user.to_string(), secret));
+            use secrecy::ExposeSecret;
+            let secret = cfg.server.login_password(1).await?;
+            let secret = secret.as_ref().map(|p| p.expose_secret()).unwrap_or("");
+            b = b.credentials(Credentials::new(user.to_string(), secret.to_string()));
         }
         if let Some(mechanisms) = &cfg.auth {
             debug!(?mechanisms, "smtp authentication");
@@ -313,7 +321,7 @@ impl Sender for MailEndpoint {
             .multipart(parts)
             .map_err(|e| Error::transport("mail", e))?;
 
-        let transport = self.transport(&cfg)?;
+        let transport = self.transport(&cfg).await?;
         debug!(%server, to = ?self.loc.recipients(), %filename, "smtp send");
         let resp = transport.send(email).await.map_err(|e| {
             let s = e.to_string();
