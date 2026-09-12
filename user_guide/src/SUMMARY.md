@@ -42,6 +42,10 @@
 - [Running a relay](server/relay-host.md)
 - [Relay topologies: sources and chains](server/relay-topologies.md)
 
+# Security
+
+- [Security overview](security/overview.md)
+
 # Protocols
 
 - [Overview](protocols/overview.md)

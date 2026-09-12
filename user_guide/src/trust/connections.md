@@ -165,12 +165,8 @@ does.
 
 ## What is checked, and when
 
-| Check | When |
-|---|---|
-| plaintext credentials, password in the URL | before connecting |
-| TLS certificate | during the handshake |
-| SSH host key | during the handshake, before authentication |
-| signature on the source's checksum file | before any data is copied |
-| checksum | while the data streams |
-
-Everything that can be decided without exchanging data is decided first.
+Everything that can be decided without exchanging data is decided first:
+credentials in the clear before connecting, certificates and host keys during
+the handshake, a signature before any data is copied, the checksum while it
+streams. The [Security overview](../security/overview.md#what-is-verified-and-when)
+has the table, with the relay's and the server's checks beside these.
