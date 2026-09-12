@@ -33,8 +33,12 @@ Values for the flags of the same name. A flag on the command line wins.
 | `skip_existing` | boolean | `false` | `--skip-existing` |
 | `delete_source` | boolean | `false` | `--delete-source` |
 | `parallel` | integer, at least 1 | `4` | `--parallel` |
+| `via` | `ssh://` URL or `mpt://` profile | none | `--via`; `--no-via` switches it off for one run |
 | `log` | level or `RUST_LOG` syntax | `"warn"` | `-v` |
 | `json` | boolean | `false` | `--json` |
+
+`via` is not read from a [file in the working
+directory](../configuration/file.md#the-file-in-the-working-directory).
 
 ## `[policy]`
 
@@ -114,6 +118,39 @@ Defaults for `s3://`.
 | `access_key_id` | secret | access key |
 | `secret_access_key` | secret | secret key |
 | `profile` | string | AWS profile from `~/.aws/config` (not an `mpt://` profile); also switches the credential chain on (feature `s3-aws-auth`) |
+
+## `[server]`
+
+Settings for [`mpt serve`](../server/serve.md) (feature `server`). Each flag
+of `mpt serve` wins over its key here.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `bind` | `host:port` | `"127.0.0.1:7788"` | address to listen on; anything but loopback needs a token |
+| `token` | secret | none | the bearer token every request must carry |
+| `journal` | path | none | JSONL file of submitted jobs; those left open are run again after a restart |
+| `retention` | duration | `"24h"` | how long finished jobs stay available; `"0"` keeps them until the server stops |
+| `parallel` | integer, at least 1 | `4` | transfers in flight at once, over all jobs |
+| `grace` | duration | `"30s"` | how long a shutdown waits for running jobs before cancelling them |
+| `max_body` | size | `"8M"` | largest request body |
+| `urls` | `"profiles"`, `"any"` | `profiles` | which URLs a job may name |
+| `profiles` | string or list | all | with `urls = "profiles"`: only these |
+| `allow_delete` | boolean | `false` | let jobs set `delete_source` |
+| `max_transfers` | integer, at least 1 | `10000` | transfers one job may hold after patterns and trees are expanded |
+| `max_queued` | integer, at least 1 | `1000` | open jobs before a `POST` is refused with 429 |
+
+## `[relay]`
+
+Settings for [`mpt relay --listen`](../server/relay.md#on-the-relay-host)
+(feature `relay`). Each flag of `mpt relay` wins over its key here.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `host_key` | path | `~/.local/state/mpt/relay_host_key` | the server's host key; generated when the file is missing |
+| `authorized_keys` | path | `~/.config/mpt/authorized_keys` | who may relay, in OpenSSH format |
+| `parallel` | integer, at least 1 | `4` | relays running at once; further sessions wait |
+| `grace` | duration | `"30s"` | how long a shutdown waits for running relays |
+| `max_size` | size | `"0"` (no limit) | refuse larger uploads |
 
 ## `[profiles.<name>]`
 

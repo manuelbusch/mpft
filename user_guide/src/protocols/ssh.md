@@ -2,7 +2,9 @@
 
 Two ways over one SSH connection. Both authenticate the same way, check the
 host key the same way, and take the same options. They differ in what they can
-do once connected.
+do once connected. A third scheme, `ssh://`, names an SSH host without
+holding files: it is the relay behind [`--via`](../server/relay.md), and
+everything on this page about authentication and host keys applies to it.
 
 ```
 mpt cp report.pdf sftp://deploy@srv.example.com/var/spool/incoming/

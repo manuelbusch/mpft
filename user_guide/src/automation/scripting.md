@@ -65,7 +65,9 @@ esac
 
 ## The JSON report
 
-`--json` prints one object for a copy:
+`--json` prints one object for a copy. The same object is what the [HTTP
+API](../reference/api.md#the-job-object) returns as a transfer's `report`
+and what a [relay](../server/relay.md) sends back.
 
 ```
 $ mpt --json cp --check out/report.pdf back/ 2>/dev/null

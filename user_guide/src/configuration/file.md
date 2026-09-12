@@ -205,6 +205,15 @@ dropped here as well. A `[profiles.…]` block in `./mpt.toml` therefore cannot
 redirect `mpt://prod/` to somewhere else, and a `password = { cmd = … }` inside
 one never runs.
 
+One key of `[defaults]` is dropped too: `via`, which names the
+[relay](../server/relay.md) that receives every target's credentials, and so
+decides where they go as much as a profile does.
+
+```
+warning mpt.toml: ignoring [defaults] via — a configuration file in the working
+        directory may not choose the relay that receives the targets' credentials
+```
+
 Keep credentials out of `./mpt.toml` in any case; a file in a repository is a
 file that gets committed.
 

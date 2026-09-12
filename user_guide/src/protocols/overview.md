@@ -24,6 +24,7 @@ were compiled in.
 | `mailto:` | [e-mail, server from the configuration](mail.md) | – | `mail` |
 | `smtp://` | [e-mail, server in the URL](mail.md) | 587 | `mail` |
 | `mpt://` | a [profile](../configuration/profiles.md) — resolves to one of the above | – | always |
+| `ssh://` | an SSH host running [`mpt relay`](../server/relay.md), for `--via` only; it holds no files | 22 | `relay` |
 
 ## What each one can do
 

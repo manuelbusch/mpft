@@ -13,7 +13,10 @@ mpt cp report.pdf mpt://prod/incoming/
 ```
 
 `mpt://<name>/<path>` works anywhere a URL is expected: as a source, as a
-target, in `ls`, in a [job list](../guide/job-lists.md).
+target, in `ls`, in a [job list](../guide/job-lists.md), as the relay behind
+[`--via`](../server/relay.md). For [`mpt serve`](../server/serve.md#what-a-client-can-reach)
+profiles are more than a convenience: by default they are the only endpoints
+a job submitted over HTTP may name.
 
 ## Defining one
 

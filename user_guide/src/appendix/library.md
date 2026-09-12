@@ -223,19 +223,39 @@ provider does not run for a profile this program never touches. Without any of
 this, `mpt::open` still works — it simply has no profiles and no configured
 defaults.
 
+## The server and the relay
+
+Both are library modules with the binary as a thin caller.
+
+`mpt::server` (feature `server`) runs the [HTTP API](../reference/api.md).
+`serve()` takes a `ServerConfig`, a `Runtime` holding the copy options every
+job starts from, and two cancellation tokens for drain and abort. `router()`
+hands the routes to an axum application of your own, so the API can sit
+beside other routes under one listener.
+
+`mpt::relay` (feature `relay`) is the [relay](../server/relay.md). `run()`
+is a relay over any reader and writer, `sshd::serve()` its SSH server, and
+`client::send()` the sending side that `cp --via` uses: it opens the session,
+writes the header and the payload, and returns the relay's report.
+`stream::ReaderEndpoint` is what makes any reader of a known size a source
+for `copy_many`. `options::JobOptions` is the options object of both the API
+and the relay header, with `apply()` laying it over a `CopyOptions`.
+
 ## Errors
 
 `mpt::Error` is one enum, and the CLI's [exit
 codes](../reference/exit-codes.md) are a match on it — `Auth`, `Signature`,
 `ChecksumMismatch`, `InvalidUrl`, `Config`, `UnsupportedScheme`,
 `UnsupportedOperation`, `Cancelled`, `Io`, `Remote`, `Transport`. A caller can
-do the same rather than matching on message text. `Error::is_transient()` says
-whether retrying could help.
+do the same rather than matching on message text; `Error::exit_code()` is
+that match, and `Error::kind()` the stable name (`auth`, `io`, …) the API
+puts in its error objects. `Error::is_transient()` says whether retrying
+could help.
 
 ## Features
 
 The [cargo features](../getting-started/installation.md#choosing-protocols) are
 the same as for the binary: `ssh`, `ftp`, `http`, `webdav`, `s3`, `mail`,
-`sign-ssh`, `sign-pgp` by default, and `keyring`, `vault`, `s3-aws-auth` on
-request. A protocol that was not compiled in returns
-`Error::UnsupportedScheme` naming the missing feature.
+`sign-ssh`, `sign-pgp`, `relay` by default, and `keyring`, `vault`,
+`s3-aws-auth`, `server` on request. A protocol that was not compiled in
+returns `Error::UnsupportedScheme` naming the missing feature.

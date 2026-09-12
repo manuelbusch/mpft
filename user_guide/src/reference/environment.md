@@ -77,8 +77,11 @@ Read by `{ vault = "…" }` references (feature `vault`).
 
 ## Settings that are not environment variables
 
-Two settings people look for here and will not find:
+Three settings people look for here and will not find:
 
 - **The known-hosts file** is `[ssh] known_hosts_file`, not an environment
   variable. `MPT_SSH_KNOWN_HOSTS` sets the *policy*, not the path.
 - **The parallelism** is `--parallel` or `[defaults] parallel`.
+- **The API token** of [`mpt serve`](../server/serve.md) has no fixed
+  variable name. `[server] token = { env = "MPT_API_TOKEN" }` or
+  `--token-env MPT_API_TOKEN` names the variable to read.

@@ -40,6 +40,9 @@ No Rust knowledge is needed.
   and that the far side is who it claims to be.
 - **Configuration** is how to stop typing all of that on every command line,
   and **Automation** how to let a machine run it unattended.
+- **Server and relay** covers the two ways `mpt` runs as a service: taking
+  jobs over HTTP, and taking one upload over SSH and fanning it out from a
+  host with the bandwidth.
 - **Protocols** collects what is specific to each scheme.
 - **Reference** is the lookup material: every flag, key, variable and exit code.
 

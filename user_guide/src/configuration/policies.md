@@ -118,4 +118,7 @@ advice from the directory you are standing in.
 
 Because `[policy]` is process-wide, it applies to every endpoint of a run,
 including the ones a [profile](profiles.md) or a
-[job list](../guide/job-lists.md) named rather than you.
+[job list](../guide/job-lists.md) named rather than you. The same holds for
+a process that runs other people's jobs: the policy of the machine that runs
+[`mpt serve`](../server/serve.md) covers every job it accepts, and the policy
+of a [relay](../server/relay.md) covers every target it delivers to.

@@ -240,6 +240,83 @@ The binary was built without that part. `mpt schemes` shows the protocols;
 rebuild with the feature. See
 [Installation](../getting-started/installation.md#choosing-protocols).
 
+## The server
+
+The API answers with `{"error": {"kind", "message"}}`; the [status and kind
+table](../reference/api.md#errors) maps them. The ones that come up:
+
+**`refusing to listen on 0.0.0.0:7788 without a token: set [server] token (or --token-env), or bind to 127.0.0.1`** [2]
+
+Working as intended: without a token anyone who can reach the port could use
+every profile. Set a token, or stay on loopback.
+
+**`--delete-source would make every job delete its source; add --allow-delete (or [server] allow_delete) if that is meant`** [1]
+
+The server was started with a global `--delete-source`, which would apply to
+every job, without the switch that allows deleting.
+
+**`only mpt://<profile>/ endpoints are accepted (set [server] urls = "any" or --allow-any-url to allow others)`** (400)
+
+A job named a raw URL or a local path. Define a profile for it, or, when
+every client is trusted as much as the server's user, allow any URL.
+
+**`a job may not add ?options to a profile; set them in the profile`** (400)
+
+`mpt://prod/?timeout=5` in a job. A reference's options would replace the
+profile's, so the profile has to carry them.
+
+**`profile 'prod' is misconfigured; see the server log`**, **`credentials for profile 'prod' could not be fetched; see the server log`** (400)
+
+The detail goes to the log and not into the answer, so a client learns
+nothing about the paths and providers behind a profile.
+
+**`requests from a web page are not accepted (Origin header present)`** (403)
+
+The request came from a browser acting for a page, or a client sends an
+`Origin` header it does not need. Drop the header.
+
+**A job sits in `queued`.** The server-wide `parallel` limit is taken by
+other jobs' transfers; `GET /v1/healthz` with the token shows the counts.
+
+## The relay
+
+**`--via needs an ssh:// URL (or a profile with one), not sftp://…`** [2]
+
+The relay is named with `ssh://`, not `sftp://`: it is a host to run a
+command on, not a place that holds files.
+
+**`--check is not available with --via: it needs what only this side has (the checksum file, the source, the key)`** [2]
+
+`--check`, `--sign`, `--delete-source` and `--resume` do not work through a
+relay. Run that copy from here, or verify on the receiving side.
+
+**`invalid option 'key': …: names a file on this machine, which the relay cannot read; give the target a password, or put the key on the relay`** [2]
+
+A target with `?key=`, `?cert=` or `?passphrase=`. The file stays on the
+client. Use a password or token for that target, or configure the key in the
+relay's `[ssh]` section.
+
+**``the server does not run `mpt relay` (not a relay, or not in its PATH)``** [1]
+
+The SSH host accepted the login but refused the command. Either it is an
+ordinary server without `mpt` on the `PATH` of that account, or the account's
+`authorized_keys` forces another command.
+
+**`no accepted method for relay@fast.example.com (tried: key …)`** [4]
+
+The client's public key is not in the relay's `authorized_keys`. The relay's
+log names the fingerprint it refused.
+
+**`relay: I/O error: …`** on a `FAILED` line [1]
+
+The relay reached the target and the target refused; the message after
+`relay:` is the target's own, as `cp` would have printed it there.
+
+**`invalid option 'check': not over a relay`** (in a relay's `error` line) [2]
+
+A header of your own set an option the relay refuses; see the [relay
+protocol](../reference/api.md#relay-protocol).
+
 ## Reporting a problem
 
 Include in a report:

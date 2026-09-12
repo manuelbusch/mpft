@@ -47,6 +47,14 @@ which is usually 2.
 
 **With a single target** the code is simply that target's.
 
+**Through a relay** the fan-out runs on the relay, which exits with the code
+`cp` would have given; `cp --via` reports that code for the job and applies
+the batch rule over jobs. A relay that could not be reached or logged into
+counts as a failed job with code 4 or 1, like any other endpoint.
+
+**`mpt serve` and `mpt relay --listen`** exit 0 after Ctrl-C, whatever the
+jobs they were running did; those outcomes are in the API and in the log.
+
 ## Success that is not a copy
 
 Some outcomes are 0 although nothing was transferred:

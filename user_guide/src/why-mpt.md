@@ -90,7 +90,9 @@ Unattended use is the primary use case:
 - job lists come from a file, a CSV export or a pipe, and `--follow` turns a
   pipe into a work queue;
 - `--dry-run` shows what would happen;
-- `--skip-existing` makes a scheduled run send only what is new.
+- `--skip-existing` makes a scheduled run send only what is new;
+- [`mpt serve`](server/serve.md) takes jobs over HTTP from a program that
+  should not shell out, and reports on them the same way.
 
 ## What mpt is not
 
@@ -101,11 +103,14 @@ Knowing where a tool stops is part of knowing when to use it.
   change a little, rsync is the better tool.
 - **It is not a sync tool.** `--skip-existing` compares name and size, not
   content, and nothing is ever deleted on a target to match a source.
-- **It is not a scheduler.** There is no built-in cron, retry queue or state
-  database. `mpt` is meant to be called by systemd timers, cron or a CI job,
-  and to report clearly enough that those can act on the result.
-- **It is not a daemon.** `batch --follow` reads a pipe for as long as the pipe
-  is open, which covers the "watch a directory" case together with
-  `inotifywait`, but the process does nothing on its own.
+- **It is not a scheduler.** There is no built-in cron and no retry queue.
+  `mpt` is meant to be called by systemd timers, cron or a CI job, and to
+  report clearly enough that those can act on the result. [`mpt
+  serve`](server/serve.md) runs the jobs it is given, as soon as it is given
+  them; deciding when to submit one is still the caller's job.
+- **It does not watch anything.** `batch --follow` reads a pipe for as long
+  as the pipe is open, which covers the "watch a directory" case together
+  with `inotifywait`, and the server and the relay wait for a client. None of
+  them looks at a directory on its own.
 - **It does not do interactive browsing.** `ls` lists a directory; there is no
   shell, no `mget`, no tab completion on the remote side.

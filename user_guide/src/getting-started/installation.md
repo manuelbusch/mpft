@@ -39,11 +39,13 @@ which matters for a container image or a CI runner.
 | `mail` | `mailto:`, `smtp://` | ✓ |
 | `sign-ssh` | signing and verifying with OpenSSH keys | ✓ |
 | `sign-pgp` | signing and verifying with OpenPGP keys | ✓ |
+| `relay` | `mpt relay` and `cp --via` (implies `ssh`), see [Relaying through a fast host](../server/relay.md) | ✓ |
 | `keyring` | secrets from the OS key store, and `mpt credentials` | – |
 | `vault` | secrets from HashiCorp Vault | – |
 | `s3-aws-auth` | the AWS credential chain: SSO, profiles, AssumeRole, IMDS | – |
+| `server` | `mpt serve`, see [Jobs over HTTP](../server/serve.md) | – |
 
-`all` is a shorthand for the eight default features. To build a smaller binary,
+`all` is a shorthand for the nine default features. To build a smaller binary,
 switch the defaults off and name what you want:
 
 ```
@@ -54,6 +56,7 @@ To keep everything and add an optional feature:
 
 ```
 cargo build --release --features keyring,s3-aws-auth
+cargo build --release --features server
 ```
 
 A URL whose protocol was not compiled in fails at once, before any connection

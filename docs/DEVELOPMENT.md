@@ -36,6 +36,12 @@ connections, which desynchronises that one control channel. It is a defect of
 that server, not of FTP or of `mpt`, and it is why the generated test URLs
 carry `?connect_retries=1`. Real servers do not need it.
 
+The server and the relay are tested without those servers, against local
+files only. `cargo test --features server` runs `tests/server.rs`, which
+starts the binary and moves files over HTTP and WebSocket; `tests/relay.rs`
+starts the binary as a relay and sends files through it with the binary as
+the client, and needs `ssh-keygen` for the client keys.
+
 The scripts under `tests/local/` are Unix shell scripts and do not run on
 Windows. The unit tests do (`cargo test --lib`) and cover the parsers, the
 configuration, the fan-out and the stream utilities. A PowerShell equivalent

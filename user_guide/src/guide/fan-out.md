@@ -24,6 +24,10 @@ This is the feature that most often replaces a shell script, where the
 alternative is to read the source three times or to spool it to a temporary
 file.
 
+The source is read once, but it is still *sent* once per target. Where the
+uplink is the bottleneck, [`--via`](../server/relay.md) sends it once to a
+relay host that fans it out from there.
+
 ## Buffering and memory
 
 By default nothing is buffered beyond a small window. The source is read in

@@ -175,6 +175,10 @@ For a long-running `--follow` process, remember that it ends when its input
 ends. Under systemd that is a `Type=simple` service with `Restart=always` and
 the watcher in the same pipeline, so both come back together.
 
+When the events come from another program rather than a pipe, that program
+can submit jobs to [`mpt serve`](../server/serve.md) over HTTP and follow
+their progress, instead of building a job list and spawning `mpt`.
+
 ## Parallelism and load
 
 [`--parallel`](../guide/many-files.md#parallelism) is also the number of

@@ -72,6 +72,7 @@ $ mpt batch jobs.txt
 URLs in a list are what you would type on the command line: `mpt://` profile
 names and options work. The credentials for every endpoint in the list are
 fetched once, before the first job starts, rather than per job.
+[`--via`](../server/relay.md) sends every job of the list through a relay.
 
 A failure is reported against its job and the rest continue:
 
