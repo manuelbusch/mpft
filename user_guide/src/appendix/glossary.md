@@ -28,7 +28,7 @@ or both. [Thinking in URLs](../getting-started/addressing.md).
 source read once. [Several targets at once](../guide/fan-out.md).
 
 **hop** — a target that the relay reading the source hands on to a second
-relay rather than writing itself. [A target behind another relay](../server/relay.md#a-target-behind-another-relay).
+relay rather than writing itself. [A target behind another relay](../server/relay-topologies.md#a-target-behind-another-relay).
 
 **job** — one source with its targets, the unit a batch is made of; on the
 command line, one `cp`. The HTTP server uses *job* for what it was submitted —

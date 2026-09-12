@@ -144,7 +144,7 @@ of `mpt serve` wins over its key here.
 
 ## `[relay]`
 
-Settings for [`mpt relay --listen`](../server/relay.md#on-the-relay-host)
+Settings for [`mpt relay --listen`](../server/relay-host.md#on-the-relay-host)
 (feature `relay`). Each flag of `mpt relay` wins over its key here.
 
 | Key | Type | Default | Meaning |

@@ -76,7 +76,7 @@ mpt relay --listen [ADDR]    # an SSH server of its own
 
 Each flag wins over its key in [`[relay]`](configuration.md#relay); the
 global flags apply to every relay the process runs. The table is under
-[On the relay host](../server/relay.md#on-the-relay-host).
+[On the relay host](../server/relay-host.md#on-the-relay-host).
 
 ## Flags
 
@@ -173,7 +173,7 @@ mpt -r cp /data/export/ sftp://srv/in/                  # error: unexpected argu
 | `--retries` without `--cache` | a stream cannot be replayed |
 | `--via` with `--no-via` | one decision about the relay |
 | `--via` with `--check`, `--sign` or `--resume` | those need what only the client has: the checksum file, the key, the source |
-| `--via` with `--delete-source` | unless the relay reads the source itself and writes every target of the job ([see the relay chapter](../server/relay.md#letting-the-relay-read-the-source)) |
+| `--via` with `--delete-source` | unless the relay reads the source itself and writes every target of the job ([see the relay chapter](../server/relay-topologies.md#letting-the-relay-read-the-source)) |
 
 The first three and `--via` with `--no-via` are rejected by the parser (`the
 argument '--resume' cannot be used with '--no-atomic'`), the others by `mpt`

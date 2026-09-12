@@ -298,7 +298,7 @@ The relay may remove the source only if it read it and wrote every target;
 otherwise nobody knows when the file is safe to delete. Give the source's
 profile a `via`, and every target the same one — or drop `--delete-source`
 and remove the file yourself afterwards. See [Letting the relay read the
-source](../server/relay.md#letting-the-relay-read-the-source).
+source](../server/relay-topologies.md#letting-the-relay-read-the-source).
 
 **`invalid option 'key': …: names a file on this machine, which the relay cannot read; let the relay use the forwarded agent (without --no-via-agent), give the target a password, or put the key on the relay`** [2]
 
@@ -347,7 +347,7 @@ The relay reached the target and the target refused; the message after
 **`invalid option 'check': not over a relay`** (in a relay's `error` line) [2]
 
 A header of your own set an option the relay refuses; see the [relay
-protocol](../reference/api.md#relay-protocol).
+protocol](../reference/relay-protocol.md).
 
 **`I/O error: unknown frame kind 104`** from a relay reading your own header [1]
 

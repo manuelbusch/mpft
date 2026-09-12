@@ -1,0 +1,100 @@
+# Relay topologies: sources and chains
+
+[`cp --via`](relay.md) sends a file from here to a relay, which delivers it.
+Two arrangements take this side out of the data path altogether: a source
+that the relay reads itself, and a target that one relay hands on to another.
+Both are set up with `via` in a [profile](../configuration/profiles.md), and
+both keep the client's part to the SSH session that carries the questions,
+the progress and the report.
+
+## Letting the relay read the source
+
+A source can be behind a relay as well. Give its profile a `via`, and the
+relay opens and reads it itself: this side only says which file, and no byte
+of it comes through here. The path is the relay's, so it may be one this
+machine cannot even see:
+
+```toml
+[profiles.incoming]
+url = "in/report.pdf"              # relative to the relay's working directory
+via = "mpt://relay"
+```
+
+```
+$ mpt cp mpt://incoming mpt://prod/
+[1/1] in/report.pdf -> sftp://deploy@srv.example.com/data/: 40000 bytes in 17.22ms
+1/1 jobs ok in 17.30ms
+```
+
+The progress this side prints is the relay's, counted as it reads. Only a
+profile's own `via` makes a source travel this way; `[defaults] via` and
+`--via` decide where targets are written, never where a source is read.
+
+This is also what makes `--delete-source` possible over a relay. The relay
+read the source, so it knows when every target has the file:
+
+```
+$ mpt cp --delete-source mpt://incoming mpt://prod/
+[1/1] in/report.pdf -> sftp://deploy@srv.example.com/data/: 40000 bytes in 14.25ms
+[1/1] source deleted
+```
+
+Add a target the relay does not write, and the client is back in the path —
+then nobody can say when the source is safe to remove, and the flag is
+refused:
+
+```
+[1/1] FAILED in/report.pdf: invalid option 'delete-source': with a relay, only when the source and every target are behind the relay that reads the source (a profile with `via`)
+```
+
+## A target behind another relay
+
+Two relays, one job: a target whose profile names a *different* relay is
+passed on to it. The relay that reads the source becomes a client of the
+second relay and sends the file over the same protocol, so the bytes go from
+relay to relay and never through this side:
+
+```toml
+[profiles.r1]
+url = "ssh://relay@fast.example.com:2222"
+[profiles.r2]
+url = "ssh://relay@dc2.example.com:2222"
+
+[profiles.incoming]                          # read by r1
+url = "in/report.pdf"
+via = "mpt://r1"
+
+[profiles.prod]                              # written by r1
+url = "sftp://deploy@srv.example.com/data/"
+via = "mpt://r1"
+
+[profiles.dc2]                               # written by r2, fed by r1
+url = "ftp://upload@dc2-store.example/in/"
+via = "mpt://r2"
+```
+
+```
+$ mpt cp --hash sha256 mpt://incoming mpt://prod/ mpt://dc2/
+[1/1] ok             40000 bytes     5.00ms  sftp://deploy@srv.example.com/data/
+[1/1]         + sftp://deploy@srv.example.com/data/report.pdf.sha256
+[1/1] ok             40000 bytes    22.00ms  ftp://upload@dc2-store.example/in/
+[1/1] in/report.pdf: 40000 bytes read, 2/2 targets ok in 37.78ms
+[1/1] sha256  e07113054489e8074ce8256f9c1a3aa076b57c3d76b3e7d367abc20d976e27dc
+1/1 jobs ok in 38.05ms
+```
+
+The second relay's questions travel back through the first: an on-demand
+password is still answered from here, neither relay keeps it, and the
+forwarded agent is handed on the same way — which is how the first relay logs
+in to the second without a key of its own. One SSH session per relay and job,
+and one report, in the order the targets were named.
+
+The checksum file of a chained target is written by the relay that writes the
+target, on that side; this side never places it, so the `sidecar` field of
+that target's [JSON report](../automation/scripting.md#the-json-report) stays
+empty while the file itself is there.
+
+A target with no relay of its own is copied from here as usual — which takes
+a source this side can read, so it does not combine with a source only a
+relay can see.
+

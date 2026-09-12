@@ -35,10 +35,12 @@
 - [Using mpt in scripts](automation/scripting.md)
 - [Scheduled and triggered runs](automation/scheduling.md)
 
-# Server and relay
+# Services
 
 - [Jobs over HTTP with mpt serve](server/serve.md)
 - [Relaying through a fast host](server/relay.md)
+- [Running a relay](server/relay-host.md)
+- [Relay topologies: sources and chains](server/relay-topologies.md)
 
 # Protocols
 
@@ -56,7 +58,8 @@
 - [Configuration keys](reference/configuration.md)
 - [Environment variables](reference/environment.md)
 - [Exit codes](reference/exit-codes.md)
-- [HTTP API and relay protocol](reference/api.md)
+- [HTTP API](reference/api.md)
+- [Relay protocol](reference/relay-protocol.md)
 
 # Appendix
 
