@@ -75,7 +75,8 @@ five rows, [Relaying through a fast host](../server/relay.md) the relay rows,
 - **What the far side sees** is the protocol's business: an SSH server logs
   the login, an FTP server the commands, S3 the request.
 
-[Logging](../automation/scripting.md#logging) has the levels.
+[Logging and observability](../automation/logging.md) has the levels and the
+line format.
 
 ## Data at rest
 

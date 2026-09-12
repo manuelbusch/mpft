@@ -180,7 +180,7 @@ protocol conversation, `-vvv` everything:
 
 ```
 $ mpt -v cp report.pdf backup/
-INFO mpt::transfer: copy source=report.pdf targets=1 size=Some(40000) cache=Stream hash=None check=false
+INFO mpt::transfer: copy targets=1 size=Some(40000) cache=Stream hash=None check=false
 report.pdf -> backup/: 40000 bytes in 6.70ms
 ```
 

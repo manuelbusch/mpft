@@ -182,21 +182,11 @@ the cheapest check available, especially in front of `--delete-source`.
 
 ## Logging
 
-Log lines go to stderr, and the level is decided in this order:
-
-1. `$RUST_LOG`, which wins over everything and takes the full `tracing`
-   filter syntax (`mpt::protocols::ssh=debug,warn`)
-2. `-v` (info), `-vv` (debug), `-vvv` (trace)
-3. `[defaults] log` in the configuration
-4. `warn`, the built-in default
-
-Note the first line: with `RUST_LOG` set in the environment, `-vv` does
-nothing. That is convenient in a CI job that sets it globally and surprising
-anywhere else.
-
-At the default level a run is quiet unless something deserves attention: a
-plaintext password, a host key added on first use, a partial file that could
-not be removed. Those are warnings that a log should keep.
+Log lines go to stderr as well, at `warn` unless `-v`, `[defaults] log` or
+`$RUST_LOG` says otherwise — and `$RUST_LOG`, once set, wins over `-vv`, which
+surprises in a CI job that sets it globally. [Logging and
+observability](logging.md) has the levels, the line format and what never
+appears in a log.
 
 ## Colour
 

@@ -277,8 +277,10 @@ server rather than kill it. Give the unit a `TimeoutStopSec` longer than
 ## Logging
 
 With `-v` the log names job ids, sizes and outcomes but no hosts or paths;
-`-vv` adds them along with everything else at debug level. Under systemd the
-log goes to the journal like any other service; [Scheduled and triggered
+`-vv` adds them along with everything else at debug level. [Logging and
+observability](../automation/logging.md#the-server-and-the-relay) lists what
+the server reports at each level. Under systemd the log goes to the journal
+like any other service; [Scheduled and triggered
 runs](../automation/scheduling.md#systemd) shows a unit, and a server differs
 from it in `Type=simple`, no timer, and the stop signal noted above.
 

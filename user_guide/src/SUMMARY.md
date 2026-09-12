@@ -34,6 +34,7 @@
 
 - [Using mpt in scripts](automation/scripting.md)
 - [Scheduled and triggered runs](automation/scheduling.md)
+- [Logging and observability](automation/logging.md)
 
 # Services
 
