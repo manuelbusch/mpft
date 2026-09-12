@@ -40,32 +40,89 @@ and heading anchors; run it after renaming a heading. `mdbook build` in
 `mermaid.min.js` and `mermaid-init.js` in `user_guide/` are what
 `mdbook-mermaid install` put there.
 
-## Test servers
+## Running the tests
 
-The end-to-end tests need real servers. `tests/local/start_servers.sh` starts
-Python implementations of FTP, HTTP/WebDAV, S3 and SMTP plus the user's own
-`sshd`, and an `ssh-agent` holding the certificate key (`MPT_IT_SSH_AGENT`);
-see the README for the `MPT_IT_*` variables that switch each suite on.
+```
+cargo test                                   # unit tests and the local-only suites
+cargo test --features server                 # adds the server's tests and tests/server.rs
+cargo clippy --features server --all-targets
+cargo fmt --check
+```
+
+`tests/server.rs` starts the binary as a server and moves local files over
+HTTP and WebSocket; `tests/relay.rs` starts it as a relay and sends files
+through it with the binary as the client, and needs `ssh-keygen` for the
+client keys. A few relay cases start two relays, to cover a target that one
+relay hands on to the other; the ones that need a real target behind the
+relay are skipped unless `MPT_IT_FTP` or `MPT_IT_SFTP` is set.
+
+### Test servers
+
+The end-to-end tests in `tests/integration.rs` run against real servers and
+are skipped unless the corresponding `MPT_IT_*` variable is set. A Docker-free
+setup using Python servers plus the user's own `sshd` is provided:
+
+```
+python3 -m venv .venv && .venv/bin/pip install pyftpdlib pyopenssl aiosmtpd "moto[server]" wsgidav cheroot
+bash tests/local/start_servers.sh .venv /tmp/mpt-it
+source /tmp/mpt-it/env.sh && cargo test --test integration
+bash tests/local/stop_servers.sh /tmp/mpt-it
+```
+
+`start_servers.sh` writes `<work-dir>/env.sh` with these variables; each one
+switches its suite on, and an unset one skips it with a message:
+
+| Variable | Server | Suite |
+|---|---|---|
+| `MPT_IT_FTP`, `MPT_IT_FTPS` | pyftpdlib, plain and explicit TLS with a self-signed certificate | FTP round trips, on-demand relay passwords |
+| `MPT_IT_HTTP`, `MPT_IT_WEBDAV` | a static HTTP server and WsgiDAV | HTTP and WebDAV round trips |
+| `MPT_IT_S3` | moto | S3 round trips including a multipart upload |
+| `MPT_IT_MAILTO`, `MPT_SMTP_URL`, `MPT_IT_MAILDIR` | aiosmtpd writing to a maildir | mail delivery, checked by reading the maildir |
+| `MPT_IT_SFTP`, `MPT_IT_SCP`, `MPT_IT_SSH_HOSTKEY` | the user's `sshd` on port 2222 with a generated client key | SFTP and SCP round trips, host-key pinning, agent forwarding through a relay |
+| `MPT_IT_SFTP_CERT`, `MPT_IT_SSH_AGENT` | the same `sshd` trusting a CA, and an `ssh-agent` holding the certificate key | certificate authentication from a file and from an agent, also through a relay |
+| `MPT_IT_LOG` | — | `debug` shows the client's tracing while the tests run |
+
+Implicit FTPS (`tls=implicit`) is implemented but not covered by these
+servers.
 
 The Python FTP server duplicates its greeting on roughly 1.5 % of concurrent
 connections, which desynchronises that one control channel. It is a defect of
 that server, not of FTP or of `mpt`, and it is why the generated test URLs
 carry `?connect_retries=1`. Real servers do not need it.
 
-The server and the relay are tested without those servers, against local
-files only. `cargo test --features server` runs `tests/server.rs`, which
-starts the binary and moves files over HTTP and WebSocket; `tests/relay.rs`
-starts the binary as a relay and sends files through it with the binary as
-the client, and needs `ssh-keygen` for the client keys. A few of its cases
-start two relays, to cover a target that one relay hands on to the other;
-the ones that need a real target behind the relay are skipped unless
-`MPT_IT_FTP` or `MPT_IT_SFTP` is set.
-
 The scripts under `tests/local/` are Unix shell scripts and do not run on
 Windows. The unit tests do (`cargo test --lib`) and cover the parsers, the
 configuration, the fan-out and the stream utilities. A PowerShell equivalent
 of the setup script, using the same Python servers plus the Windows OpenSSH
 server, is what would close the gap for the end-to-end tests.
+
+### Static checks and fuzzing
+
+```
+cargo deny check                     # licences, advisories, duplicate crates, sources
+cargo audit                          # RustSec advisories against Cargo.lock
+cargo +nightly fuzz run <target>     # see fuzz/fuzz_targets
+```
+
+The fuzz targets under `fuzz/` cover everything that parses input from the
+far side or from a file the user did not write: `location_parse`,
+`safe_name`, `parse_sidecar`, `allowed_signers`, `scp_header`, and the three
+job-list forms `batch_lines`, `batch_jsonl`, `batch_csv`. `stream::tee` has a
+property test instead (`proptest`, in `src/stream.rs`), since its contract is
+about bytes rather than parsing: for any chunk size, queue depth and number of
+readers, every reader that stays sees exactly the source bytes.
+
+`cargo deny` accepts one advisory on purpose, RUSTSEC-2023-0071 (a timing side
+channel in the `rsa` crate, reachable through `pgp` and `russh`). No fixed
+release exists; `mpt` signs and verifies with those keys but never decrypts,
+and ed25519 keys are unaffected. `deny.toml` carries the reasoning, and the
+licence allow-list is permissive licences only.
+
+### Minimum Rust version
+
+`rust-version` in `Cargo.toml` is 1.89, set by `russh` and `aes` rather than
+by this crate. Raise it when a dependency needs it, and note it in the
+release notes: the user guide's installation page states the number.
 
 ## Windows status
 
@@ -109,3 +166,21 @@ add a `Scheme` variant with its `SchemeInfo`, and hand it out from
 target without rename simply does not get atomic finishing, a source without
 listing cannot be a pattern or tree source. Add the scheme to the capability
 matrix in `user_guide/src/protocols/overview.md` and give it a protocol page.
+
+## Possible further protocols
+
+The `Receiver` / `Sender` split is designed so that new channels slot in
+without changing the core. Candidates, roughly in order of effort:
+
+- `az://`, `gs://` (Azure Blob, Google Cloud Storage) — nearly free through
+  `object_store`, which already carries S3
+- `smb://` — `pavao` (a libsmbclient binding)
+- `imap://` — receive attachments from a mailbox, the counterpart of `mailto:`
+- `mqtt://`, `nats://`, `amqp://` — message queues; send-only or receive-only
+  fits the endpoint model naturally
+- `tftp://` — network devices
+- `-` — stdin and stdout for pipes; today `mpt batch -` is the only reader of
+  standard input
+- webhooks (Slack, Teams, Matrix) — send-only over HTTPS
+- Dropbox, Google Drive, OneDrive — each needs an OAuth flow
+- rsync — only by way of the external binary
