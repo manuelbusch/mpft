@@ -16,7 +16,7 @@ $ mpt cp mailto:x@example.com ./
 error: copy mailto:x@example.com?timeout=30: scheme 'mailto' cannot receive
 ```
 
-## Two spellings, one mechanism
+## `mailto:` versus `smtp://`
 
 **`mailto:`** names recipients and takes the server from the configuration.
 This is the form to use, because the server belongs in one place rather than in
@@ -135,7 +135,7 @@ password = { cmd = "az account get-access-token --resource https://outlook.offic
 Note the `@` in the user name: the SMTP user is an address here, which is also
 what supplies the sender.
 
-## Size, and where the message is built
+## Attachment size limit
 
 Mail is the one protocol that cannot stream. The message has to be assembled
 and base64-encoded before it can be sent, so the payload is held in memory, and

@@ -84,7 +84,7 @@ error: 1 of 2 jobs failed
 ```
 
 The whole list is checked for [colliding
-targets](many-files.md#two-jobs-one-file) before the first byte moves, so a
+targets](many-files.md#colliding-targets) before the first byte moves, so a
 list that would have two jobs writing one file fails at once with exit code 2.
 
 ## Reading from a pipe
@@ -102,7 +102,7 @@ Note that the password cannot also come from stdin in this case — `mpt` refuse
 `--password-stdin` together with `batch -` rather than reading one into the
 other.
 
-## A pipe as a queue: `--follow`
+## Streaming input with `--follow`
 
 By default the whole list is read before the first job starts. `--follow` does
 not wait: each line is run as soon as it is complete, and the batch ends when
@@ -149,7 +149,7 @@ in this mode:
 
 Ctrl-C stops the reading and the running jobs alike.
 
-## Following a long run
+## Progress and JSON output
 
 For a person, the progress line counts jobs rather than bytes:
 
@@ -170,7 +170,7 @@ Objects arrive as jobs complete, so `jq -c` can follow a long run live rather
 than waiting for the end. The human-readable lines stay on stderr throughout.
 [Using mpt in scripts](../automation/scripting.md) has the field list.
 
-## Stopping early
+## Stopping after the first failure
 
 `--fail-fast` stops starting new jobs after the first failure and cancels those
 already running:

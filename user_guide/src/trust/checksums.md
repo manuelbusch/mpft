@@ -9,7 +9,7 @@ that into something you can find out.
 mpt cp --hash sha256 report.pdf sftp://srv.example.com/incoming/
 ```
 
-## Computed while it streams
+## Algorithms and checksum files
 
 `--hash sha256|sha512|blake3` digests the data as it passes through, in one
 pass, with no re-read and no buffering. On a fan-out it costs one computation
@@ -30,7 +30,7 @@ sha256  4dc21b974cc293d0dfbb25326f0df4ac461f29d69ccc2c2dc5391f4f39a45aed
 | `sha512` | `<name>.sha512` | faster than SHA-256 on 64-bit hardware |
 | `blake3` | `<name>.b3` | considerably faster again; needs `b3sum` on the other end |
 
-## The recipient needs nothing from you
+## Verifying with standard tools
 
 The file is one line in the format `sha256sum` and `b3sum` already speak:
 
@@ -75,7 +75,7 @@ Two details matter in practice:
 **Mail targets** cannot have a file written next to them. They receive the
 checksum as a second attachment, plus a line in the body.
 
-## Verifying on the way back
+## Verifying a download with `--check`
 
 `--check` looks for a checksum file next to the **source**, verifies what was
 transferred against it, and fails if they disagree:

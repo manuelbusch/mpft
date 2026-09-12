@@ -9,7 +9,7 @@ The examples use `srv.example.com` as the server and `deploy` as the account.
 Substitute a machine you can reach by SSH; nothing here writes outside a
 directory you name.
 
-## 1. A copy with no network in it
+## 1. A local copy
 
 Start with a copy that needs no network and no credentials. `mpt cp` takes a
 source and a target:
@@ -87,7 +87,7 @@ mpt cp report.pdf "sftp://deploy@srv.example.com/incoming/?hostkey=SHA256:GFb3By
 
 [Securing the connection](../trust/connections.md) covers all three in full.
 
-## 3. The second attempt
+## 3. The upload succeeds
 
 With the key known, the plain command works:
 
@@ -110,7 +110,7 @@ asked for a password. To name a key explicitly, put it in the URL:
 mpt cp report.pdf "sftp://deploy@srv.example.com/incoming/?key=~/.ssh/deploy_ed25519"
 ```
 
-## 4. Looking at the other side
+## 4. Listing the remote directory
 
 ```
 $ mpt ls sftp://deploy@srv.example.com/incoming/
@@ -121,7 +121,7 @@ The columns are type (`-` file, `d` directory), size and name. `ls` works on
 every scheme that can list a directory, which is all of them except `scp://`,
 `http://` and the mail schemes.
 
-## 5. Coming back
+## 5. Downloading
 
 Reverse the arguments to download. Nothing about the command changes shape:
 
@@ -137,7 +137,7 @@ A copy from one server straight to another needs no local file:
 mpt cp sftp://old.example.com/export/data.csv "s3://bucket/import/?endpoint=https://minio.example.com"
 ```
 
-## 6. Proving it arrived intact
+## 6. A checksum for the recipient
 
 `--hash` computes a digest while the bytes stream past — one pass, no re-read —
 and leaves it next to the copy:
@@ -164,7 +164,7 @@ So the recipient needs nothing from you but the two files. Going the other
 way, `--check` verifies a download against a checksum file that sits beside the
 *source*, and fails if they disagree.
 
-## 7. Two places at once
+## 7. Several targets
 
 The last thing worth seeing on day one is why `cp` takes more than two
 arguments:

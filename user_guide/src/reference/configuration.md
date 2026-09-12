@@ -113,11 +113,11 @@ Defaults for `s3://`.
 | `path_style` | boolean | path-style addressing instead of virtual-host style |
 | `access_key_id` | secret | access key |
 | `secret_access_key` | secret | secret key |
-| `profile` | string | AWS profile; also switches the credential chain on (feature `s3-aws-auth`) |
+| `profile` | string | AWS profile from `~/.aws/config` (not an `mpt://` profile); also switches the credential chain on (feature `s3-aws-auth`) |
 
 ## `[profiles.<name>]`
 
-A named target, addressed as `mpt://<name>/<path>`. See [Named
+A profile: a named endpoint addressed as `mpt://<name>/<path>`. See [Named
 targets](../configuration/profiles.md).
 
 | Key | Type | Meaning |

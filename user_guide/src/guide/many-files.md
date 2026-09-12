@@ -125,14 +125,14 @@ looks like a file has its content copied, a link that looks like a directory is
 descended into. Nothing follows a link back up, and there is a depth limit of
 64 as a backstop.
 
-## Repeating a run
+## Skipping existing files and deleting the source
 
 Two flags turn a copy into something you can run on a schedule.
 
 **`--skip-existing`** leaves a target alone when it already holds a file of the
 source's name and size, so with `-r` or a pattern a nightly run sends only what
 is new. It is decided per target, and it compares sizes rather than content:
-[Skipping what is already there](reliability.md#skipping-what-is-already-there)
+[Skipping with `--skip-existing`](reliability.md#skipping-with---skip-existing)
 has the detail.
 
 **`--delete-source`** removes the source once every target has it, which turns
@@ -155,7 +155,7 @@ mpt cp -r --skip-existing --delete-source sftp://srv/outbox/ /data/inbox/
 
 The directories stay; only the files are removed.
 
-## Looking before leaping
+## Dry run
 
 `--dry-run` expands everything — patterns, trees, profile names — and prints
 the jobs without transferring anything:
@@ -170,7 +170,7 @@ $ mpt cp --dry-run 'in/*.csv' out/
 This is the cheap way to find out what a pattern matches on a server, and worth
 making a habit of in front of `--delete-source`.
 
-## Two jobs, one file
+## Colliding targets
 
 A list in which two jobs would write the same file is refused **before anything
 is transferred**:
@@ -184,7 +184,7 @@ They would otherwise share the same temporary file and destroy each other's
 upload, and the survivor would be whichever finished last. The exit code is 2:
 it is a mistake in the command, not a failure of the transfer.
 
-## How many at once
+## Parallelism
 
 `--parallel <n>` (4 by default, `[defaults] parallel` in the configuration)
 says how many jobs are in flight. Every job opens its own connections, which

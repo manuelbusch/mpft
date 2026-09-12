@@ -67,7 +67,7 @@ than cache, atomic finishing on, no checksum).
 failed is an `Err` inside its own `TargetReport`, which is what lets one target
 fail without taking the others with it.
 
-## Stopping, and watching
+## Cancellation and progress
 
 A cancellation token stops a copy the way Ctrl-C does in the CLI: running
 sends are dropped, part files removed, unfinished targets reported as
@@ -145,7 +145,7 @@ use mpt::batch::jobs::{Format, detect, parse};
 let specs = parse(text, detect(None, text))?;
 ```
 
-## Talking to one endpoint
+## Working with a single endpoint
 
 An `Endpoint` exposes a `Receiver`, a `Sender`, or both. Which of them is
 `None` is how a send-only channel like e-mail needs no special casing anywhere
@@ -179,7 +179,7 @@ Data flows as `ByteStream`, which is `Pin<Box<dyn AsyncRead + Send>>`. Anything
 that implements `AsyncRead` can be a source, and nothing is buffered in between
 except where a protocol forces it.
 
-## The two pieces worth borrowing
+## Stream utilities: `tee` and `MemoryCache`
 
 `tee` splits one `AsyncRead` into several with backpressure — the source is
 read once and paused when the slowest reader falls behind:
@@ -239,16 +239,6 @@ the same as for the binary: `ssh`, `ftp`, `http`, `webdav`, `s3`, `mail`,
 `sign-ssh`, `sign-pgp` by default, and `keyring`, `vault`, `s3-aws-auth` on
 request. A protocol that was not compiled in returns
 `Error::UnsupportedScheme` naming the missing feature.
-
-## Adding a protocol
-
-The shape of the traits is what keeps new channels from disturbing the rest:
-implement `Endpoint` with whichever of `Receiver` and `Sender` makes sense, add
-a `Scheme` variant with its `SchemeInfo`, and hand it out from
-`protocols::open`. The optional methods — `supports_rename`, `rename`,
-`remove`, `supports_append`, `existing_size`, `append`, `supports_mkdir`,
-`mkdir_all` — default to "not supported", and the pipeline adapts: a target
-without rename simply does not get atomic finishing.
 
 ## Next
 

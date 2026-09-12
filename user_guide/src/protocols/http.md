@@ -11,7 +11,7 @@ mpt cp report.pdf webdavs://cloud.example.com/documents/
 mpt ls webdavs://cloud.example.com/documents/
 ```
 
-## Take WebDAV where the server speaks it
+## HTTP versus WebDAV
 
 | | `http(s)://` | `webdav(s)://` |
 |---|---|---|
@@ -92,7 +92,7 @@ flow. See [Credentials and secrets](../configuration/credentials.md).
 A device-code flow with a refresh token in the key store is not built in; a
 script that prints a token covers the same ground.
 
-## What `mpt ls` needs
+## Listing requires WebDAV
 
 `mpt ls` on `http://` fails, and says what to do about it:
 
@@ -111,7 +111,7 @@ and to `-r` with an HTTP source: both need a listing. An HTTP *target* refuses
 A source's size comes from `HEAD`, or from `Content-Length` on the GET. A
 server that sends neither still transfers fine; the progress display shows
 bytes and a rate without a percentage, and
-[`--skip-existing`](../guide/reliability.md#skipping-what-is-already-there)
+[`--skip-existing`](../guide/reliability.md#skipping-with---skip-existing)
 cannot skip a target it cannot measure.
 
 ## Next

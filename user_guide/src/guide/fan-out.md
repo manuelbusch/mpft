@@ -24,7 +24,7 @@ This is the feature that most often replaces a shell script. The alternative is
 to read the source three times, or to spool it to a temporary file and clean
 that up afterwards, and in either case to invent your own error handling.
 
-## What happens to the bytes
+## Buffering and memory
 
 By default nothing is buffered beyond a small window. The source is read in
 `--chunk` sized pieces (64 KiB), and each piece is handed to every target as
@@ -108,7 +108,7 @@ instead, so a script can react to "the credentials are wrong" without parsing
 messages. [Using mpt in scripts](../automation/scripting.md) has the rules.
 
 Nothing is rolled back. The targets that succeeded keep the file; re-running
-the command with [`--skip-existing`](reliability.md#skipping-what-is-already-there)
+the command with [`--skip-existing`](reliability.md#skipping-with---skip-existing)
 will leave them alone and retry only the ones that are missing it.
 
 ## Slow targets, stalled targets

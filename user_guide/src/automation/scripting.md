@@ -4,7 +4,7 @@ Unattended use is what `mpt` is for, so the things a calling program needs are
 not afterthoughts: the two output streams are separated, the exit code says
 what kind of failure it was, and the report can be read as JSON.
 
-## Two streams, two audiences
+## stdout and stderr
 
 Everything a person reads — result lines, warnings, the progress display — goes
 to **stderr**. Everything a program reads goes to **stdout**, and only with
@@ -175,7 +175,7 @@ redraws over the output.
 
 ## Seeing what would happen
 
-[`--dry-run`](../guide/many-files.md#looking-before-leaping) prints the jobs a
+[`--dry-run`](../guide/many-files.md#dry-run) prints the jobs a
 command would run and transfers nothing, and with `--json` it prints them as
 one object per job. In a script that builds its own arguments, running it once
 in dry mode is the cheapest possible check — especially in front of
@@ -213,7 +213,7 @@ report.pdf -> out/: 8 bytes in 6.32ms
 absence of a terminal, which is what a CI system that renders ANSI codes needs.
 `--color never` switches it off for good. `[defaults] color` sets the default.
 
-## Being interrupted
+## Interruption and exit code 130
 
 Ctrl-C — or any `SIGINT` — stops the transfer, removes partial files, reports
 every unfinished target as `cancelled`, and exits 130. In a batch, jobs that

@@ -23,7 +23,7 @@ were compiled in.
 | `s3://` | [S3-compatible storage](s3.md) | – | `s3` |
 | `mailto:` | [e-mail, server from the configuration](mail.md) | – | `mail` |
 | `smtp://` | [e-mail, server in the URL](mail.md) | 587 | `mail` |
-| `mpt://` | a [named target](../configuration/profiles.md) — resolves to one of the above | – | always |
+| `mpt://` | a [profile](../configuration/profiles.md) — resolves to one of the above | – | always |
 
 ## What each one can do
 
@@ -50,7 +50,7 @@ Reading the columns as features:
 - **rename** — [atomic finishing](../guide/reliability.md#a-file-appears-only-when-it-is-whole)
   is possible. S3 does not need it: an object appears only when its upload is
   complete.
-- **append** — [`--resume`](../guide/reliability.md#continuing-where-it-stopped)
+- **append** — [`--resume`](../guide/reliability.md#resuming-with---resume)
   is possible.
 - **mkdir** — can be the *target* of a tree copy. S3 needs nothing, since a key
   containing slashes is all a directory ever was there.

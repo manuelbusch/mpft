@@ -70,7 +70,7 @@ path_style = true
 [http]                        # defaults for http(s):// and WebDAV
 # token = { cmd = "…" }       # see "Credentials and secrets"
 
-[profiles.prod]               # see "Named targets"
+[profiles.prod]               # see "Profiles"
 url = "sftp://deploy@srv.example.com/data/"
 ```
 
@@ -78,7 +78,7 @@ url = "sftp://deploy@srv.example.com/data/"
 [Signatures](../trust/signatures.md). Every section is optional, and so is
 every key in it.
 
-## Checking it
+## Validating with `mpt config check`
 
 `mpt config check` reads the configuration exactly as a real run would, and
 prints which files were used and what they set:
@@ -122,7 +122,7 @@ profiles`](profiles.md) — and neither are a handful of keys that are applied
 all the same; see the [reference](../reference/configuration.md). The `ok
 <path>` line is what tells you the file was read and accepted.
 
-## What wins over what
+## Precedence
 
 Two kinds of setting behave differently, and not in the obvious direction.
 
@@ -156,7 +156,7 @@ $ mpt ls "mpt://prod/?timeout=5"                          # → timeout=5, the r
 That is deliberate. `--timeout 120` means "be patient with everything in this
 run"; `?timeout=5` on one URL means "this endpoint in particular", and a
 narrower statement should not be overruled by a broader one. The
-[echoed target](../getting-started/addressing.md#the-echo-tells-you-what-was-used)
+[echoed target](../getting-started/addressing.md#the-result-line-echoes-the-options-used)
 in the result line always shows what was actually used.
 
 Environment variables slot in between a URL option and the configuration
@@ -166,7 +166,7 @@ configuration key it corresponds to. `MPT_SSH_KEY` therefore overrides
 overrides both. `MPT_PASSWORD`, `MPT_SMTP_URL` and the AWS variables are the
 other common ones; the [reference](../reference/environment.md) has them all.
 
-## Values with a shape
+## Value formats
 
 - **Sizes** take a unit: `64K`, `256M`, `2G`. Plain numbers are bytes.
 - **Durations** take one too: `30m`, `24h`, `7d`. `0` means "no limit".
@@ -233,6 +233,6 @@ mode bits, and the file's location is judged instead; see the
 
 ## Next
 
-[Named targets](profiles.md) turns a long URL into `mpt://prod/`, and
+[Profiles](profiles.md) turns a long URL into `mpt://prod/`, and
 [Credentials and secrets](credentials.md) covers how passwords get into a run
 without being written down.

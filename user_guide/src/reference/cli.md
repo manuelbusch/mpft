@@ -15,7 +15,7 @@ mpt [OPTIONS] <COMMAND>
 | `mpt batch <FILE\|->` | run a job list from a file or standard input |
 | `mpt ls <URL>` | list a directory |
 | `mpt schemes` | print the supported schemes and their options |
-| `mpt profiles` | list the named targets the configuration defines |
+| `mpt profiles` | list the profiles the configuration defines |
 | `mpt config check` | read the configuration and print what it sets |
 | `mpt credentials set\|get\|delete <ENTRY>` | manage OS key store entries (feature `keyring`) |
 | `mpt completions <SHELL>` | print a completion script |
@@ -153,7 +153,7 @@ error: copy report.pdf: invalid option 'retries': retries need the memory cache
 
 Most flags have a `[defaults]` key of the same name and, for the per-endpoint
 ones, a URL option. The precedence differs between the two groups —
-see [What wins over what](../configuration/file.md#what-wins-over-what).
+see [Precedence](../configuration/file.md#precedence).
 
 | Flag | `[defaults]` key | URL option |
 |---|---|---|

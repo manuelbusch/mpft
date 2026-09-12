@@ -26,7 +26,7 @@
 # Configuration
 
 - [The configuration file](configuration/file.md)
-- [Named targets](configuration/profiles.md)
+- [Profiles](configuration/profiles.md)
 - [Credentials and secrets](configuration/credentials.md)
 - [Policies](configuration/policies.md)
 

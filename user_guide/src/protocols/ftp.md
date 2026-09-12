@@ -9,7 +9,7 @@ mpt ls "ftps://upload@ftp.partner.example/incoming/?tls=implicit"
 mpt cp ftp://anonymous@ftp.example.org/pub/data.csv ./
 ```
 
-## Three ways to encrypt, or not
+## TLS modes
 
 | Scheme and option | What happens | Default port |
 |---|---|---|
@@ -48,12 +48,12 @@ NAT announces its internal address for the data connection. With it, `mpt`
 ignores the announced address and reuses the one it is already talking to. If
 transfers hang after the listing works, this is the first thing to try.
 
-## What works
+## Capabilities
 
 FTP supports more than its age suggests: listing, sizes (`SIZE`), renaming
 (`RNFR`/`RNTO`), appending (`APPE`) and directory creation (`MKD`). So
 [atomic finishing](../guide/reliability.md#a-file-appears-only-when-it-is-whole),
-[`--resume`](../guide/reliability.md#continuing-where-it-stopped) and
+[`--resume`](../guide/reliability.md#resuming-with---resume) and
 [`-r`](../guide/many-files.md#whole-directories-with--r) all work.
 
 Renaming onto an existing name is refused by most servers, so `mpt` deletes the
@@ -74,14 +74,6 @@ account is often the same thing.
 FTP uses two connections, a control channel and a data channel, and the
 inactivity timeout covers both. A server that accepts the command and then
 never opens the data connection is the failure mode `--timeout` exists for.
-
-## A note on the test server
-
-The Python server used in this project's own test suite duplicates its greeting
-on about 1.5 % of concurrent connections, which desynchronises that one control
-channel. It is a defect of that server rather than of FTP or of `mpt`, and it
-is why the generated test URLs carry `?connect_retries=1`. Real servers do not
-need it — but the option exists for exactly this sort of thing.
 
 ## Next
 

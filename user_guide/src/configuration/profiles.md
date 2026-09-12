@@ -1,4 +1,4 @@
-# Named targets
+# Profiles
 
 A profile gives a recurring endpoint a name. Instead of
 
@@ -69,7 +69,7 @@ Each profile is shown as the URL it stands for, with the reserved keys on
 their own line beneath. Passwords are masked. This is the quickest way to
 check that a profile expands to what you meant, and it makes no connection.
 
-## Paths, and where they end up
+## Path resolution
 
 The path of the reference is appended to the profile's own path:
 
@@ -103,7 +103,7 @@ mpt cp report.pdf "mpt://prod/incoming/?timeout=300"     # this one transfer may
 ```
 
 That is the general rule from [the previous
-page](file.md#what-wins-over-what): the more specific the place, the more it
+page](file.md#precedence): the more specific the place, the more it
 counts. Note that this also puts a profile above a command-line flag, since the
 profile belongs to one endpoint and the flag to the whole run:
 
@@ -115,7 +115,7 @@ The reserved keys behave the other way round, because they are run-wide
 settings rather than endpoint options: `--hash sha256` beats `hash = "blake3"`,
 and `--no-atomic` cannot be undone by `atomic = true`.
 
-## A profile per relationship, not per command
+## When to define one
 
 Profiles pay off where an endpoint carries knowledge that is tedious and
 error-prone to repeat — a pinned host key, a specific key file, a non-standard

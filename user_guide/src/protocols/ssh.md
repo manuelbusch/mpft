@@ -10,7 +10,7 @@ mpt ls sftp://deploy@srv.example.com/var/spool/incoming/
 mpt cp sftp://deploy@srv.example.com/var/log/app.log ./
 ```
 
-## Take SFTP unless you cannot
+## SFTP versus SCP
 
 | | `sftp://` | `scp://` |
 |---|---|---|
@@ -120,10 +120,8 @@ unauthenticated at once, so a high parallelism against a single host produces
 failures rather than speed. Single digits are the useful range, and
 `?connect_retries=1` absorbs the occasional refusal.
 
-Each job opens its own connection. Sharing one SSH session between transfers
-was tried and withdrawn: under concurrency a dropped stream could poison the
-whole connection and fail a transfer mid-write, which is not a trade worth a
-hundred milliseconds.
+Each job opens its own SSH connection; connections are not shared between
+jobs.
 
 ## Next
 

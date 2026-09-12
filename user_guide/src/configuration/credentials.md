@@ -91,7 +91,7 @@ The same syntax works for every secret in the file:
 A plain string works too — `password = "hunter2"` — and warns. It is there so
 that a quick test does not need ceremony, not as something to leave in place.
 
-### Fetched late, and only what is needed
+### When references are resolved
 
 A reference is resolved when the endpoints of *this* command need it, not when
 the file is read. Two things follow.
@@ -133,7 +133,7 @@ the subcommand does not exist:
 error: unrecognized subcommand 'credentials'
 ```
 
-## `cmd` runs what the file says
+## The `cmd` provider
 
 The `cmd` provider is the most useful of the five, because every secret manager
 has a command-line interface, and the most dangerous, for the same reason: the
@@ -173,8 +173,8 @@ uses it — and in every case the token arrives through the same providers:
 
 - **S3**: the AWS credential chain, with the `s3-aws-auth` feature — the SSO
   cache that `aws sso login` fills, `~/.aws` profiles, AssumeRole, web identity,
-  instance metadata. Used only when a profile is named, so nothing reaches for
-  the metadata service unbidden.
+  instance metadata. Used only when an AWS profile is named, so nothing reaches
+  for the metadata service unbidden.
 - **SMTP**: `auth = "xoauth2"` with the token in `[mail] password`, which is
   what Microsoft 365 and Google now require.
 - **HTTP and WebDAV**: `[http] token` as a bearer token, typically

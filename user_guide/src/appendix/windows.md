@@ -1,15 +1,10 @@
 # Windows
 
-`mpt` is written to build and run on Windows. Most of it is platform-agnostic
-Rust, and the places where the operating system genuinely differs are handled
-explicitly rather than by hoping. This page collects those places — and says
-plainly what has not been verified.
-
-> **Not built here.** The development machine has no Windows target, and the
-> cryptography crates cannot be cross-compiled to one from macOS. Everything
-> below is what the code does; none of it has been run on Windows. The Windows
-> job of the CI workflow is what will settle it, and that workflow is still
-> outstanding.
+`mpt` builds and runs on Windows. Most of it is platform-agnostic Rust; this
+page collects the places where the operating system differs and how `mpt`
+handles each. Windows is not yet covered by automated tests, so it is
+supported on a best-effort basis; see [Supported
+platforms](../getting-started/installation.md#supported-platforms).
 
 ## Building
 
@@ -56,7 +51,7 @@ password = { cmd = "op read op://Infra/prod/password" }
 Pipes and redirection follow `cmd` rules rather than shell rules, quoting is
 `cmd` quoting, and PowerShell is not involved unless you invoke it yourself
 (`powershell -Command "…"`). Everything else about the provider is
-[as it is elsewhere](../configuration/credentials.md#cmd-runs-what-the-file-says).
+[as it is elsewhere](../configuration/credentials.md#the-cmd-provider).
 
 ## File permissions
 
@@ -107,20 +102,6 @@ is usually not Windows.
   ```
   mpt completions powershell > $PROFILE.CurrentUserAllHosts
   ```
-
-## Testing
-
-The local test servers under `tests/local/` are Unix shell scripts and do not
-run on Windows. The unit tests do:
-
-```
-cargo test --lib
-```
-
-They cover the parsers, the configuration, the fan-out and the stream
-utilities, which is most of what is platform-independent. The end-to-end tests
-need the servers; a PowerShell equivalent of the setup script — the same Python
-servers plus the Windows OpenSSH server — is what would close that gap.
 
 ## Next
 

@@ -19,6 +19,9 @@ apply whatever the protocol is.
 This guide is about the program; [the appendix](appendix/library.md) covers
 the library.
 
+This guide describes `mpt` 0.1. `mpt --version` prints the version you have,
+and `mpt --help` is always authoritative for the binary in front of you.
+
 ## Who this guide is for
 
 Anyone who has to move files between systems that do not speak the same

@@ -53,7 +53,7 @@ AWS tools works here.
 | `AWS_SESSION_TOKEN` | session token for temporary credentials |
 | `AWS_REGION`, `AWS_DEFAULT_REGION` | region |
 | `AWS_ENDPOINT_URL` | the server, when it is not AWS |
-| `AWS_PROFILE` | named profile; also switches the credential chain on (feature `s3-aws-auth`) |
+| `AWS_PROFILE` | AWS profile from `~/.aws/config` (not an `mpt://` profile); also switches the credential chain on (feature `s3-aws-auth`) |
 
 `user:pass@` in the URL and `[s3] access_key_id` override the key pair.
 
@@ -66,7 +66,7 @@ Read by `{ vault = "…" }` references (feature `vault`).
 | `VAULT_ADDR` | the server |
 | `VAULT_TOKEN` | the token to read with |
 
-## The program itself
+## General
 
 | Variable | Meaning |
 |---|---|
@@ -75,7 +75,7 @@ Read by `{ vault = "…" }` references (feature `vault`).
 | `RUST_LOG` | log filter. **Overrides `-v` and `[defaults] log`** |
 | `NO_COLOR` | any value switches colour off under `--color auto`; `--color always` still wins |
 
-## Things that are not variables
+## Settings that are not environment variables
 
 Two settings people look for here and will not find:
 

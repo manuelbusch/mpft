@@ -4,7 +4,7 @@ The errors that come up, what they mean, and what to do. Every message below is
 what `mpt` actually prints; the exit code is in brackets, since that is what a
 script sees.
 
-## First, four commands
+## Diagnostic commands
 
 | Command | Answers |
 |---|---|
@@ -185,7 +185,7 @@ run what the file says, which is why this matters.
 prints a summary rather than everything, so a key missing from the listing may
 still be in force. Second, and more often: for per-endpoint options a URL
 option and a profile both beat a command-line flag. `--timeout 7` does not
-override `?timeout=60`. See [What wins over what](../configuration/file.md#what-wins-over-what),
+override `?timeout=60`. See [Precedence](../configuration/file.md#precedence),
 and read the target echoed in the result line, which shows what was used.
 
 ## Jobs, patterns and trees

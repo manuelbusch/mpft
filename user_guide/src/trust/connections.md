@@ -163,7 +163,7 @@ error: authentication failed: ftp://ftp.example.com: FTP without TLS sends the p
 `MPT_REFUSE_PLAINTEXT_AUTH=1` sets it for one run. Anonymous FTP is unaffected;
 there is no password to lose.
 
-## Passwords where other people can read them
+## Passwords in the process list
 
 A password in a URL is visible in `ps` to every user on the machine and stays
 in the shell history, so it gets [a warning of its

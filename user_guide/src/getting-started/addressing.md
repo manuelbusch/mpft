@@ -82,7 +82,7 @@ file](../configuration/file.md) are checked strictly — an unknown key there is
 an error that `mpt config check` will name — so a setting you rely on is better
 placed there than repeated on the command line.
 
-### The echo tells you what was used
+### The result line echoes the options used
 
 The result line prints the target with the options that were **actually in
 force**, including those that came from a default or a configuration file:
@@ -135,7 +135,7 @@ For the password itself use `--password-stdin`, `--password-file`, the
 file. SSH keys are found automatically; see
 [SFTP and SCP](../protocols/ssh.md).
 
-## Not every scheme goes both ways
+## Send-only and receive-only schemes
 
 An endpoint can receive (be a source), send (be a target), or both. `mpt
 schemes` has the exact table; the exceptions are worth knowing up front:
@@ -173,7 +173,7 @@ On Windows a local path may carry a drive letter or be a UNC path, and `\` is
 a separator; both are recognised as local files rather than mistaken for a
 scheme.
 
-## Short names for long URLs
+## Profiles
 
 A URL that recurs — with its key, its host-key pin, its timeout — can be given
 a name in the configuration file and used as `mpt://<name>/`:
@@ -191,7 +191,7 @@ mpt cp report.pdf mpt://prod/incoming/
 ```
 
 The path of the reference is appended to the profile's own path, and it cannot
-climb out of it. [Named targets](../configuration/profiles.md) covers this in
+climb out of it. [Profiles](../configuration/profiles.md) covers this in
 full.
 
 ## Next

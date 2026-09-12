@@ -104,7 +104,7 @@ keyring         = "~/.config/mpt/trusted.asc"
 With `[policy] require_signature = true` a bare `--check` is then refused as
 insufficient — see [Policies](../configuration/policies.md#requiring-signatures).
 
-## The same signatures as everyone else's
+## Interoperability with OpenSSH and GnuPG
 
 Nothing here is a private format. An OpenSSH signature is SSHSIG in namespace
 `file`, and the recipient can verify it with OpenSSH:
@@ -124,9 +124,7 @@ gpg: Good signature from "Release Bot <release@example.com>"
 ```
 
 It works in both directions: `mpt` verifies what `ssh-keygen -Y sign` and `gpg
---detach-sign` produce. Both directions are checked against the real tools in
-the test suite, so this is a property of the implementation rather than a
-claim about the format.
+--detach-sign` produce.
 
 ## Trust files
 

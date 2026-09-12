@@ -36,7 +36,7 @@ If the remote directory has to be created, copy a tree with
 [`-r`](many-files.md#whole-directories-with--r), which creates directories as
 part of the job, or create it on the far side first.
 
-## Watching it happen
+## Progress display
 
 On a terminal a copy shows one line that redraws itself, and it disappears when
 the copy is done:
@@ -136,7 +136,7 @@ checksum file beside the source. [Checksums](../trust/checksums.md) covers
 both, and [Signatures](../trust/signatures.md) the case where the far side is
 not trusted.
 
-## Two things `cp` does not do
+## What `cp` does not do
 
 **`-` is not standard input.** A lone dash is treated as a file called `-`,
 which almost certainly does not exist. Only `mpt batch -` reads stdin, and it
@@ -147,7 +147,7 @@ write it to a file first.
 directory as if it were a file and fails. Copying directories is
 [`-r`](many-files.md#whole-directories-with--r).
 
-## Where the flags go
+## Flag placement
 
 Most flags are global and may stand before or after the subcommand:
 

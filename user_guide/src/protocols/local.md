@@ -49,16 +49,16 @@ target only:
 FAILED             0 bytes   254.50µs  blocker/sub/: I/O error: Not a directory (os error 20)
 ```
 
-## Everything is supported
+## Capabilities
 
 Local files can do all of it: listing, sizes, renaming, appending, creating
 directories, deleting. In practice that means every feature works without a
 caveat — [atomic finishing](../guide/reliability.md#a-file-appears-only-when-it-is-whole),
-[`--resume`](../guide/reliability.md#continuing-where-it-stopped),
+[`--resume`](../guide/reliability.md#resuming-with---resume),
 [`-r`](../guide/many-files.md#whole-directories-with--r),
 [patterns](../guide/many-files.md#patterns-on-the-far-side),
-[`--skip-existing`](../guide/reliability.md#skipping-what-is-already-there) and
-[`--delete-source`](../guide/many-files.md#repeating-a-run).
+[`--skip-existing`](../guide/reliability.md#skipping-with---skip-existing) and
+[`--delete-source`](../guide/many-files.md#skipping-existing-files-and-deleting-the-source).
 
 ```
 $ mpt ls .
@@ -82,7 +82,7 @@ The file is read once and written twice, with a checksum file beside each copy.
 For a straight local copy of one file, `cp` is still `cp`; the point here is
 the other three things.
 
-## What is written
+## Permissions and timestamps
 
 The payload is written with the process's own umask, as any program's output
 would be. Ownership and permissions of the source are not carried across —

@@ -42,7 +42,7 @@ a failing target does not stop the rest, and each one reports its own outcome.
 Reading a 40 GB image once instead of four times is the difference between a
 transfer that fits in the maintenance window and one that does not.
 
-## The careful thing is the default
+## Safe defaults
 
 Every default is the one you would have chosen after the incident:
 

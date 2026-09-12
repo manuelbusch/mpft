@@ -6,7 +6,7 @@ do it where the rest of your operational tooling can see it. What `mpt` offers
 instead is a run that is safe to repeat and an outcome that is unambiguous
 enough for those systems to act on.
 
-## The shape of a repeatable job
+## Flags for a repeatable job
 
 Two flags do most of the work:
 
@@ -118,7 +118,7 @@ is an error rather than an empty string. Check such a file with
 `systemd-run --pipe --unit=mpt-check --property=LoadCredential=… mpt config check`,
 or set the variable for the length of one command.
 
-## Credentials for an account that is not a person
+## Credentials for service accounts
 
 A service account has no keychain to unlock and no shell to type into. Three
 arrangements that work:
@@ -140,10 +140,10 @@ rather than a suggestion. See
 [Credentials and secrets](../configuration/credentials.md) and
 [Policies](../configuration/policies.md).
 
-## Reacting to files instead of the clock
+## Event-triggered runs
 
 A timer is the wrong tool when the work arrives at unpredictable times.
-[`batch --follow`](../guide/job-lists.md#a-pipe-as-a-queue---follow) runs a job as
+[`batch --follow`](../guide/job-lists.md#streaming-input-with---follow) runs a job as
 soon as its line arrives on standard input, so any program that prints one line
 per event becomes a queue:
 
@@ -174,9 +174,9 @@ For a long-running `--follow` process, remember that it ends when its input
 ends. Under systemd that is a `Type=simple` service with `Restart=always` and
 the watcher in the same pipeline, so both come back together.
 
-## How hard to push
+## Parallelism and load
 
-[`--parallel`](../guide/many-files.md#how-many-at-once) is also the number of
+[`--parallel`](../guide/many-files.md#parallelism) is also the number of
 simultaneous logins on the far side, which is why single digits are the useful
 range against one server. Two limits matter on a shared machine: with
 `--cache`, memory is the cache limit times the parallelism, and every job holds
@@ -186,7 +186,7 @@ If the far side is a partner's server, the polite arrangement is a small
 `--parallel`, a `RandomizedDelaySec`, and a `--timeout` generous enough that
 their slow morning does not turn into your failed job.
 
-## What to keep
+## Retaining run output
 
 For each run, three things are worth having afterwards: the exit code, the
 human-readable summary, and — when the job matters — the JSON report.

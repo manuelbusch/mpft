@@ -65,7 +65,7 @@ $ mpt cp report.pdf sftp://srv.example.com/in/
 error: unsupported scheme 'sftp (compiled without the 'ssh' feature)'
 ```
 
-## Checking what you have
+## Listing the compiled-in schemes
 
 `mpt schemes` prints what this particular binary can speak, which is the
 quickest way to see whether a feature made it in:
@@ -100,19 +100,21 @@ is roff, so it can also be read without installing it:
 mpt man | man -l -
 ```
 
-## Platform notes
+## Supported platforms
 
-**Linux and macOS** need nothing beyond the Rust toolchain and a C linker,
-which a normal build environment already has.
+| Platform | Status | Build requirements |
+|---|---|---|
+| Linux (x86_64, aarch64) | built and tested | Rust toolchain, C linker |
+| macOS (Apple silicon, Intel) | built and tested | Rust toolchain, Xcode command-line tools |
+| Windows | builds; not yet covered by automated tests | MSVC toolchain. NASM is not required |
 
-**Windows** builds with the MSVC toolchain alone. NASM is not required: the TLS
-stack brings its own pre-built assembly. See [the Windows
-appendix](../appendix/windows.md) for the handful of behavioural differences,
-and for what has not yet been verified there.
+Windows has a handful of behavioural differences, all listed in [the Windows
+appendix](../appendix/windows.md). Cross-compiling works for targets whose
+cryptography crates can be built for them; the pure-Rust parts have no
+platform-specific code beyond paths and the ssh-agent transport.
 
-**Cross-compiling** works for targets whose cryptography crates can be built
-for them; the pure-Rust parts have no platform-specific code beyond paths and
-the ssh-agent transport.
+There are no pre-built binaries at present. Building from source is the only
+installation path.
 
 ## Next
 

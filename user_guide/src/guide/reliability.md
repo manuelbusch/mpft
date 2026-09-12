@@ -48,7 +48,7 @@ for — a directory watcher with a pattern too loose, typically.
 Two transfers writing the same target at the same time still conflict. The
 difference is that the second rename now reports it instead of the two
 interleaving silently, and within one command `mpt` refuses the situation
-[before it starts](many-files.md#two-jobs-one-file).
+[before it starts](many-files.md#colliding-targets).
 
 ## Ctrl-C
 
@@ -61,7 +61,7 @@ had not started never start.
 The one thing Ctrl-C does not do is remove the part file when `--resume` is in
 play — see below. That is the whole point of it.
 
-## Continuing where it stopped
+## Resuming with `--resume`
 
 `--resume` keeps whatever is already in `<name>.mpt-part` on the target and
 sends only the rest.
@@ -105,7 +105,7 @@ no append, so the whole payload is sent again.
 
 `--resume` needs atomic finishing, so it cannot be combined with `--no-atomic`.
 
-## Skipping what is already there
+## Skipping with `--skip-existing`
 
 `--skip-existing` asks each target, before anything is read, whether it already
 holds a file of the source's name and size:
@@ -136,7 +136,7 @@ was edited without changing its length is not noticed. Where that matters, use
 Targets that cannot say what they hold — mail, an HTTP server without `HEAD` —
 are never skipped.
 
-## Giving up in good time
+## Timeouts and connect retries
 
 `--timeout` (30 seconds) counts **inactivity**, not total duration. It applies
 to connecting, to logging in, to every stream, to the FTP control channel, and
@@ -155,7 +155,7 @@ Both can be set per endpoint (`?timeout=`, `?connect_retries=`) and in the
 [configuration file](../configuration/file.md), which is the right place for a
 value that should hold for every run on a machine.
 
-## Putting it together
+## Example: a repeatable nightly job
 
 A scheduled job that has to survive a bad night, and be safe to run twice:
 
