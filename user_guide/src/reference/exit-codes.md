@@ -7,7 +7,7 @@
 | 2 | the command line, a URL or the configuration is wrong |
 | 3 | a checksum did not match, or a signature was missing, invalid or not trusted |
 | 4 | authentication failed |
-| 130 | stopped with Ctrl-C |
+| 130 | stopped with Ctrl-C or `SIGTERM` |
 
 Code 2 is also clap's own code for a malformed command line, which is why a bad
 URL and a bad configuration file join it there: all three mean "the request was
@@ -84,7 +84,16 @@ itself arrived.
 
 ## `--fail-fast`
 
-A batch stopped by `--fail-fast` currently exits **130**, the code for Ctrl-C,
-rather than the code of the failure that stopped it. A script that treats 130
-as "a person interrupted this" needs to account for that when it passes
-`--fail-fast`.
+A batch stopped by `--fail-fast` exits with the code of the failure that
+stopped it, under the batch rule above: the jobs it cancelled after that
+failure count as consequences, not as failures of their own. 130 is reserved
+for a run that was interrupted, so a script can tell the two apart.
+
+```
+$ mpt cp --fail-fast --parallel 1 -t wall/ a b ; echo $?    # wall is a file
+[1/2] FAILED copy a -> wall/: I/O error: Not a directory (os error 20)
+[2/2] FAILED b: cancelled
+0/2 jobs ok in 7.78ms (stopped after the first failure)
+error: 2 of 2 jobs failed
+1
+```

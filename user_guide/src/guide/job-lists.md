@@ -184,14 +184,14 @@ WARN mpt::batch: failed, stopping the batch job=1
 [3/9] FAILED export3.csv: cancelled
 …
 0/9 jobs ok in 384.25µs (stopped after the first failure)
-error: 9 of 9 jobs unfinished: interrupted
+error: 9 of 9 jobs failed
 ```
 
 Every job that never ran is listed as cancelled, so the output accounts for the
 whole list. Use it when one failure makes the rest pointless — bad credentials,
 a full disk — and leave it off when each job stands on its own.
 
-Note that a run stopped by `--fail-fast` [exits with
-130](../reference/exit-codes.md#--fail-fast), the code for Ctrl-C. Without
-the flag the exit code is aggregated over the jobs as [Exit
-codes](../reference/exit-codes.md#when-several-things-fail-at-once) describes.
+The exit code is that of the failure that stopped the batch; the cancelled
+jobs after it do not change it. [Exit
+codes](../reference/exit-codes.md#--fail-fast) has the rule, and the one for a
+batch that ran to the end.

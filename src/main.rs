@@ -678,7 +678,9 @@ impl std::fmt::Display for Silent {
 
 impl std::error::Error for Silent {}
 
-/// Marks a run that was stopped with Ctrl-C, so `main` can exit with 130.
+/// Marks a run that was stopped with Ctrl-C or SIGTERM, so `main` can exit
+/// with 130. A batch that `--fail-fast` stopped is not marked: it exits
+/// with the code of the failure that stopped it.
 #[derive(Debug)]
 struct Interrupted;
 
@@ -1588,14 +1590,26 @@ impl BatchOutput {
                 ""
             }
         );
-        if self.cancelled {
+        // A batch that --fail-fast stopped was not interrupted by anyone:
+        // the jobs it cancelled are consequences, and the code is that of
+        // the failure which stopped it. 130 stays for Ctrl-C and SIGTERM.
+        if self.cancelled && !report.stopped_early {
             return Err(
                 anyhow::Error::new(Interrupted).context(format!("{failed} of {n} jobs unfinished"))
             );
         }
         if failed > 0 {
+            let codes: Vec<u8> = if report.stopped_early {
+                self.codes
+                    .iter()
+                    .copied()
+                    .filter(|c| *c != INTERRUPTED)
+                    .collect()
+            } else {
+                self.codes.clone()
+            };
             return Err(anyhow::Error::new(ExitWith {
-                code: batch_code(&self.codes),
+                code: batch_code(&codes),
                 msg: format!("{failed} of {n} jobs failed"),
             }));
         }
@@ -2799,6 +2813,40 @@ mod tests {
         let interrupted = anyhow::Error::new(Interrupted).context("2 of 3 targets unfinished");
         assert_eq!(exit_code(&interrupted), INTERRUPTED);
         assert_eq!(exit_code(&anyhow::anyhow!("something else")), FAILED);
+    }
+
+    /// A batch stopped by --fail-fast exits with the code of the failure
+    /// that stopped it, not with 130: the cancelled jobs after it are a
+    /// consequence, not an interruption.
+    #[test]
+    fn a_batch_stopped_by_fail_fast_keeps_the_failures_code() {
+        let job = |index: usize, result: mpt::Result<mpt::FanoutReport>| mpt::JobReport {
+            index,
+            job: mpt::Job {
+                src: mpt::Location::parse("a.txt").unwrap(),
+                dsts: vec![mpt::Location::parse("out/").unwrap()],
+            },
+            result,
+        };
+        let report = |stopped_early: bool| mpt::BatchReport {
+            jobs: vec![
+                job(0, Err(mpt::Error::Auth("refused".into()))),
+                job(1, Err(mpt::Error::Cancelled)),
+                job(2, Err(mpt::Error::Cancelled)),
+            ],
+            elapsed: std::time::Duration::from_millis(3),
+            stopped_early,
+        };
+        let opts = CopyOptions::default();
+        let outcome = |stopped_early: bool| {
+            let mut out = BatchOutput::new(Some(3), false);
+            for j in &report(stopped_early).jobs {
+                out.job_done(j, &opts);
+            }
+            exit_code(&out.finish(&report(stopped_early)).unwrap_err())
+        };
+        assert_eq!(outcome(true), DENIED);
+        assert_eq!(outcome(false), INTERRUPTED);
     }
 
     #[test]

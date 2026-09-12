@@ -280,9 +280,9 @@ fn a_batch_goes_through_the_relay_job_by_job() {
             files[1].0.to_str().unwrap(),
         ],
     );
-    // The second job never started: the batch ends as interrupted, the
-    // way a local batch does.
-    assert_eq!(code, 130, "{err}");
+    // The second job never started, and the batch exits with the code of
+    // the failure that stopped it, the way a local batch does.
+    assert_eq!(code, 1, "{err}");
     assert!(err.contains("stopped after the first failure"), "{err}");
     assert!(!relay.path("b/wall/f1.bin").exists());
 }
