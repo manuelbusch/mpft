@@ -7,15 +7,16 @@ service account this runs under.
 
 ```toml
 [policy]
-known_hosts           = "strict"
-refuse_plaintext_auth = true
-refuse_insecure_tls   = true
-require_signature     = false
-max_signature_age     = "0"
-strict_permissions    = false
+known_hosts           = "strict"   # built-in default
+refuse_plaintext_auth = true       # built-in default: false
+refuse_insecure_tls   = true       # built-in default: false
+require_signature     = false      # built-in default
+max_signature_age     = "0"        # built-in default: no limit
+strict_permissions    = false      # built-in default
 ```
 
-All six are optional, and the defaults are the ones listed above.
+All six are optional. The block above tightens two of them; the
+[reference](../reference/configuration.md#policy) lists the built-in defaults.
 
 ## Refusing unencrypted credentials
 

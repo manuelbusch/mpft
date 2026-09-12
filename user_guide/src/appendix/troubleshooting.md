@@ -65,7 +65,7 @@ that this switches off the hostname check too.
 
 **`insecure=true would switch off certificate verification, which policy.refuse_insecure_tls forbids`** [4]
 
-A policy forbids it. That is the point of the policy; if it is your machine,
+A policy forbids it, which is what the policy is for. If it is your machine,
 `[policy] refuse_insecure_tls` is where it is set.
 
 **`FTP without TLS sends the password unencrypted (refused by policy; …)`** [4]

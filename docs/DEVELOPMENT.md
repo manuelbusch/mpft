@@ -4,6 +4,27 @@ Material for people working on `mpt` itself. The user guide under
 `user_guide/` is written for people who run it; anything about the test
 setup, design history or extension points belongs here instead.
 
+## User guide conventions
+
+The guide was reviewed and restructured in September 2026. Three rules keep
+it in that state:
+
+1. **Every fact has exactly one page.** A rule, a default, an error message or
+   a behaviour is explained in full on one page and nowhere else. Every other
+   mention is one sentence and a link to that page. When adding a page, check
+   whether the fact already has a home before explaining it again.
+2. **No developer context in the user guide.** Test-server quirks, design
+   history, what has and has not been verified, and extension points go in
+   this file. The guide states what the program does.
+3. **Descriptive headings, plain prose.** A heading says what the section
+   covers, so the table of contents and the search index are usable, and so
+   that anchors stay stable. Prose states the fact; it does not argue for it
+   outside `why-mpt.md`.
+
+`python3 user_guide/tools/linkcheck.py user_guide/src` checks relative links
+and heading anchors; run it after renaming a heading. `mdbook build` in
+`user_guide/` must pass without warnings.
+
 ## Test servers
 
 The end-to-end tests need real servers. `tests/local/start_servers.sh` starts
