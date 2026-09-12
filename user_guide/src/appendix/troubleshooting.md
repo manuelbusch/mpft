@@ -283,18 +283,50 @@ other jobs' transfers; `GET /v1/healthz` with the token shows the counts.
 **`--via needs an ssh:// URL (or a profile with one), not sftp://…`** [2]
 
 The relay is named with `ssh://`, not `sftp://`: it is a host to run a
-command on, not a place that holds files.
+command on, not a place that holds files. The same message with
+`[profiles.<name>] via` in front of it means that profile's relay, not the
+flag.
 
-**`--check is not available with --via: it needs what only this side has (the checksum file, the source, the key)`** [2]
+**`--check is not available with a relay: it needs what only this side has (the checksum file, the source, the key)`** [2]
 
-`--check`, `--sign`, `--delete-source` and `--resume` do not work through a
-relay. Run that copy from here, or verify on the receiving side.
+`--check`, `--sign` and `--resume` do not work through a relay. Run that copy
+from here, or verify on the receiving side.
 
-**`invalid option 'key': …: names a file on this machine, which the relay cannot read; give the target a password, or put the key on the relay`** [2]
+**`invalid option 'delete-source': with a relay, only when the source and every target are behind the relay that reads the source (a profile with `via`)`** [2]
 
-A target with `?key=`, `?cert=` or `?passphrase=`. The file stays on the
-client. Use a password or token for that target, or configure the key in the
-relay's `[ssh]` section.
+The relay may remove the source only if it read it and wrote every target;
+otherwise nobody knows when the file is safe to delete. Give the source's
+profile a `via`, and every target the same one — or drop `--delete-source`
+and remove the file yourself afterwards. See [Letting the relay read the
+source](../server/relay.md#letting-the-relay-read-the-source).
+
+**`invalid option 'key': …: names a file on this machine, which the relay cannot read; let the relay use the forwarded agent (without --no-via-agent), give the target a password, or put the key on the relay`** [2]
+
+A target with `?key=`, `?cert=` or `?passphrase=` while the agent is switched
+off (`--no-via-agent`, or `[defaults] via_agent = false`). The file stays on
+the client. Leave the forwarding on, use a password or token for that target,
+or configure the key in the relay's `[ssh]` section.
+
+**`invalid option 'credentials': the client asks for on-demand passwords, but this relay is set to credentials = "header"`** [2]
+
+The two sides disagree about where passwords come from. Start the relay with
+`--credentials on-demand` (or `any`), or drop `--via-credentials on-demand`.
+The reverse message, `this relay takes passwords on demand only`, means the
+relay insists and the client has to pass `--via-credentials on-demand`.
+
+**`invalid option 'via-credentials': …: an S3 key cannot be asked for on demand`** [2]
+
+An S3 store binds its key when it is built, so there is nothing to ask for at
+login time. Send that target's credentials in the header, or let the relay use
+its own AWS credential chain.
+
+**`authentication failed`** for an SSH target behind a relay [4]
+
+The forwarded agent had no key for it. Check that the target's key is one this
+side can offer (`?key=`, `[ssh] key`, `MPT_SSH_KEY` or `~/.ssh/id_*`, or your
+own agent), that the relay was not started with `--no-agent-forwarding`, and —
+under an ordinary `sshd` — that the `authorized_keys` line says
+`agent-forwarding`.
 
 **``the server does not run `mpt relay` (not a relay, or not in its PATH)``** [1]
 
@@ -316,6 +348,11 @@ The relay reached the target and the target refused; the message after
 
 A header of your own set an option the relay refuses; see the [relay
 protocol](../reference/api.md#relay-protocol).
+
+**`I/O error: unknown frame kind 104`** from a relay reading your own header [1]
+
+A header without `"v"` means version 2, which expects framed payload. Write
+`"v": 1` to send the raw bytes of version 1.
 
 ## Reporting a problem
 

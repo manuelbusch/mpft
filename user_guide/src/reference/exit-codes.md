@@ -52,8 +52,8 @@ which is usually 2.
 the batch rule over jobs. A relay that could not be reached or logged into
 counts as a failed job with code 4 or 1, like any other endpoint.
 
-**`mpt serve` and `mpt relay --listen`** exit 0 after Ctrl-C, whatever the
-jobs they were running did; those outcomes are in the API and in the log.
+**`mpt serve` and `mpt relay --listen`** exit 0 after Ctrl-C or `SIGTERM`,
+whatever the jobs they were running did; those outcomes are in the API and in the log.
 
 ## Success that is not a copy
 

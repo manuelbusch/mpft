@@ -34,11 +34,14 @@ Values for the flags of the same name. A flag on the command line wins.
 | `delete_source` | boolean | `false` | `--delete-source` |
 | `parallel` | integer, at least 1 | `4` | `--parallel` |
 | `via` | `ssh://` URL or `mpt://` profile | none | `--via`; `--no-via` switches it off for one run |
+| `via_credentials` | `"header"`, `"on-demand"` | `"header"` | `--via-credentials` |
+| `via_agent` | boolean | `true` | `--no-via-agent` switches the forwarding off |
 | `log` | level or `RUST_LOG` syntax | `"warn"` | `-v` |
 | `json` | boolean | `false` | `--json` |
 
-`via` is not read from a [file in the working
-directory](../configuration/file.md#the-file-in-the-working-directory).
+`via`, `via_credentials` and `via_agent` are not read from a [file in the
+working directory](../configuration/file.md#the-file-in-the-working-directory):
+they decide where the targets' credentials go.
 
 ## `[policy]`
 
@@ -151,6 +154,8 @@ Settings for [`mpt relay --listen`](../server/relay.md#on-the-relay-host)
 | `parallel` | integer, at least 1 | `4` | relays running at once; further sessions wait |
 | `grace` | duration | `"30s"` | how long a shutdown waits for running relays |
 | `max_size` | size | `"0"` (no limit) | refuse larger uploads |
+| `credentials` | `"header"`, `"on-demand"`, `"any"` | `"header"` | which way a client may send the targets' passwords |
+| `agent_forwarding` | boolean | `true` | take the ssh-agent a client forwards |
 
 ## `[profiles.<name>]`
 
@@ -162,6 +167,7 @@ targets](../configuration/profiles.md).
 | `url` | URL | **required**: what the name stands for |
 | `password` | secret | password for this endpoint |
 | `sign` | string | sign transfers to this target, in `--sign` syntax |
+| `via` | `ssh://` URL or `mpt://` profile | the relay this endpoint is reached through; as a source, the relay reads it |
 | `hash` | string | checksum algorithm for this target |
 | `atomic` | boolean | finish through a part file; `false` switches it off |
 | *anything else* | string or list | becomes a URL option on the profile's URL |

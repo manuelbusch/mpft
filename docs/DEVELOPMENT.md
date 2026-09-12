@@ -29,7 +29,8 @@ and heading anchors; run it after renaming a heading. `mdbook build` in
 
 The end-to-end tests need real servers. `tests/local/start_servers.sh` starts
 Python implementations of FTP, HTTP/WebDAV, S3 and SMTP plus the user's own
-`sshd`; see the README for the `MPT_IT_*` variables that switch each suite on.
+`sshd`, and an `ssh-agent` holding the certificate key (`MPT_IT_SSH_AGENT`);
+see the README for the `MPT_IT_*` variables that switch each suite on.
 
 The Python FTP server duplicates its greeting on roughly 1.5 % of concurrent
 connections, which desynchronises that one control channel. It is a defect of
@@ -40,7 +41,10 @@ The server and the relay are tested without those servers, against local
 files only. `cargo test --features server` runs `tests/server.rs`, which
 starts the binary and moves files over HTTP and WebSocket; `tests/relay.rs`
 starts the binary as a relay and sends files through it with the binary as
-the client, and needs `ssh-keygen` for the client keys.
+the client, and needs `ssh-keygen` for the client keys. A few of its cases
+start two relays, to cover a target that one relay hands on to the other;
+the ones that need a real target behind the relay are skipped unless
+`MPT_IT_FTP` or `MPT_IT_SFTP` is set.
 
 The scripts under `tests/local/` are Unix shell scripts and do not run on
 Windows. The unit tests do (`cargo test --lib`) and cover the parsers, the

@@ -106,6 +106,17 @@ mpt cp report.pdf "sftp://deploy@srv/in/?key=/tmp/k&cert=/tmp/k-cert.pub"
 
 If the server refuses the certificate, the bare key still gets its turn.
 
+### When a relay does the logging in
+
+A target written by a [relay](../server/relay.md) is logged into from there,
+so the order is the relay's: the key its own configuration names, then the
+**agent the client forwarded**, then the relay's own agent and default keys,
+then a password. The client takes `?key=`, `?cert=` and `?passphrase=` out of
+the URL before it sends it — the file stays here — and answers the relay's
+signature requests from the agent it runs for that session. A certificate is
+offered as a certificate there too, so a CA-signed login works through a relay
+exactly as it does from here.
+
 ## Host keys
 
 The host key is checked before authentication, strictly by default: an unknown

@@ -237,9 +237,20 @@ beside other routes under one listener.
 is a relay over any reader and writer, `sshd::serve()` its SSH server, and
 `client::send()` the sending side that `cp --via` uses: it opens the session,
 writes the header and the payload, and returns the relay's report.
+`plan::plan()` is the split of one job across relays — what runs from here,
+what one relay uploads, what another reads itself — and `plan::merge()` puts
+the parts back into a single report.
 `stream::ReaderEndpoint` is what makes any reader of a known size a source
 for `copy_many`. `options::JobOptions` is the options object of both the API
 and the relay header, with `apply()` laying it over a `CopyOptions`.
+
+Credentials reach an endpoint through `mpt::broker`, which is what lets a
+password be asked for instead of held: a `Location` may carry a
+`PasswordSource` that is consulted at **every** login and an `AgentSource`
+that SSH authentication signs through. The relay's side of both is
+`relay::broker::RemoteBroker` (asks over the open session) and the client's
+forwarded agent is `relay::agent::Responder`. Implement either trait and any
+protocol in the crate uses it, no matter where the secret really comes from.
 
 ## Errors
 

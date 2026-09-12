@@ -214,7 +214,7 @@ which suits a CI system that renders ANSI codes.
 
 ## Interruption and exit code 130
 
-`SIGINT` stops the run and exits 130; a script that runs `mpt` under a
-supervisor should treat that as "someone stopped this", not as a transfer
-failure. What is left behind, and what `--resume` keeps, is under
+`SIGINT`, and `SIGTERM` with it, stop the run and exit 130; a script that runs
+`mpt` under a supervisor should treat that as "someone stopped this", not as a
+transfer failure. What is left behind, and what `--resume` keeps, is under
 [Ctrl-C](../guide/reliability.md#ctrl-c).

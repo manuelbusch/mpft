@@ -270,9 +270,9 @@ $ mpt serve
 interrupted, finishing the running jobs (Ctrl-C again cancels them)…
 ```
 
-Only `SIGINT` is handled that way. Under systemd, whose `stop` sends
-`SIGTERM`, set `KillSignal=SIGINT` and a `TimeoutStopSec` longer than
-`grace` in the unit, or a stop ends the running jobs without the drain.
+`SIGTERM` does the same, so `systemctl stop` and `docker stop` drain the
+server rather than kill it. Give the unit a `TimeoutStopSec` longer than
+`grace`, or systemd cuts the drain short with `SIGKILL`.
 
 ## Logging
 

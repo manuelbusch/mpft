@@ -13,8 +13,9 @@ mpt cp --via ssh://relay@fast.example.com:2222 report.pdf mpt://prod/ mpt://arch
 A relay is `cp` with its standard input as the source. Nothing is spooled on
 the relay, and everything `cp` does applies unchanged: checksums, atomic
 finishing, the memory cache with retries, timeouts, the report. The relay
-knows no targets of its own. The client names them, credentials included, and
-the relay only delivers.
+knows no targets of its own. The client names them, and the relay only
+delivers — with the passwords it is given, or by asking for each one as it
+logs in and keeping none.
 
 The relay is in the default build (feature `relay`, which needs `ssh`).
 
@@ -28,13 +29,13 @@ run is one:
 
 ```
 $ mpt cp --via mpt://relay --hash sha256 report.pdf mpt://prod/ mpt://archive/
-[1/1] ok             40000 bytes     4.00ms  sftp://deploy@srv.example.com/data/incoming/
+[1/1] ok             40000 bytes     7.00ms  sftp://deploy@srv.example.com/data/incoming/
 [1/1]         + sftp://deploy@srv.example.com/data/incoming/report.pdf.sha256
-[1/1] ok             40000 bytes     5.00ms  s3://archive-bucket/reports/
+[1/1] ok             40000 bytes     7.00ms  s3://archive-bucket/reports/
 [1/1]         + s3://archive-bucket/reports/report.pdf.sha256
-[1/1] report.pdf: 40000 bytes read, 2/2 targets ok in 11.00ms
-[1/1] sha256  72ce9800d09328daeb679aade0ac2d073b9e668a0d680c3fa44167dc6d0156df
-1/1 jobs ok in 17.86ms
+[1/1] report.pdf: 40000 bytes read, 2/2 targets ok in 39.73ms
+[1/1] sha256  e07113054489e8074ce8256f9c1a3aa076b57c3d76b3e7d367abc20d976e27dc
+1/1 jobs ok in 41.78ms
 ```
 
 `--via` is a [job flag](../reference/cli.md#job-flags): `cp -t`, `batch`,
@@ -52,57 +53,241 @@ is reported against the job, prefixed with `relay:`:
 [1/1] FAILED copy report.pdf -> sftp://deploy@srv.example.com/data/incoming/: relay: I/O error: File exists (os error 17)
 ```
 
-### What travels, and what cannot
+### What travels with the job
 
 The targets are resolved on the client: profiles, [credential
-references](../configuration/credentials.md), `--password`. They travel to
-the relay in full over the SSH channel, so the relay needs nothing but a line
-in its `authorized_keys` per client. The flags `--hash`, `--timeout`,
-`--cache` with `--retries`, `--skip-existing` and `--no-atomic` go along, as
-do the `?options` of the targets.
+references](../configuration/credentials.md), `--password`. The relay needs
+nothing but a line in its `authorized_keys` per client. The flags `--hash`,
+`--timeout`, `--cache` with `--retries`, `--skip-existing` and `--no-atomic`
+go along, as do the `?options` of the targets.
 
-Two things stay on this side. A **key file** of a target cannot travel, so a
-target with `?key=`, `?cert=` or `?passphrase=` is refused:
+Three flags need what only this side has and are refused with a relay:
 
 ```
-[1/1] FAILED report.pdf: invalid option 'key': sftp://someone@nowhere/in/?key=/etc/hostname&timeout=30: names a file on this machine, which the relay cannot read; give the target a password, or put the key on the relay
+error: --check is not available with a relay: it needs what only this side has
+       (the checksum file, the source, the key)
 ```
 
-Give such a target a password or a token, or put its key on the relay and
-name it there in the relay's `[ssh]` section. And the flags that need the
-client's side, `--check`, `--sign`, `--delete-source` and `--resume`, are
-refused with `--via`:
+`--check`, `--sign` and `--resume` are those three. `--delete-source` is
+allowed in one case — when the relay reads the source itself and writes every
+target of the job; see [Letting the relay read the
+source](#letting-the-relay-read-the-source).
+
+### Passwords: in the header, or asked for at every login
+
+By default a target's password travels with its URL and the relay holds it
+while it delivers. That is one upload's worth of trust in the relay host. The
+other way is to send the URLs without passwords and let the relay ask:
 
 ```
-error: --check is not available with --via: it needs what only this side has (the checksum file, the source, the key)
+mpt cp --via mpt://relay --via-credentials on-demand report.pdf ftp://upload@partner.example/in/
 ```
+
+The relay then asks this side at every single login and drops the answer as
+soon as that login is done. Nothing of it stays in its memory between
+connects, and nothing of it reaches its log:
+
+```
+# on the relay, with -vv
+DEBUG mpt::relay::broker: asking the client for the password target=ftp://upload@partner.example/in/report.pdf.mpt-part attempt=1
+DEBUG mpt::relay::broker: asking the client for the password target=ftp://upload@partner.example/in/ attempt=1
+
+# on the client, with -vv
+DEBUG mpt::relay::broker: password asked for by the relay target=ftp://upload:***@partner.example/in/ attempt=1
+```
+
+Two questions for one file is normal: every protocol logs in more than once
+per transfer — FTP the most, because it reconnects for nearly every operation.
+The answers ride on the session that is already open, in a lane of their own,
+so they never queue up behind the payload.
+
+Both sides have to agree. The relay is started with `--credentials
+header` (the default), `on-demand` or `any`, and a mismatch is refused before
+anything is sent, in terms of both settings:
+
+```
+invalid option 'credentials': the client asks for on-demand passwords, but this relay is set to credentials = "header"; start the relay with --credentials on-demand or any
+invalid option 'credentials': this relay takes passwords on demand only, but the client sends them in the header; run cp with --via-credentials on-demand
+```
+
+An **S3 key** cannot be asked for this way: the store signs every request
+itself and binds its key when it is built. Such a target is refused with
+`--via-credentials on-demand`, and has to go in the header or use a
+credential chain on the relay itself.
+
+### Keys stay here: the forwarded agent
+
+For SSH targets the client forwards its ssh-agent, so the key never leaves
+this machine. `?key=`, `?cert=` and `?passphrase=` are taken out of the URL
+before it is sent, and the relay signs through the agent:
+
+```
+$ mpt cp --via mpt://relay report.pdf "sftp://deploy@srv.example.com/data/?key=~/.ssh/prod_ed25519"
+[1/1] report.pdf -> sftp://deploy@srv.example.com/data/: 40000 bytes in 93.64ms
+
+# in the relay's log
+INFO mpt::protocols::ssh: ssh: authenticated via the forwarded ssh-agent
+```
+
+The agent this side runs for the relay holds the keys those targets name —
+`?key=` with its `?cert=`, `[ssh] key`, `MPT_SSH_KEY`, and otherwise
+`~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa` — and passes every other request on
+to your own `SSH_AUTH_SOCK`, so a key that only your own agent holds works
+too. A **certificate** is offered as a certificate, so a CA-signed login works
+through a relay exactly as it does from here. The agent answers signature
+requests and nothing else: it never adds, removes or locks a key, whatever
+the relay asks.
+
+`--no-via-agent` switches the forwarding off. A target whose key file is on
+this machine is then refused, because nothing can stand in for it:
+
+```
+invalid option 'key': sftp://deploy@srv.example.com/data/?key=~/.ssh/prod_ed25519: names a file on this machine, which the relay cannot read; let the relay use the forwarded agent (without --no-via-agent), give the target a password, or put the key on the relay
+```
+
+A relay may refuse to take an agent (`--no-agent-forwarding`); the targets
+then fall back to the relay's own keys and passwords, and a target that has
+neither fails with an authentication error.
 
 ### The connection is the transfer
 
 The client stays connected until the relay is done: the upload *is* the
-transfer, and the progress line counts it. If the connection drops, the
-relay's source ends early, every target fails and partial files are removed
-(`--no-atomic` leaves them). Nothing resumes, because nothing is kept on the
+transfer, and the progress line counts it. (When the relay [reads the source
+itself](#letting-the-relay-read-the-source) nothing is uploaded, but the
+session still has to stay open: it is what carries the progress, the questions
+and the report.) If the connection drops, the relay's source ends early or is
+cancelled, every target fails and partial files are removed (`--no-atomic`
+leaves them). Nothing resumes, because nothing is kept on the
 relay. The slowest target sets the pace, as in any [fan-out](../guide/fan-out.md#slow-targets-stalled-targets);
 `--timeout` drops one that stops taking data, and the others finish.
 
 ### Making it the rule
 
 `[defaults] via` sends every `cp` and `batch` through the relay; `--no-via`
-copies from here for once:
+copies from here for once. A profile may name a relay of its own, which wins
+over the default — that is what puts an endpoint permanently behind a relay:
 
 ```toml
 [defaults]
-via = "mpt://relay"        # or "ssh://relay@fast.example.com:2222"
+via             = "mpt://relay"    # or "ssh://relay@fast.example.com:2222"
+via_credentials = "on-demand"      # ask at every login instead of sending passwords
+via_agent       = true             # forward the ssh-agent (the default)
+
+[profiles.relay]
+url = "ssh://relay@fast.example.com:2222"
+
+[profiles.prod]
+url = "sftp://deploy@srv.example.com/data/"
+via = "mpt://relay"                # this target is always written by the relay
+```
+
+`mpt profiles` shows it under the profile:
+
+```
+$ mpt profiles
+mpt://prod  sftp://deploy@srv.example.com/data/
+    via    mpt://relay
 ```
 
 A [`./mpt.toml`](../configuration/file.md#the-file-in-the-working-directory)
-may not set it. The relay is where every target's credentials go, and a file
-in a directory you happen to be standing in must not choose that:
+may set none of the three. The relay is where every target's credentials go,
+and a file in a directory you happen to be standing in must not choose that:
 
 ```
-warning mpt.toml: ignoring [defaults] via — a configuration file in the working directory may not choose the relay that receives the targets' credentials
+warning mpt.toml: ignoring [defaults] via — a configuration file in the working
+directory may not choose the relay that receives the targets' credentials
 ```
+
+## Letting the relay read the source
+
+A source can be behind a relay as well. Give its profile a `via`, and the
+relay opens and reads it itself: this side only says which file, and no byte
+of it comes through here. The path is the relay's, so it may be one this
+machine cannot even see:
+
+```toml
+[profiles.incoming]
+url = "in/report.pdf"              # relative to the relay's working directory
+via = "mpt://relay"
+```
+
+```
+$ mpt cp mpt://incoming mpt://prod/
+[1/1] in/report.pdf -> sftp://deploy@srv.example.com/data/: 40000 bytes in 17.22ms
+1/1 jobs ok in 17.30ms
+```
+
+The progress this side prints is the relay's, counted as it reads. Only a
+profile's own `via` makes a source travel this way; `[defaults] via` and
+`--via` decide where targets are written, never where a source is read.
+
+This is also what makes `--delete-source` possible over a relay. The relay
+read the source, so it knows when every target has the file:
+
+```
+$ mpt cp --delete-source mpt://incoming mpt://prod/
+[1/1] in/report.pdf -> sftp://deploy@srv.example.com/data/: 40000 bytes in 14.25ms
+[1/1] source deleted
+```
+
+Add a target the relay does not write, and the client is back in the path —
+then nobody can say when the source is safe to remove, and the flag is
+refused:
+
+```
+[1/1] FAILED in/report.pdf: invalid option 'delete-source': with a relay, only when the source and every target are behind the relay that reads the source (a profile with `via`)
+```
+
+## A target behind another relay
+
+Two relays, one job: a target whose profile names a *different* relay is
+passed on to it. The relay that reads the source becomes a client of the
+second relay and sends the file over the same protocol, so the bytes go from
+relay to relay and never through this side:
+
+```toml
+[profiles.r1]
+url = "ssh://relay@fast.example.com:2222"
+[profiles.r2]
+url = "ssh://relay@dc2.example.com:2222"
+
+[profiles.incoming]                          # read by r1
+url = "in/report.pdf"
+via = "mpt://r1"
+
+[profiles.prod]                              # written by r1
+url = "sftp://deploy@srv.example.com/data/"
+via = "mpt://r1"
+
+[profiles.dc2]                               # written by r2, fed by r1
+url = "ftp://upload@dc2-store.example/in/"
+via = "mpt://r2"
+```
+
+```
+$ mpt cp --hash sha256 mpt://incoming mpt://prod/ mpt://dc2/
+[1/1] ok             40000 bytes     5.00ms  sftp://deploy@srv.example.com/data/
+[1/1]         + sftp://deploy@srv.example.com/data/report.pdf.sha256
+[1/1] ok             40000 bytes    22.00ms  ftp://upload@dc2-store.example/in/
+[1/1] in/report.pdf: 40000 bytes read, 2/2 targets ok in 37.78ms
+[1/1] sha256  e07113054489e8074ce8256f9c1a3aa076b57c3d76b3e7d367abc20d976e27dc
+1/1 jobs ok in 38.05ms
+```
+
+The second relay's questions travel back through the first: an on-demand
+password is still answered from here, neither relay keeps it, and the
+forwarded agent is handed on the same way — which is how the first relay logs
+in to the second without a key of its own. One SSH session per relay and job,
+and one report, in the order the targets were named.
+
+The checksum file of a chained target is written by the relay that writes the
+target, on that side; this side never places it, so the `sidecar` field of
+that target's [JSON report](../automation/scripting.md#the-json-report) stays
+empty while the file itself is there.
+
+A target with no relay of its own is copied from here as usual — which takes
+a source this side can read, so it does not combine with a source only a
+relay can see.
 
 ## On the relay host
 
@@ -127,9 +312,11 @@ INFO mpt::relay::sshd: relay listening bound=0.0.0.0:2222 parallel=4
 ```
 
 The server answers `exec "mpt relay"` and the subsystem `mpt`, and nothing
-else: no shell, no pty, no forwarding, no sftp. `authorized_keys` is in
-OpenSSH format and is re-read whenever it changes, so adding a client needs
-no restart.
+else: no shell, no pty, no port forwarding, no sftp. The one channel it opens
+back to the client is the agent channel, and only when the client forwards an
+agent and `--no-agent-forwarding` is not set. `authorized_keys` is in OpenSSH
+format and is re-read whenever it changes, so adding a client needs no
+restart.
 
 | Flag | `[relay]` key | Default | Meaning |
 |---|---|---|---|
@@ -139,27 +326,34 @@ no restart.
 | `--parallel <N>` | `parallel` | `4` | relays running at once; further sessions wait |
 | `--max-size <SIZE>` | `max_size` | `0` (no limit) | refuse larger uploads |
 | `--grace <SECONDS>` | `grace` | `30` | how long a shutdown waits for running relays |
+| `--credentials <MODE>` | `credentials` | `header` | how clients may send the targets' passwords: `header`, `on-demand` or `any` |
+| `--no-agent-forwarding` | `agent_forwarding` | `true` | take the ssh-agent a client forwards; the flag refuses it |
 | `--port-file <PATH>` | – | – | write the port actually bound, for `--listen 127.0.0.1:0` |
 
 The flags of the process apply to every relay it runs, as they do for the
 server: a relay started with `--timeout 120 --cache` delivers every upload
 that way unless the client's header says otherwise, and `[defaults]` and
-`[policy]` of the relay's configuration are in force. Ctrl-C stops accepting
-sessions, waits `--grace` for the running relays and then cancels them.
+`[policy]` of the relay's configuration are in force. Ctrl-C or `SIGTERM`
+stops accepting sessions, waits `--grace` for the running relays and then
+cancels them.
 
 ### Through an existing sshd
 
 Without a server of its own, a relay is an account on an ordinary `sshd`
 with `mpt` in its `PATH`: the client runs `mpt relay` there, and the protocol
-on the channel is the same. Keep the key from doing anything else:
+on the channel is the same. Keep the key from doing anything else, but let
+the agent through:
 
 ```
-command="mpt relay",restrict ssh-ed25519 AAAAC3Nz… laptop
+command="mpt relay",restrict,agent-forwarding ssh-ed25519 AAAAC3Nz… laptop
 ```
 
-in that account's `~/.ssh/authorized_keys`. The relay reads that account's
-configuration, so `[ssh]` keys placed there serve targets whose key file
-could not travel from the client.
+in that account's `~/.ssh/authorized_keys` (`sshd` also needs
+`AllowAgentForwarding yes`, which is its default). Leave `,agent-forwarding`
+out and the clients need `--no-via-agent`, with a key on the relay or a
+password for every SSH target. The relay reads that account's configuration,
+so `[ssh]` keys placed there serve targets whose key does not come from the
+client.
 
 ### Trust
 
@@ -169,17 +363,29 @@ the relay. Those credentials go over SSH to a host whose key the client
 verified, and the relay's log names sizes and outcomes at `-v`, not hosts or
 paths.
 
+With `--via-credentials on-demand` and the forwarded agent, what the relay
+holds is one password for the length of one login and no key at all. A relay
+that is compromised while nothing is running on it has nothing of yours; one
+that is compromised *during* a transfer still sees the file and the passwords
+that transfer uses.
+
 ## The protocol on the channel
 
 The exchange is small enough for other clients. The client writes one JSON
-header line, then exactly `size` bytes; the relay writes JSON lines back and
-exits the way `cp` would. [Relay protocol](../reference/api.md#relay-protocol)
-has the shapes. `mpt relay` without `--listen` speaks it on standard input
-and output, which is how it runs under an ordinary `sshd` and how it can be
-tried without one:
+header line and then the file in frames, control messages in between; the
+relay writes JSON lines back and exits the way `cp` would. [Relay
+protocol](../reference/api.md#relay-protocol) has the shapes.
+
+`mpt relay` without `--listen` speaks it on standard input and output, which
+is how it runs under an ordinary `sshd` and how it can be tried without one.
+Version 1 — the header, then exactly `size` raw bytes, no questions — is
+still accepted and is the easiest way to see it work:
 
 ```
-$ printf '{"name": "piped.txt", "size": 6, "dst": ["/srv/in/"]}\nhello\n' | mpt relay
+$ printf '{"v": 1, "name": "piped.txt", "size": 6, "dst": ["/srv/in/"]}\nhello\n' | mpt relay
 {"progress":{"read":6,"total":6}}
 {"report":{"bytes_read":6,"ok":true,"source":"piped.txt","targets":[…]}}
 ```
+
+A header without `"v"` means version 2, so a client that relies on the raw
+form has to say `"v": 1`.

@@ -153,7 +153,9 @@ These belong to `cp` and `batch` and must come **after** the subcommand.
 | `--format <lines\|jsonl\|csv>` | guessed | `batch` only: the job list format |
 | `--follow` | off | `batch -` only: run each job as its line arrives |
 | `--via <URL>` | `[defaults] via` | send every source once to this SSH host running `mpt relay` and let it deliver; an `ssh://` URL or a profile with one. See [Relaying through a fast host](../server/relay.md) |
-| `--no-via` | off | copy from here even though `[defaults] via` names a relay |
+| `--no-via` | off | copy from here even though `[defaults] via` or a profile names a relay |
+| `--via-credentials <MODE>` | `[defaults] via_credentials`, else `header` | how the relay gets the targets' passwords: `header` (in the URLs it is sent) or `on-demand` (asked of this side at every login; the relay has to allow it) |
+| `--no-via-agent` | off | do not forward an ssh-agent to the relay; SSH targets then need a password or a key on the relay |
 
 ```
 mpt cp -r --parallel 8 /data/export/ sftp://srv/in/     # right
@@ -170,7 +172,8 @@ mpt -r cp /data/export/ sftp://srv/in/                  # error: unexpected argu
 | `--password-stdin` with `batch -` | both would read standard input |
 | `--retries` without `--cache` | a stream cannot be replayed |
 | `--via` with `--no-via` | one decision about the relay |
-| `--via` with `--check`, `--sign`, `--delete-source` or `--resume` | those need what only the client has: the checksum file, the key, the source |
+| `--via` with `--check`, `--sign` or `--resume` | those need what only the client has: the checksum file, the key, the source |
+| `--via` with `--delete-source` | unless the relay reads the source itself and writes every target of the job ([see the relay chapter](../server/relay.md#letting-the-relay-read-the-source)) |
 
 The first three and `--via` with `--no-via` are rejected by the parser (`the
 argument '--resume' cannot be used with '--no-atomic'`), the others by `mpt`
@@ -190,7 +193,7 @@ before anything connects:
 ```
 error: copy report.pdf: invalid option 'retries': retries need the memory cache
        (a stream cannot be replayed)
-error: --check is not available with --via: it needs what only this side has
+error: --check is not available with a relay: it needs what only this side has
        (the checksum file, the source, the key)
 ```
 
@@ -215,6 +218,8 @@ see [Precedence](../configuration/file.md#precedence).
 | `--hash` | `hash` | – |
 | `--parallel` | `parallel` | – |
 | `--via` | `via` | – |
+| `--via-credentials` | `via_credentials` | – |
+| `--no-via-agent` | `via_agent` (inverted) | – |
 | `--json` | `json` | – |
 | `--color` | `color` | – |
 | `-v` | `log` | – |

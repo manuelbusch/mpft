@@ -32,6 +32,7 @@ hash        = "blake3"
 url        = "s3://archive-bucket/reports/"
 endpoint   = "https://minio.example.com"
 path_style = true
+via        = "mpt://relay"           # written by the relay, not from here
 
 [profiles.boss]
 url     = "mailto:boss@example.com"
@@ -40,9 +41,10 @@ subject = "Report"
 
 `url` is the only required key. Everything else falls into two groups:
 
-- **Four reserved keys** set transfer options for that endpoint: `sign`,
-  `hash`, `atomic`, and `password` (which takes a [credential
-  reference](credentials.md)).
+- **Five reserved keys** set transfer options for that endpoint: `sign`,
+  `hash`, `atomic`, `password` (which takes a [credential
+  reference](credentials.md)) and `via`, the [relay](../server/relay.md) this
+  endpoint is reached through.
 - **Everything else becomes a URL option.** `key`, `hostkey`, `timeout`,
   `endpoint`, `path_style` and `subject` above are not a fixed list; they are
   appended to the profile's URL. A profile can therefore carry any option its
@@ -61,6 +63,8 @@ hostkey = ["SHA256:f29GJDwDP5he…", "SHA256:2mGf4C1Pq0Xk…"]   # during a key 
 
 ```
 $ mpt profiles
+mpt://archive  s3://archive-bucket/reports/?endpoint=https://minio.example.com&path_style=true
+    via    mpt://relay
 mpt://boss  mailto:boss@example.com?subject=Report
 mpt://prod  sftp://deploy@srv.example.com/data/?hostkey=SHA256:f29GJDwDP5hekqa22VhNdaNPBM+q6AzG3FvQaBCJnmg&key=~/.ssh/prod_ed25519&timeout=120
     hash   blake3
@@ -106,7 +110,10 @@ mpt cp report.pdf "mpt://prod/incoming/?timeout=300"     # this one transfer may
 That is the general [precedence rule](file.md#precedence): the more specific
 the place, the more it counts, which also puts a profile's endpoint options
 above a command-line flag. The reserved keys are run-wide settings and go the
-other way: `--hash sha256` beats `hash = "blake3"`.
+other way: `--hash sha256` beats `hash = "blake3"`. `via` is the exception
+among them, because it is about this endpoint and not about the run: a
+profile's `via` wins over `--via` and `[defaults] via`, and only `--no-via`
+switches every relay off at once.
 
 ## When to define one
 
