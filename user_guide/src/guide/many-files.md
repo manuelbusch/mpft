@@ -28,7 +28,7 @@ $ mpt cp -t backup/a/ -t backup/b/ data1.csv data2.csv
 ```
 
 Jobs finish in whatever order they finish, so with `--parallel` above 1 the
-prefixes will not be in sequence. That is what they are for.
+prefixes will not be in sequence.
 
 ## Several sources with `-t`
 
@@ -63,8 +63,7 @@ $ mpt cp 'in/*.csv' out/
 Quote the pattern so the shell leaves it alone, especially for local sources
 where it would otherwise expand it itself.
 
-
-Details worth knowing:
+Rules:
 
 - It works on any protocol with `list` in the [capability
   matrix](../protocols/overview.md#what-each-one-can-do).
@@ -107,9 +106,9 @@ $ mpt cp -r src_tree/ out/tree/
 2/2 jobs ok in 3.57ms
 ```
 
-The tree is listed first, the directories are created on the target — empty
-ones included — and then every file is a job, so `--parallel` applies to a tree
-exactly as it does to a list.
+The tree is listed first, the directories are created on the target, empty
+ones included, and then every file is a job. `--parallel` applies to a tree
+as it does to a list.
 
 The source must be able to `list` and the target to `mkdir`; the [capability
 matrix](../protocols/overview.md#what-each-one-can-do) says which schemes can.
@@ -161,8 +160,8 @@ $ mpt cp --dry-run 'in/*.csv' out/
 [3/3] in/data3.csv -> out/
 ```
 
-This is the cheap way to find out what a pattern matches on a server, and worth
-making a habit of in front of `--delete-source`.
+This is the cheap way to find out what a pattern matches on a server. Run it
+before any command with `--delete-source`.
 
 ## Colliding targets
 
@@ -186,15 +185,13 @@ has two consequences:
 
 - **It is also the number of simultaneous logins on a host.** An `sshd` with
   the default `MaxStartups 10:30:100` starts refusing connections beyond ten
-  unauthenticated at once. Raising `--parallel` to 32 against one server is a
-  good way to make transfers fail rather than go faster.
+  unauthenticated at once. Against a single SSH server, stay below ten;
+  a higher value produces failures rather than speed.
 - **With `--cache`, memory is the limit times the parallelism.** Four jobs at
   256M is a gigabyte.
 
-Against a single SSH server, stay below ten; that is where the default
-`MaxStartups` begins to refuse. Higher values pay off when the jobs are spread
-over several hosts, or when the target is object storage, which has no login to
-throttle.
+Higher values pay off when the jobs are spread over several hosts, or when the
+target is object storage, which has no login to throttle.
 
 `--fail-fast` stops starting new jobs after the first failure and cancels the
 ones that are running, for a batch where a single failure makes the rest

@@ -15,14 +15,14 @@ sha256  4ae30c5fbf7fd48c42dd9d26004fcde7c47cf90e0fe642c4c8069b239e4a299b
 ```
 
 Each target gets a line: outcome, bytes it took, how long it needed, and which
-target it was. The summary counts the bytes that actually came off the disk —
-`40000`, not three times that — and the digest is printed once, because there
-is one payload and therefore one checksum, a copy of which was written beside
-each target.
+target it was. The summary counts the bytes that came off the disk (`40000`,
+not three times that). The digest is printed once, because there is one
+payload and therefore one checksum, and a copy of the checksum file was
+written beside each target.
 
-This is the feature that most often replaces a shell script. The alternative is
-to read the source three times, or to spool it to a temporary file and clean
-that up afterwards, and in either case to invent your own error handling.
+This is the feature that most often replaces a shell script, where the
+alternative is to read the source three times or to spool it to a temporary
+file.
 
 ## Buffering and memory
 
@@ -31,16 +31,15 @@ By default nothing is buffered beyond a small window. The source is read in
 one reference-counted buffer rather than as a copy per target. Each target has
 a queue of `--queue` pieces (16) before the source is paused.
 
-The live memory is therefore bounded by the **slowest** target's queue —
-64 KiB × 16, about a megabyte — and not multiplied by the number of targets,
+The live memory is therefore bounded by the **slowest** target's queue
+(64 KiB × 16, about a megabyte) and not multiplied by the number of targets,
 because a piece that three targets still hold is one allocation with three
 references. It does not grow with the size of the file either: 40 KB and 40 GB
 cost the same.
 
-The consequence is that **the slowest target sets the pace**. That is usually
-what you want: a fan-out to three servers takes as long as the slowest of them,
-not as long as all three added together. Where it is not what you want, the
-cache decouples them.
+The consequence is that **the slowest target sets the pace**. A fan-out to
+three servers takes as long as the slowest of them, not as long as all three
+added together. Where that is not acceptable, the cache decouples them.
 
 ## Streaming or cached
 
@@ -63,16 +62,16 @@ $ mpt cp --cache big.iso backup/
 error: copy big.iso: I/O error: payload exceeds the configured limit of 268435456 bytes
 ```
 
-Reach for `--cache` when you want retries, when a target needs the size before
-it will accept anything (SCP does, and a source that cannot say how large it is
+Use `--cache` when you want retries, when a target needs the size before it
+will accept anything (SCP does, and a source that cannot say how large it is
 would otherwise force a spool), or when one unreliable target should not hold
-up the others. Leave it alone for anything large.
+up the others. Leave it off for anything large.
 
 ## Retrying a target
 
 `--retries <n>` repeats a **transfer** that failed, which is only possible when
-the payload can be replayed — hence the cache. Each target is retried on its
-own, with the backoff described under [Time limits](copying.md#time-limits).
+the payload can be replayed from the cache. Each target is retried on its own,
+with the backoff described under [Time limits](copying.md#time-limits).
 
 One caveat: [a retried mail target may deliver
 twice](../protocols/mail.md#in-a-fan-out), because SMTP cannot say whether a
@@ -102,10 +101,10 @@ will leave them alone and retry only the ones that are missing it.
 ## Slow targets, stalled targets
 
 **A pause at the start is normal.** Targets that must connect and negotiate
-before they can accept a single byte — SCP and SMTP in particular — hold the
+before they can accept a single byte, SCP and SMTP in particular, hold the
 stream briefly while they get ready. Everything else waits, because there is
-only one read. This is head-of-line blocking, not a deadlock, and it is over in
-a moment.
+only one read. This is head-of-line blocking, not a deadlock, and it passes
+quickly.
 
 **A target that stops taking data is dropped.** If a target has not accepted
 anything for `--timeout` seconds, it is removed from the fan-out and reported
@@ -121,7 +120,7 @@ it silently: `--chunk` is at least 1024 bytes and `--queue` at least 1.
 
 `--hash` writes the checksum file beside **every** target that received the
 file, through a second connection, after the transfer succeeded. If that write
-fails, only that target is reported as failed — the file itself is already
+fails, only that target is reported as failed; the file itself is already
 there.
 
 [Mail targets](../protocols/mail.md#the-message) receive the checksum and the

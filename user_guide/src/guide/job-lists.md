@@ -11,11 +11,11 @@ mpt batch jobs.csv --dry-run
 inotifywait -m -e close_write /var/spool/out --format '%w%f sftp://srv/in/' | mpt batch - --follow
 ```
 
-A job is one source and its targets, exactly as on the command line, and it
-runs through the same pipeline: fan-out, checksums, signatures, atomic
-finishing, resuming. Everything from [Many files](many-files.md) applies —
-`--parallel`, `--skip-existing`, `--delete-source`, `--dry-run`, `-r`, and
-patterns in a source.
+A job is one source and its targets, as on the command line, and it runs
+through the same pipeline: fan-out, checksums, signatures, atomic finishing,
+resuming. Everything from [Many files](many-files.md) applies: `--parallel`,
+`--skip-existing`, `--delete-source`, `--dry-run`, `-r`, and patterns in a
+source.
 
 ## Three ways to write a list
 
@@ -52,8 +52,8 @@ id,src,dst,dst,note
 ```
 
 Columns that are not `src` or `dst` are ignored, so a query result can be used
-as it comes out. Empty `dst` cells are ignored too, which is what lets rows
-have different numbers of targets.
+as it comes out. Empty `dst` cells are ignored too, so rows may have different
+numbers of targets.
 
 The format is taken from the file name (`.jsonl`, `.csv`, `.tsv`) or guessed
 from the first line: a `{` means JSON, a header naming `src` means CSV,
@@ -69,9 +69,9 @@ $ mpt batch jobs.txt
 2/2 jobs ok in 3.87ms
 ```
 
-URLs in a list are exactly what you would type: `mpt://profile/` names work,
-options work, and the credentials for every endpoint in the list are fetched
-once, before the first job starts, rather than per job.
+URLs in a list are what you would type on the command line: `mpt://` profile
+names and options work. The credentials for every endpoint in the list are
+fetched once, before the first job starts, rather than per job.
 
 A failure is reported against its job and the rest continue:
 
@@ -89,7 +89,7 @@ list that would have two jobs writing one file fails at once with exit code 2.
 
 ## Reading from a pipe
 
-`mpt batch -` reads the list from standard input. The obvious use is `find`:
+`mpt batch -` reads the list from standard input. The common case is `find`:
 
 ```
 find /export -name '*.pdf' -newermt '-1 day' -printf '%p sftp://srv/in/\n' | mpt batch -

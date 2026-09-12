@@ -1,10 +1,9 @@
 # Interrupted and repeated transfers
 
-Transfers fail. A line drops, a server reboots, someone presses Ctrl-C at
-03:00. What matters is what is left behind, and what the next run has to do
-about it. `mpt` is built so that the answer is boring: nothing incomplete ever
-carries a final name, and the next run can continue or skip rather than start
-over.
+Transfers fail: a line drops, a server reboots, someone presses Ctrl-C. This
+page is about what is left behind and what the next run does about it. Two
+rules hold throughout: nothing incomplete ever carries a final name, and the
+next run can continue or skip rather than start over.
 
 ## A file appears only when it is whole
 
@@ -58,8 +57,8 @@ exit code is **130**. In a fan-out, targets that had already finished
 keep their file; the unfinished ones report `cancelled`. In a batch, jobs that
 had not started never start.
 
-The one thing Ctrl-C does not do is remove the part file when `--resume` is in
-play — see below. That is the whole point of it.
+With `--resume` the part file is kept instead of removed, so that the next
+run can continue it.
 
 ## Resuming with `--resume`
 
@@ -91,7 +90,7 @@ Three things to know:
 
 - **The source is still read from the beginning.** A checksum has to cover the
   whole file, and the source is usually the cheap side. Only the missing bytes
-  go over the network, which is what a slow line cares about.
+  go over the network.
 - **A part file that is not shorter than the payload is not a prefix of it.**
   It may be a leftover from something else entirely, so it is written again
   from the top rather than trusted.
@@ -124,9 +123,9 @@ $ mpt cp --skip-existing report.pdf a/
 report.pdf -> a/: already there, skipped
 ```
 
-A skipped target counts as successful, and if **every** target already has the
-file the source is not opened at all — which is what makes a nightly `-r` run
-over an unchanged tree nearly free.
+A skipped target counts as successful. If **every** target already has the
+file, the source is not opened at all, so a nightly `-r` run over an unchanged
+tree costs almost nothing.
 
 The caveat is in the name of the comparison: **size, not content**. A file that
 was edited without changing its length is not noticed. Where that matters, use

@@ -43,5 +43,5 @@ No Rust knowledge is needed.
 - **Protocols** collects what is specific to each scheme.
 - **Reference** is the lookup material: every flag, key, variable and exit code.
 
-The first three chapters are worth reading in order; after that, each chapter
-stands on its own.
+Read the first three chapters in order; after that, each chapter stands on its
+own.

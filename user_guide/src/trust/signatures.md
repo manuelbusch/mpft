@@ -5,7 +5,7 @@ not protect against someone who can write to the directory the file sits in:
 replacing the file and recomputing the checksum beside it takes one command,
 and the result verifies.
 
-A signature answers the other question — *who* put this here — and `mpt`
+A signature answers the other question, *who* put this here, and `mpt`
 answers it before the data is copied, not after.
 
 ```
@@ -52,8 +52,7 @@ key uses the ssh-agent; `$MPT_SIGN_KEY_FINGERPRINT` or
 `[signing] agent_fingerprint` picks one identity out of several.
 
 To sign every transfer to a particular place without anyone having to remember,
-the configuration can give that place a name and attach the key to it — a
-[profile](../configuration/profiles.md):
+attach the key to a [profile](../configuration/profiles.md) for that place:
 
 ```toml
 [profiles.releases]
@@ -150,8 +149,8 @@ release@example.com valid-after=20260101,valid-before=20270101 ssh-ed25519 AAAAC
   more than the file says.
 
 For OpenPGP the keyring's self-signatures are verified when it is loaded.
-Revoked keys and subkeys are refused, and so are keys that had expired — or had
-not yet come into force — at the time the signature was made.
+Revoked keys and subkeys are refused, and so are keys that had expired, or had
+not yet come into force, at the time the signature was made.
 
 ## Signing time
 
@@ -185,7 +184,7 @@ error: signature: the checksum file was signed 9d ago (2026-09-01T18:05:31Z),
        longer than the 7d the policy allows
 ```
 
-With the policy set, a checksum file with no signing time is refused as well —
+With the policy set, a checksum file with no signing time is refused as well;
 otherwise removing the line would be enough to escape the rule.
 
 ## Practical notes

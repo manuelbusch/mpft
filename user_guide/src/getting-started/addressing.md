@@ -2,7 +2,7 @@
 
 `mpt` has one addressing model, and every command uses it. A source is a URL, a
 target is a URL, and the prefix of the URL decides which protocol does the
-work. Once this page is internalised, most of the tool follows from it.
+work. Most of the tool follows from this page.
 
 ```
 <scheme>://[user[:password]@]host[:port]/path[?option=value&option=value]
@@ -23,9 +23,8 @@ a local file. You never have to write `file://` unless you want to.
 
 ## The trailing slash decides where a file lands
 
-This is the rule to remember. A path that ends in `/` is a **directory**, and
-the source's file name is appended to it. A path that does not is the **file
-name itself**.
+A path that ends in `/` is a **directory**, and the source's file name is
+appended to it. A path that does not is the **file name itself**.
 
 | Target | Source `report.pdf` ends up as |
 |---|---|
@@ -36,10 +35,10 @@ name itself**.
 
 It works the same for every protocol, including the ones with no real
 directories: an `s3://bucket/reports/` target appends the file name to the key
-prefix, which is what makes S3 keys look like paths.
+prefix.
 
 A missing slash where you meant one is the most common early mistake, and it is
-silent — you get a file named after a directory you expected. When in doubt,
+silent: you get a file named after the directory you expected. When in doubt,
 add the slash.
 
 The rule also cuts the other way for sources. `mpt cp sftp://srv/incoming/ ./`
@@ -56,31 +55,26 @@ mpt cp "ftps://old.example.com/x.csv?insecure=true" "sftp://new.example.com/in/"
 ```
 
 The old server with its expired certificate is trusted; the new one is still
-checked properly. A global flag could not express that, which is why
-`--insecure` exists only as a deprecated leftover and per-URL options are the
-supported way.
+checked. A global flag could not express that, which is why `--insecure` is
+deprecated and per-URL options are the supported way.
 
 Options fall into three groups:
 
-- **Protocol-specific**, listed by `mpt schemes`: `key=` and `known_hosts=` for
-  SSH, `tls=` and `passive=` for FTP, `endpoint=` and `region=` for S3,
-  `subject=` and `cc=` for mail.
-- **Shared by all schemes**: `timeout=`, `connect_retries=`, `insecure=` where
-  TLS is involved.
-- **Passed through** to the server: for `http(s)://` and `webdav(s)://`, any
-  query parameter that is not one of the above stays in the request URL, so an
-  API that expects `?format=json` gets it.
+| Group | Examples | Listed by |
+|---|---|---|
+| Protocol-specific | `key=`, `known_hosts=` (SSH); `tls=`, `passive=` (FTP); `endpoint=`, `region=` (S3); `subject=`, `cc=` (mail) | `mpt schemes` and the protocol pages |
+| Shared by all schemes | `timeout=`, `connect_retries=`, `insecure=` where TLS is involved | [Protocols overview](../protocols/overview.md#options-every-scheme-understands) |
+| Passed through to the server | `?format=json` on an `http(s)://` or `webdav(s)://` URL | the server's own API |
 
 An option may be repeated where that makes sense: `header=` and `hostkey=` take
 several, and each one counts.
 
-One caveat: a **misspelled option is ignored, not reported**. `?timeuot=5`
-changes nothing and says nothing, because for HTTP and WebDAV an unrecognised
-option is meant to reach the server, and the other schemes do not police the
-query string either. Options in the [configuration
-file](../configuration/file.md) are checked strictly — an unknown key there is
-an error that `mpt config check` will name — so a setting you rely on is better
-placed there than repeated on the command line.
+A **misspelled option is ignored, not reported**. `?timeuot=5` changes nothing
+and says nothing, because for HTTP and WebDAV an unrecognised option is meant
+to reach the server, and the other schemes do not police the query string
+either. Options in the [configuration file](../configuration/file.md) are
+checked strictly, so a setting you rely on is better placed there than
+repeated on the command line.
 
 ### The result line echoes the options used
 
@@ -104,8 +98,7 @@ mpt cp report.pdf "sftp://srv/in/?key=~/.ssh/deploy&timeout=120"     # right
 mpt cp report.pdf sftp://srv/in/?key=~/.ssh/deploy&timeout=120       # the shell eats it
 ```
 
-The habit worth forming is to quote every URL that contains a `?`. A plain
-`sftp://srv/in/` needs nothing.
+Quote every URL that contains a `?`. A plain `sftp://srv/in/` needs nothing.
 
 Two details inside a URL:
 
@@ -133,7 +126,7 @@ password goes instead.
 ## Send-only and receive-only schemes
 
 An endpoint can receive (be a source), send (be a target), or both. `mpt
-schemes` has the exact table; the exceptions are worth knowing up front:
+schemes` has the exact table. The exceptions:
 
 - **`mailto:` and `smtp://` can only send.** There is no way to read from a
   mailbox.

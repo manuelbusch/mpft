@@ -1,12 +1,12 @@
 # Using mpt in scripts
 
-Unattended use is what `mpt` is for, so the things a calling program needs are
-not afterthoughts: the two output streams are separated, the exit code says
-what kind of failure it was, and the report can be read as JSON.
+A calling program needs three things: separated output streams, an exit code
+that says what kind of failure occurred, and a report it can parse. This page
+covers all three.
 
 ## stdout and stderr
 
-Everything a person reads — result lines, warnings, the progress display — goes
+Everything a person reads (result lines, warnings, the progress display) goes
 to **stderr**. Everything a program reads goes to **stdout**, and only with
 `--json`. Without it, stdout stays empty except for the few commands whose
 output *is* data (`ls`, `schemes`, `profiles`, `completions`, `man`).
@@ -41,10 +41,10 @@ $ mpt cp mailto:x@example.com out/  ; echo $?     # 2
 $ mpt ls mpt://nosuch/              ; echo $?     # 2
 ```
 
-The distinction that earns its keep is 2 and 4 against 1: a wrong URL or a
+The distinction that matters most is 2 and 4 against 1: a wrong URL or a
 rejected password will fail again in five minutes, a refused connection may
-not. Code 3 deserves its own branch — it means the bytes arrived but cannot be
-trusted, which is not the same kind of problem as a transfer that failed.
+not. Code 3 deserves its own branch: the bytes arrived but cannot be trusted,
+which is a different problem from a transfer that failed.
 
 With several targets or jobs the code is [aggregated](../reference/exit-codes.md#when-several-things-fail-at-once):
 1 when the outcomes are mixed, the specific code when every failure was of the
@@ -53,7 +53,7 @@ same kind.
 ```sh
 #!/bin/sh
 set -u
-# No `set -e`: the point is to look at the code ourselves.
+# No `set -e`: the script inspects the exit code itself.
 mpt --json cp --hash sha256 /data/export.csv sftp://srv.example.com/incoming/ > last-run.json
 case $? in
   0) mv /data/export.csv /data/sent/ ;;
@@ -147,9 +147,9 @@ $ mpt --json batch jobs.txt 2>/dev/null | jq -c 'select(.ok | not) | {job, sourc
 {"job":2,"source":"nosuch.pdf","error":"I/O error: No such file or directory (os error 2)"}
 ```
 
-A job whose source could not even be opened has a shorter object — `source`,
-`ok`, `error`, `cancelled`, `job` — because there was never a transfer to
-report on. Read `.ok` rather than assuming `.targets` exists.
+A job whose source could not be opened has a shorter object (`source`, `ok`,
+`error`, `cancelled`, `job`), because there was never a transfer to report on.
+Read `.ok` rather than assuming `.targets` exists.
 
 Some pipelines that come up:
 
@@ -175,23 +175,22 @@ redraws over the output.
 
 [`--dry-run`](../guide/many-files.md#dry-run) prints the jobs a
 command would run and transfers nothing, and with `--json` it prints them as
-one object per job. In a script that builds its own arguments, running it once
-in dry mode is the cheapest possible check — especially in front of
-`--delete-source`.
+one object per job. In a script that builds its own arguments, a dry run is
+the cheapest check available, especially in front of `--delete-source`.
 
 ## Logging
 
 Log lines go to stderr, and the level is decided in this order:
 
-1. `$RUST_LOG` — wins over everything, and takes the full
-   `tracing` filter syntax (`mpt::protocols::ssh=debug,warn`)
+1. `$RUST_LOG`, which wins over everything and takes the full `tracing`
+   filter syntax (`mpt::protocols::ssh=debug,warn`)
 2. `-v` (info), `-vv` (debug), `-vvv` (trace)
 3. `[defaults] log` in the configuration
 4. `warn`, the built-in default
 
-The first line is worth remembering: with `RUST_LOG` set in the environment,
-`-vv` does nothing. That is convenient in a CI job that sets it globally and
-surprising anywhere else.
+Note the first line: with `RUST_LOG` set in the environment, `-vv` does
+nothing. That is convenient in a CI job that sets it globally and surprising
+anywhere else.
 
 At the default level a run is quiet unless something deserves attention: a
 plaintext password, a host key added on first use, a partial file that could
@@ -207,8 +206,8 @@ $ mpt cp report.pdf out/ 2>&1 | cat -v
 report.pdf -> out/: 8 bytes in 6.32ms
 ```
 
-`--color always` is an explicit request and wins over `NO_COLOR` and over the
-absence of a terminal, which is what a CI system that renders ANSI codes needs.
+`--color always` wins over `NO_COLOR` and over the absence of a terminal,
+which suits a CI system that renders ANSI codes.
 `--color never` switches it off for good. `[defaults] color` sets the default.
 
 ## Interruption and exit code 130

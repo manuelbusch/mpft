@@ -2,7 +2,7 @@
 
 Checksums and signatures say something about a file. This page is about the
 step before that: making sure the machine on the other end is the machine you
-meant, and that what you send it — credentials in particular — cannot be read
+meant, and that what you send it, credentials in particular, cannot be read
 on the way.
 
 ## SSH host keys
@@ -20,9 +20,8 @@ error: authentication failed: host key of srv.example.com:22 is not in known_hos
        ?hostkey=SHA256:GFb3ByRBzc3YOA2B7PCZeSWXCPpf4DIlKm/UrNkKGhY or ?known_hosts=accept-new
 ```
 
-An unreadable file counts as a failure rather than as "no restrictions", which
-is the failure mode that matters: the alternative would accept any key at the
-moment your trust store went missing.
+An unreadable file counts as a failure rather than as "no restrictions". The
+alternative would accept any key at the moment the trust store went missing.
 
 | Policy | Meaning |
 |---|---|
@@ -37,8 +36,8 @@ The default for the whole machine is `[policy] known_hosts`, and
 
 ### First contact
 
-If you can check the fingerprint — from the machine's console, from whoever
-runs it, from the ticket that announced it — record it and be done:
+If you can check the fingerprint, from the machine's console, from whoever
+runs it or from the ticket that announced it, record it:
 
 ```
 ssh-keyscan srv.example.com >> ~/.ssh/known_hosts
@@ -64,16 +63,15 @@ error: authentication failed: HOST KEY CHANGED for srv.example.com:22: the serve
        different key — refusing to connect
 ```
 
-`accept-new` does not help here, and that is deliberate. A changed key means
-the machine was rebuilt, or someone is between you and it, and the two look
-identical from where you stand. Find out which before editing the line the
-message names.
+`accept-new` does not help here. A changed key means the machine was rebuilt,
+or someone is between you and it, and the two look identical from the client.
+Find out which before editing the line the message names.
 
 ### Pinning, for scripts and CI
 
-A build agent has no `known_hosts` file worth maintaining, and creating one at
-the start of every pipeline is how "just accept it" ends up in a script. Pin
-the key in the URL instead:
+A build agent usually has no maintained `known_hosts` file, and creating one
+at the start of every pipeline tends to end in `accept-new` or `off`. Pin the
+key in the URL instead:
 
 ```
 mpt cp report.pdf "sftp://deploy@srv.example.com/in/?hostkey=SHA256:GFb3ByRBzc3YOA2B7PCZeSWXCPpf4DIlKm/UrNkKGhY"
@@ -85,10 +83,9 @@ error: authentication failed: host key of srv.example.com:22 is
        SHA256:AAAABBBBCCCC…
 ```
 
-The option may be repeated, or given as a list where the configuration names
-that server — a [profile](../configuration/profiles.md) — which is what a key
-rotation needs:
-both keys are acceptable while the change is rolled out.
+The option may be repeated, or given as a list in a
+[profile](../configuration/profiles.md). During a key rotation both keys are
+then acceptable while the change is rolled out:
 
 ```toml
 [profiles.prod]
@@ -124,9 +121,9 @@ fan-out the other targets are still checked. The global `--insecure` is
 **deprecated** for that reason: it lowers the bar for every endpoint of the
 run, and it warns when used.
 
-Remember what it switches off: not just the CA chain but the hostname check
-too, which is the part that distinguishes the right server from any server with
-a certificate. Where that trade is not yours to make,
+`insecure=true` switches off the hostname check as well as the CA chain, and
+the hostname check is what distinguishes the right server from any server
+with a certificate.
 [`[policy] refuse_insecure_tls`](../configuration/policies.md#refusing-to-skip-certificate-checks)
 takes the option away entirely.
 
@@ -141,9 +138,10 @@ WARN mpt::policy: ftp://ftp.example.com: FTP without TLS sends the password unen
      Prefer the TLS variant of this scheme
 ```
 
-Usually the fix is one character — `ftps://`, `https://`, `webdavs://` — since
-the same server tends to offer both. Where it is not, decide deliberately
-rather than by not noticing, and let the policy hold you to it:
+Usually the fix is the TLS variant of the scheme (`ftps://`, `https://`,
+`webdavs://`), since the same server tends to offer both. Where that is not
+available, the policy turns the warning into a refusal so that the decision
+is made explicitly:
 
 ```
 $ mpt --refuse-plaintext-auth ls "ftp://user:secret@ftp.example.com/"
@@ -175,5 +173,4 @@ does.
 | signature on the source's checksum file | before any data is copied |
 | checksum | while the data streams |
 
-The order is deliberate: everything that can be decided without exchanging
-data is decided first, and the cheapest way to fail is the earliest one.
+Everything that can be decided without exchanging data is decided first.

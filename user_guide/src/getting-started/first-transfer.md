@@ -1,9 +1,8 @@
 # Your first transfer
 
-This page walks through one real session: a local copy to see the shape of the
-output, an upload that is refused on the first attempt for a good reason, a
-listing, a download, and a checksum the recipient can verify. Ten minutes, and
-afterwards the rest of the guide is mostly detail.
+This page walks through one session: a local copy to see the shape of the
+output, an upload that is refused on the first attempt, a listing, a download,
+a checksum the recipient can verify, and a copy to several targets.
 
 The examples use `srv.example.com` as the server and `deploy` as the account.
 Substitute a machine you can reach by SSH; nothing here writes outside a
@@ -20,7 +19,7 @@ report.pdf -> backup/: 40000 bytes in 4.85ms
 ```
 
 That one line is the whole report: what went where, how much, how long. It is
-written to **stderr**, not stdout, which matters later — a script can read a
+written to **stderr**, not stdout. A script can therefore read a
 machine-readable report from stdout while a person watches this on the
 terminal.
 
@@ -50,10 +49,9 @@ error: copy report.pdf -> sftp://deploy@srv.example.com/incoming/?timeout=30:
 ```
 
 This is not a misconfiguration. `mpt` checks the server's host key against
-`~/.ssh/known_hosts` before it sends anything, and an unknown host is refused
-rather than accepted with a shrug. A machine that answers on port 22 is not
-yet a machine you have any reason to trust, and the moment before you hand it
-a password or a file is exactly the moment to say so.
+`~/.ssh/known_hosts` before it sends anything, and an unknown host is refused.
+A machine that answers on port 22 is not yet a machine you have any reason to
+trust, and the check happens before a password or a file is handed to it.
 
 The message names the three ways forward. For this walk-through, accept the
 key on first use, the way `ssh` itself offers to:
@@ -148,8 +146,7 @@ way, `--check` verifies a download against a checksum file that sits beside the
 
 ## 7. Several targets
 
-The last thing worth seeing on day one is why `cp` takes more than two
-arguments:
+`cp` takes more than two arguments:
 
 ```
 $ mpt cp report.pdf sftp://deploy@srv.example.com/incoming/ "s3://bucket/reports/" "mailto:boss@example.com?subject=Report"

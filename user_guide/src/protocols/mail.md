@@ -84,9 +84,9 @@ Content-Type: multipart/mixed;
 ```
 
 **Checksums and signatures travel as further attachments.** A mail target has
-no directory to put a sidecar file in, so `--hash` adds a second attachment
+no directory to put a checksum file in, so `--hash` adds a second attachment
 (and a line in the body) and `--sign` a third. The recipient verifies them with
-`sha256sum -c` and `ssh-keygen -Y verify` exactly as they would elsewhere; see
+`sha256sum -c` and `ssh-keygen -Y verify` as they would elsewhere; see
 [Checksums](../trust/checksums.md) and [Signatures](../trust/signatures.md).
 
 ## The sender
@@ -112,7 +112,7 @@ the fourth rule is usually the one that applies.
 |---|---|---|
 | `starttls` | connect in the clear, upgrade before logging in | 587 |
 | `implicit` | TLS from the first byte | 465 |
-| `none` | no encryption — a local relay only | 25 |
+| `none` | no encryption; for a local relay only | 25 |
 
 `tls=none` with a password [warns](../trust/connections.md#credentials-in-the-clear),
 and `[policy] refuse_plaintext_auth = true` refuses it.
@@ -120,9 +120,9 @@ and `[policy] refuse_plaintext_auth = true` refuses it.
 `?auth=` picks the SASL mechanism: `xoauth2`, `plain`, `login`, or `auto` (the
 default, which lets the server and the library agree).
 
-**XOAUTH2** is what Microsoft 365 and Google want now that they have switched
-basic authentication off. The access token takes the place of the password, so
-a [credential provider](../configuration/credentials.md) fetches it when the
+**XOAUTH2** is required by Microsoft 365 and Google, which have switched basic
+authentication off. The access token takes the place of the password, so a
+[credential provider](../configuration/credentials.md) fetches it when the
 mail is about to be sent:
 
 ```toml
@@ -146,7 +146,7 @@ there is a limit:
 - 25 MiB by default.
 
 Raising it raises the memory the process needs. For anything large, send a link
-instead — a `s3://` upload and a `mailto:` notification in the same fan-out do
+instead. An `s3://` upload and a `mailto:` notification in the same fan-out do
 that in one command:
 
 ```

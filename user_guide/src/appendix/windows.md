@@ -14,9 +14,9 @@ The MSVC toolchain alone is enough:
 cargo build --release
 ```
 
-NASM is **not** required. The TLS stack turns on its own pre-built assembly
-(`aws-lc-rs/prebuilt-nasm`), which is what usually trips a Windows build of a
-Rust project that uses rustls.
+NASM is **not** required. The TLS stack uses its own pre-built assembly
+(`aws-lc-rs/prebuilt-nasm`); a missing NASM is what usually trips a Windows
+build of a Rust project that uses rustls.
 
 ## ssh-agent
 
@@ -29,9 +29,9 @@ Unix has one answer, `$SSH_AUTH_SOCK`. Windows has two, and `mpt` tries both:
 3. **Pageant**, PuTTY's agent, if neither pipe answers.
 
 On Windows the agent is always tried, because neither the service pipe nor
-Pageant needs an environment variable to be found — unlike Unix, where the
-absence of `$SSH_AUTH_SOCK` is taken as "no agent". When none of the three
-answers, the error names each one that was tried and why it failed.
+Pageant needs an environment variable to be found. On Unix the absence of
+`$SSH_AUTH_SOCK` is taken as "no agent". When none of the three answers, the
+error names each one that was tried and why it failed.
 
 Signing works through the same path: SSHSIG is assembled on the client side, so
 an agent that can sign at all can sign here.
@@ -64,10 +64,9 @@ warning.
 WARN … holds a secret and lies outside your profile directory; check who else can read it
 ```
 
-That is a weaker check than the Unix one, and it is deliberately conservative
-rather than clever. A file inside `%USERPROFILE%` is assumed to be as private
-as the profile itself; a proper ACL check is a later refinement.
-`[policy] strict_permissions` still applies to the Unix check only.
+That is a weaker check than the Unix one. A file inside `%USERPROFILE%` is
+assumed to be as private as the profile itself; an ACL check is not
+implemented. `[policy] strict_permissions` applies to the Unix check only.
 
 ## Paths
 
@@ -83,9 +82,9 @@ mpt cp \\fileserver\share\report.pdf "s3://bucket/in/"
 - **`\` is a path separator.** That matters for the files `mpt` writes beside
   yours: a checksum file and a `.mpt-part` land next to their file rather than
   in the working directory.
-- **A trailing `\` marks a directory target**, exactly as `/` does.
+- **A trailing `\` marks a directory target**, as `/` does.
 
-Remote paths are unaffected — an `sftp://` path is the server's, and the server
+Remote paths are unaffected: an `sftp://` path is the server's, and the server
 is usually not Windows.
 
 ## Everything else

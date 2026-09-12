@@ -1,9 +1,9 @@
 # Checksums
 
-A transfer can go wrong quietly. A truncated upload, a proxy that rewrote
-something, a disk that returned a bad block — none of these announce
-themselves, and the file on the far side looks like a file. A checksum turns
-that into something you can find out.
+A transfer can go wrong quietly: a truncated upload, a proxy that rewrote
+something, a disk that returned a bad block. None of these announce
+themselves, and the file on the far side looks like a file. A checksum makes
+the difference detectable.
 
 ```
 mpt cp --hash sha256 report.pdf sftp://srv.example.com/incoming/
@@ -42,8 +42,8 @@ $ cd out && sha256sum -c report.pdf.sha256
 report.pdf: OK
 ```
 
-That is the whole point of the format. Whoever picks the file up verifies it
-with a tool they already have, on a machine that has never heard of `mpt`.
+Whoever picks the file up verifies it with a tool they already have, on a
+machine without `mpt`.
 
 ## In a fan-out
 
@@ -56,9 +56,9 @@ once](../guide/fan-out.md) shows the output. Two details matter in practice:
   [atomic finishing](../guide/reliability.md#a-file-appears-only-when-it-is-whole)
   it doubles as a completion marker: if `report.pdf.sha256` is there, then
   `report.pdf` is complete.
-- **If that write fails, only that target fails.** The message says so
-  explicitly — the file itself arrived, the checksum beside it did not — so you
-  can tell the two situations apart.
+- **If that write fails, only that target fails.** The message says that the
+  file itself arrived and the checksum beside it did not, so the two situations
+  can be told apart.
 
 [Mail targets](../protocols/mail.md#the-message) receive the checksum as a
 second attachment instead.
@@ -76,11 +76,10 @@ check ok (BLAKE3)
 ```
 
 The algorithm comes from whichever file is there. `mpt` tries `<name>.b3`,
-then `<name>.sha256`, then `<name>.sha512`, and uses the first it finds — which
+then `<name>.sha256`, then `<name>.sha512`, and uses the first it finds. That
 is why the run above reports BLAKE3 without having been asked for it.
 
-A mismatch is loud, and both digests are shown so you can see which end is
-surprising:
+A mismatch shows both digests:
 
 ```
 $ mpt cp --check out/report.pdf ./
@@ -94,14 +93,13 @@ error: BLAKE3 checksum mismatch: expected 4ee59acf…, got a08daaa9…
 The exit code is **3**, which a script can act on without reading the message,
 and the transferred file is left in place so you can look at it.
 
-No checksum file at all is a failure too, not a shrug:
+A missing checksum file is a failure too, since a check that silently did not
+happen would be worse than no check:
 
 ```
 error: copy report.pdf: remote error: check: no checksum file next to the source
        (tried report.pdf.b3, report.pdf.sha256, report.pdf.sha512)
 ```
-
-Asking for a check and silently not getting one would be worse than not asking.
 
 Both flags work together, and with several targets:
 

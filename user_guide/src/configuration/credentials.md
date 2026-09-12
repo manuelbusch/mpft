@@ -23,9 +23,9 @@ MPT_PASSWORD=… mpt cp report.pdf ftps://…
 
 `--password-file` reads the first line, ignoring the newline an editor leaves
 behind, and complains if others can read the file. `--password-stdin` reads the
-first line of standard input, which is what a secret manager's output pipes
-into. All three apply to `sftp`, `scp`, `ftp`, `ftps`, `http` and `webdav`; SMTP
-has `MPT_SMTP_PASSWORD` of its own.
+first line of standard input, which suits a secret manager's output. All three
+apply to `sftp`, `scp`, `ftp`, `ftps`, `http` and `webdav`; SMTP has
+`MPT_SMTP_PASSWORD` of its own.
 
 There is also `--password <PW>`, which is the same as `MPT_PASSWORD` but
 stands in the argument list and is therefore visible in `ps` like a password
@@ -85,8 +85,8 @@ The same syntax works for every secret in the file:
 | `[http] token` | bearer token for HTTP and WebDAV |
 | `[s3] access_key_id`, `secret_access_key` | S3 keys |
 
-A plain string works too — `password = "hunter2"` — and warns. It is there so
-that a quick test does not need ceremony, not as something to leave in place.
+A plain string (`password = "hunter2"`) works too, and warns. It is meant for
+a quick test, not as something to leave in place.
 
 ### When references are resolved
 
@@ -95,7 +95,7 @@ the file is read. Two things follow.
 
 **Commands do not run for endpoints you are not using.** A configuration with
 ten profiles, each with a `cmd` that talks to a password manager, costs one
-invocation for the one profile a command touches — not ten.
+invocation for the one profile a command touches, not ten.
 
 **The value is fetched once per run** and shared between the endpoints that
 name the same reference, so a fan-out to three targets behind one credential

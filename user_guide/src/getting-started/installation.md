@@ -26,8 +26,8 @@ your `PATH`.
 ## Choosing protocols
 
 Every protocol is a cargo feature, and all of them are on by default. A build
-that only speaks what you need is smaller and pulls in fewer dependencies —
-worth doing for a container image or a CI runner.
+that only speaks what you need is smaller and pulls in fewer dependencies,
+which matters for a container image or a CI runner.
 
 | Feature | What it adds | Default |
 |---|---|---|
@@ -57,8 +57,7 @@ cargo build --release --features keyring,s3-aws-auth
 ```
 
 A URL whose protocol was not compiled in fails at once, before any connection
-is attempted, and the message says which feature is missing rather than leaving
-you to guess:
+is attempted, and the message names the missing feature:
 
 ```
 $ mpt cp report.pdf sftp://srv.example.com/in/
@@ -81,7 +80,7 @@ sftp://     yes   yes   22      ssh       key=<file>, known_hosts=strict|accept-
 ```
 
 The `recv` and `send` columns say which direction a scheme supports: `mailto:`
-can send but never receive, and no amount of configuration changes that.
+can send but never receive.
 
 ## Shell completions and the manual page
 

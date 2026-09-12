@@ -9,15 +9,15 @@ mpt cp /var/log/app.log "s3://bucket/logs/"
 mpt cp ./exports/ -r sftp://srv.example.com/in/exports/
 ```
 
-A bare path is a local file. `file:///var/log/app.log` means the same thing and
-is worth writing only when a path could be mistaken for something else.
+A bare path is a local file. `file:///var/log/app.log` means the same thing
+and is only needed when a path could be mistaken for something else.
 
 ## Paths
 
 Relative paths are resolved against the working directory, absolute ones are
 taken as they are. The [trailing
 slash](../getting-started/addressing.md#the-trailing-slash-decides-where-a-file-lands)
-decides whether a target is a directory or a file name, exactly as elsewhere.
+decides whether a target is a directory or a file name, as elsewhere.
 
 A `~` in a local path is expanded by the shell, so write it unquoted. Inside a
 URL option (`?key=~/.ssh/id_ed25519`) it is `mpt` that expands it; see
@@ -65,9 +65,9 @@ the other three things.
 ## Permissions and timestamps
 
 The payload is written with the process's own umask, as any program's output
-would be. Ownership and permissions of the source are not carried across —
+would be. Ownership and permissions of the source are not carried across:
 `mpt` moves file *contents* between systems that mostly cannot express each
-other's metadata anyway. Where that matters, use a tool built for it (`rsync`,
+other's metadata. Where that matters, use a tool built for it (`rsync`,
 `tar`) or set the permissions afterwards.
 
 Timestamps are not preserved either. A file that arrives has the time it

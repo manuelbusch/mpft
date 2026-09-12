@@ -1,7 +1,7 @@
 # FTP and FTPS
 
-FTP is old, still everywhere, and the one protocol here where two options
-decide whether a transfer works at all through a firewall.
+FTP is the one protocol here where two options, `passive` and `nat`, decide
+whether a transfer works at all through a firewall.
 
 ```
 mpt cp report.pdf ftps://upload@ftp.partner.example/incoming/
@@ -13,7 +13,7 @@ mpt cp ftp://anonymous@ftp.example.org/pub/data.csv ./
 
 | Scheme and option | What happens | Default port |
 |---|---|---|
-| `ftps://` | connect in the clear, then `AUTH TLS` before logging in — "explicit" FTPS | 21 |
+| `ftps://` | connect in the clear, then `AUTH TLS` before logging in ("explicit" FTPS) | 21 |
 | `ftps://…?tls=implicit` | the connection is TLS from the first byte | 990 |
 | `ftp://` | no encryption at all | 21 |
 
@@ -35,8 +35,8 @@ mpt cp report.pdf "ftps://upload@ftp.example.com/in/?nat=true"
 
 **`passive=true` is the default**, and it is what works from behind a firewall:
 the client opens the data connection. `passive=false` asks the server to
-connect back, which needs an inbound hole and is worth trying only when a
-server insists on it.
+connect back, which needs an inbound hole. Try it only when a server insists
+on it.
 
 **`nat=true`** helps with the classic misconfiguration where a server behind
 NAT announces its internal address for the data connection. With it, `mpt`
@@ -45,14 +45,13 @@ transfers hang after the listing works, this is the first thing to try.
 
 ## Capabilities
 
-FTP supports more than its age suggests: listing, sizes (`SIZE`), renaming
-(`RNFR`/`RNTO`), appending (`APPE`) and directory creation (`MKD`), so every
-column of the [capability matrix](overview.md#what-each-one-can-do) is
-ticked.
+FTP supports listing, sizes (`SIZE`), renaming (`RNFR`/`RNTO`), appending
+(`APPE`) and directory creation (`MKD`), so every column of the [capability
+matrix](overview.md#what-each-one-can-do) is ticked.
 
 Renaming onto an existing name is refused by most servers, so `mpt` deletes the
-target first and then renames — which is what makes atomic finishing behave the
-same here as everywhere else.
+target first and then renames. Atomic finishing therefore behaves the same
+here as everywhere else.
 
 Listings are parsed from whatever format the server chose, and servers vary. If
 a listing looks wrong, `-vv` shows the raw lines.

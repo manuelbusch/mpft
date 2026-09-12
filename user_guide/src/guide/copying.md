@@ -43,11 +43,11 @@ the copy is done:
 
 The percentage appears only when the source could say how large it is; an HTTP
 server without a `Content-Length`, for instance, gives bytes and a rate but no
-share. The line is drawn only where someone is watching — a terminal on stderr,
-and not when `--json` is in use — so it never pollutes a log or a pipe.
+share. The line is drawn only when stderr is a terminal and `--json` is off,
+so it never pollutes a log or a pipe.
 
-`--progress always` overrides that judgement. Without a terminal each reading
-gets a line of its own, which is what you want in a build log:
+`--progress always` overrides that. Without a terminal each reading gets a
+line of its own, which suits a build log:
 
 ```
 $ mpt --progress always cp big.bin sftp://srv.example.com/in/
@@ -76,8 +76,8 @@ has the details, including what `--resume` keeps.
 ## Time limits
 
 `--timeout <seconds>` (30 by default) is an **inactivity** limit, not a
-deadline. Any read or write that makes progress resets it, so a large file over
-a slow but steady line is fine, while a connection that has genuinely stopped
+deadline. Any read or write that makes progress resets it. A large file over a
+slow but steady line is therefore fine, while a connection that has stopped
 answering is given up on. It covers connecting, logging in, and every byte
 after that.
 
@@ -86,8 +86,8 @@ mpt --timeout 120 cp big.iso sftp://srv.example.com/in/
 mpt cp big.iso "sftp://srv.example.com/in/?timeout=120"     # this endpoint only
 ```
 
-`--timeout 0` disables it, which is worth doing only when something else will
-notice a hung process.
+`--timeout 0` disables it. Do that only when something else will notice a
+hung process.
 
 Two kinds of retry exist, and they are set differently:
 
@@ -114,8 +114,7 @@ only transient failures are.
 
 The wait between attempts grows by a second each time: one second before the
 second attempt, two before the third. Three retries therefore delay a doomed
-connection by six seconds, which is worth knowing when a job has a window to
-finish in.
+connection by six seconds, which matters when a job has a window to finish in.
 
 [Several targets at once](fan-out.md#retrying-a-target) covers transfer
 retries in a fan-out.

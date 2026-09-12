@@ -1,10 +1,10 @@
 # Scheduled and triggered runs
 
-`mpt` has no scheduler, no retry queue and no state database, and that is
-deliberate: cron, systemd timers and CI runners already do that job, and they
-do it where the rest of your operational tooling can see it. What `mpt` offers
-instead is a run that is safe to repeat and an outcome that is unambiguous
-enough for those systems to act on.
+`mpt` has no scheduler, no retry queue and no state database. cron, systemd
+timers and CI runners already do that job, and they do it where the rest of
+your operational tooling can see it. What `mpt` offers is a run that is safe
+to repeat and an outcome that is unambiguous enough for those systems to act
+on.
 
 ## Flags for a repeatable job
 
@@ -22,9 +22,9 @@ mpt cp -r --skip-existing --allow-empty \
   nights, and a job that alerts every night is a job nobody reads.
 
 Add [`--resume`](../guide/reliability.md#resuming-with---resume) when the
-files are large enough that finishing half of one is worth keeping, and
+files are large enough that a half-finished one should be kept, and
 [`--delete-source`](../guide/many-files.md#skipping-existing-files-and-deleting-the-source)
-when the point is to drain the source rather than mirror it:
+when the source should be drained rather than mirrored:
 
 ```
 mpt cp -r --skip-existing --resume --delete-source \
@@ -42,11 +42,13 @@ mpt cp -r --skip-existing --resume --delete-source \
                        sftp://srv.example.com/outbox/ /data/incoming/ 2>&1 | logger -t mpt
 ```
 
-Use an absolute path: cron's `PATH` is usually `/usr/bin:/bin`. Send the
-human-readable output somewhere it will be seen — `logger`, a file, a log
-shipper — since cron's own mail rarely reaches anyone. And pick a minute that
-is not zero, so that a fleet of machines does not arrive at the same server in
-the same second.
+Three things to get right:
+
+- **Use an absolute path.** cron's `PATH` is usually `/usr/bin:/bin`.
+- **Send the human-readable output somewhere it will be seen**: `logger`, a
+  file, a log shipper. cron's own mail rarely reaches anyone.
+- **Pick a minute that is not zero**, so that a fleet of machines does not
+  arrive at the same server in the same second.
 
 cron gives a job almost no environment, so name the configuration explicitly
 rather than relying on `$HOME`:
@@ -110,11 +112,10 @@ The `${VAR}` interpolation of the configuration file does the rest. Nothing
 carries the secret in an environment variable, so it does not turn up in
 `/proc` or in the journal.
 
-One consequence to expect: a configuration that refers to
-`${CREDENTIALS_DIRECTORY}` can only be read inside that unit. Running
-`mpt config check` by hand fails with *refers to ${CREDENTIALS_DIRECTORY},
-which is not set*, which is the interpolation doing its job — an unset variable
-is an error rather than an empty string. Check such a file with
+One consequence: a configuration that refers to `${CREDENTIALS_DIRECTORY}` can
+only be read inside that unit. Running `mpt config check` by hand fails with
+*refers to ${CREDENTIALS_DIRECTORY}, which is not set*, because an unset
+variable is an error rather than an empty string. Check such a file with
 `systemd-run --pipe --unit=mpt-check --property=LoadCredential=… mpt config check`,
 or set the variable for the length of one command.
 
@@ -123,14 +124,14 @@ or set the variable for the length of one command.
 A service account has no keychain to unlock and no shell to type into. Three
 arrangements that work:
 
-- **A file with tight permissions**, delivered by systemd's `LoadCredential`,
-  by a Kubernetes secret mount, or by whatever manages the host —
-  `{ file = "…" }`.
-- **A command that fetches the secret**, if the platform has one —
-  `{ cmd = "vault kv get -field=password secret/mpt/prod" }`. Anything that
+- **A file with tight permissions** (`{ file = "…" }`), delivered by systemd's
+  `LoadCredential`, by a Kubernetes secret mount, or by whatever manages the
+  host.
+- **A command that fetches the secret** (`{ cmd = "vault kv get
+  -field=password secret/mpt/prod" }`), if the platform has one. Anything that
   prints the secret on stdout works.
-- **The AWS credential chain** for `s3://`, with the `s3-aws-auth` feature,
-  which is what an instance role or a workload identity already provides.
+- **The AWS credential chain** for `s3://`, with the `s3-aws-auth` feature.
+  An instance role or a workload identity already provides it.
 
 Keep the configuration file readable only by the account, and set
 `[policy] strict_permissions = true` so a wrong `chmod` is an error rather than
@@ -186,14 +187,14 @@ their slow morning does not turn into your failed job.
 
 ## Retaining run output
 
-For each run, three things are worth having afterwards: the exit code, the
-human-readable summary, and — when the job matters — the JSON report.
+Keep three things from each run: the exit code, the human-readable summary,
+and, when the job matters, the JSON report.
 
 ```
 mpt --json cp -r --skip-existing /data/export/ mpt://prod/incoming/ \
     > /var/log/mpt/$(date +%F-%H%M).json 2>> /var/log/mpt/mpt.log
 ```
 
-The JSON tells you later which files moved and what their checksums were, which
-is the question that actually gets asked when a partner says something did not
-arrive. [Using mpt in scripts](scripting.md) has the fields.
+The JSON records which files moved and what their checksums were, which is
+the question that gets asked when a partner says something did not arrive.
+[Using mpt in scripts](scripting.md) has the fields.

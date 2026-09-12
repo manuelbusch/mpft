@@ -59,13 +59,13 @@ for (algo, hex) in &report.digests {
 }
 ```
 
-`..Default::default()` is worth using rather than listing every field: the
-struct grows, and a default is always the conservative choice (stream rather
-than cache, atomic finishing on, no checksum).
+Use `..Default::default()` rather than listing every field: the struct grows,
+and a default is always the conservative choice (stream rather than cache,
+atomic finishing on, no checksum).
 
 `Err` from `copy_many` means the **source** could not be read. A target that
-failed is an `Err` inside its own `TargetReport`, which is what lets one target
-fail without taking the others with it.
+failed is an `Err` inside its own `TargetReport`, so one target can fail
+without taking the others with it.
 
 ## Cancellation and progress
 

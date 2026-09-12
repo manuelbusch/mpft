@@ -173,8 +173,8 @@ there is.
 
 **`mpt.toml: ignoring [ssh] — a configuration file in the working directory only contributes [defaults] and [policy]`** (warning)
 
-Deliberate. A directory you happen to be standing in may tune how a transfer
-runs, never where it goes. Put the section in the user file.
+Working as intended. A directory you happen to be standing in may tune how a
+transfer runs, never where it goes. Put the section in the user file.
 
 **`config.toml holds credentials and is readable by others (mode 644); chmod 600 it`**
 
@@ -242,9 +242,12 @@ rebuild with the feature. See
 
 ## Reporting a problem
 
-Useful in a report: the exact command with credentials removed, the output of
-`mpt -vv` for the failing run, `mpt --version`, `mpt schemes`, the operating
-system, and `mpt config check` if a configuration file is involved. If a
-particular server is involved, its software and version usually explains the
-rest — FTP servers especially differ in their listings and in how they handle
-renaming.
+Include in a report:
+
+- the exact command, with credentials removed
+- the output of `mpt -vv` for the failing run
+- `mpt --version` and `mpt schemes`
+- the operating system
+- `mpt config check`, if a configuration file is involved
+- the server software and version, if a particular server is involved. FTP
+  servers especially differ in their listings and in how they handle renaming.

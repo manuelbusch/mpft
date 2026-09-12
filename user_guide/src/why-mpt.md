@@ -1,9 +1,9 @@
 # Why mpt?
 
-Moving a file from one machine to another is a solved problem — several times
-over, once per protocol. `scp` for SSH, `curl` for HTTP, `lftp` for FTP,
-`aws s3 cp` for object storage, `mailx` for an attachment. Each is good at the
-protocol it knows. The trouble starts when one job needs several of them.
+Moving a file from one machine to another is a solved problem, once per
+protocol: `scp` for SSH, `curl` for HTTP, `lftp` for FTP, `aws s3 cp` for
+object storage, `mailx` for an attachment. Each is good at the protocol it
+knows. The trouble starts when one job needs several of them.
 
 Take a nightly export that has to reach an SFTP inbox, an S3 bucket and a
 colleague's mailbox. It becomes a shell script: three tools, three ways of
@@ -44,7 +44,7 @@ transfer that fits in the maintenance window and one that does not.
 
 ## Safe defaults
 
-Every default is the one you would have chosen after the incident:
+The defaults are the conservative choice in every case:
 
 - a file appears under its final name only when it is complete, so a pickup job
   never sees a half-written file;
@@ -81,7 +81,7 @@ for SFTP.
 
 ## Made to be run by a machine
 
-Unattended use is the point, not an afterthought:
+Unattended use is the primary use case:
 
 - exit codes distinguish a wrong password from a checksum mismatch from a
   network failure;

@@ -1,9 +1,9 @@
 # Overview
 
 Every protocol answers to the same commands and the same flags. What differs is
-what the far side can actually do — a mailbox cannot be listed, HTTP cannot
-rename, S3 has no directories — and those differences show up as capabilities
-rather than as separate commands.
+what the far side can do: a mailbox cannot be listed, HTTP cannot rename, S3
+has no directories. Those differences show up as capabilities rather than as
+separate commands.
 
 `mpt schemes` prints this table for the binary you have, which is also how you
 find out which [cargo features](../getting-started/installation.md#choosing-protocols)
@@ -38,22 +38,15 @@ were compiled in.
 | `s3://` | ✓ | ✓ | ✓ | ✓ | – | – | n/a |
 | `mailto:`, `smtp://` | – | – | – | ✓ | – | – | – |
 
-Reading the columns as features:
-
-- **receive** — can be a source. Mail cannot; asking fails before any
-  connection is made.
-- **list** — `mpt ls` works, and so do [patterns](../guide/many-files.md#patterns-on-the-far-side)
-  and `-r` with this scheme as the *source*.
-- **size** — the source can say how large it is, which the progress percentage
-  and `--skip-existing` need. SCP cannot, which has
-  [consequences](ssh.md#scp-needs-the-size-up-front).
-- **rename** — [atomic finishing](../guide/reliability.md#a-file-appears-only-when-it-is-whole)
-  is possible. S3 does not need it: an object appears only when its upload is
-  complete.
-- **append** — [`--resume`](../guide/reliability.md#resuming-with---resume)
-  is possible.
-- **mkdir** — can be the *target* of a tree copy. S3 needs nothing, since a key
-  containing slashes is all a directory ever was there.
+| Column | Meaning | Feature it enables |
+|---|---|---|
+| receive | can be a source | any download; mail cannot, and asking fails before any connection |
+| list | the directory can be listed | `mpt ls`, [patterns](../guide/many-files.md#patterns-on-the-far-side), `-r` with this scheme as the *source* |
+| size | the source can say how large it is | the progress percentage, `--skip-existing`; SCP cannot, with [consequences](ssh.md#scp-needs-the-size-up-front) |
+| send | can be a target | any upload |
+| rename | a file can be renamed in place | [atomic finishing](../guide/reliability.md#a-file-appears-only-when-it-is-whole); S3 does not need it, an object appears only when its upload is complete |
+| append | a file can be appended to | [`--resume`](../guide/reliability.md#resuming-with---resume) |
+| mkdir | directories can be created | `-r` with this scheme as the *target*; S3 needs nothing, a key containing slashes is all a directory ever was there |
 
 ## Options every scheme understands
 

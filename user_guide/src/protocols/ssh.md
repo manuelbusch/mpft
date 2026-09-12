@@ -1,7 +1,7 @@
 # SFTP and SCP
 
 Two ways over one SSH connection. Both authenticate the same way, check the
-host key the same way, and take the same options — they differ in what they can
+host key the same way, and take the same options. They differ in what they can
 do once connected.
 
 ```
@@ -21,14 +21,14 @@ mpt cp sftp://deploy@srv.example.com/var/log/app.log ./
 | directory creation as a tree target | ✓ | ✓ (via `mkdir -p`) |
 
 SFTP is a subsystem of the same SSH server, so if `sftp://` fails where
-`scp://` works, the server has the subsystem switched off — which is the one
-situation where SCP earns its place.
+`scp://` works, the server has the subsystem switched off. That is the one
+situation where SCP is the right choice.
 
 ### SCP needs the size up front
 
 The SCP protocol announces the length of a file before sending it. When the
-source cannot say how large it is — a `scp://` source, an HTTP server without a
-`Content-Length` — the payload has to be spooled first:
+source cannot say how large it is (a `scp://` source, an HTTP server without a
+`Content-Length`), the payload has to be spooled first:
 
 ```
 WARN scp: source size unknown, spooling to a temporary file
@@ -55,11 +55,11 @@ local user name.
 
 ## Authentication
 
-The order is worth knowing, because it is not simply a list of fallbacks:
+The order is not simply a list of fallbacks:
 
-1. **The key you named** — `?key=`, `[ssh] key`, or `$MPT_SSH_KEY`. If a key is
-   named, the agent and the default keys are **not** tried: naming a key means
-   using that key.
+1. **The key you named** with `?key=`, `[ssh] key`, or `$MPT_SSH_KEY`. If a
+   key is named, the agent and the default keys are **not** tried: naming a
+   key means using that key.
 2. **The ssh-agent**, if `$SSH_AUTH_SOCK` points at one and no key was named.
 3. **`~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`**, in that order, again only if
    no key was named.
@@ -85,8 +85,9 @@ what went wrong.
 Encrypted keys take their passphrase from the option, the configuration, or
 `$MPT_SSH_KEY_PASSPHRASE`. The key types that work are **Ed25519**, **ECDSA**
 on P-256 and P-384, and **RSA**, which is offered with the SHA-2 signature
-algorithm the server asks for. Keys in OpenSSH's own format are read directly — what `ssh-keygen` writes by
-default — and PuTTY's `.ppk` has to be converted first.
+algorithm the server asks for. Keys in OpenSSH's own format, which is what
+`ssh-keygen` writes by default, are read directly; PuTTY's `.ppk` has to be
+converted first.
 
 ### Certificates
 
@@ -106,9 +107,8 @@ If the server refuses the certificate, the bare key still gets its turn.
 ## Host keys
 
 The host key is checked before authentication, strictly by default: an unknown
-host, a changed key or an unreadable `known_hosts` aborts the connection. That
-is the first wall a new server puts up, and [Securing the
-connection](../trust/connections.md#ssh-host-keys) covers all of it — first
+host, a changed key or an unreadable `known_hosts` aborts the connection.
+[Securing the connection](../trust/connections.md#ssh-host-keys) covers first
 contact, `accept-new`, pinning with `?hostkey=` for CI, and what a changed key
 means.
 

@@ -2,7 +2,7 @@
 
 Two schemes over the same client. `http(s)://` is a plain GET or PUT against
 whatever the server offers. `webdav(s)://` speaks the WebDAV extensions on top,
-which is what turns a URL into something that can be listed, renamed and walked.
+which add listing, renaming and directory creation.
 
 ```
 mpt cp https://example.com/data.json ./
@@ -23,7 +23,7 @@ mpt ls webdavs://cloud.example.com/documents/
 
 Nextcloud, ownCloud, SharePoint and most NAS boxes speak WebDAV on the same
 URL where plain HTTP would work, so the choice is usually just which prefix you
-type. `webdavs://` is WebDAV over HTTPS, which is what you want.
+type. `webdavs://` is WebDAV over HTTPS and is the form to use.
 
 Plain HTTP cannot rename, so a PUT goes straight to the final name. There is no
 `.mpt-part` and no `--resume`; an interrupted upload leaves whatever the server
@@ -49,8 +49,8 @@ mpt cp report.pdf "https://api.example.com/upload?header=X-Api-Key:abc123&header
 ```
 
 `?header=Name:Value` may be repeated. Anything else in the query that `mpt`
-does not recognise is **passed through to the server**, which is what lets an
-API's own parameters travel:
+does not recognise is **passed through to the server**, so an API's own
+parameters travel:
 
 ```
 mpt cp https://api.example.com/export?format=csv&range=30d ./
@@ -85,9 +85,10 @@ token = { cmd = "az account get-access-token --resource https://graph.microsoft.
 
 The token is sent as `Authorization: Bearer …`, the header is marked sensitive
 so it stays out of logs, and it is fetched once per run. Anything that prints a
-token on standard output works the same way —
-`gcloud auth print-access-token`, a script wrapped around a client-credentials
-flow. See [Credentials and secrets](../configuration/credentials.md).
+token on standard output works the same way, such as
+`gcloud auth print-access-token` or a script wrapped around a
+client-credentials flow. See [Credentials and
+secrets](../configuration/credentials.md).
 
 A device-code flow with a refresh token in the key store is not built in; a
 script that prints a token covers the same ground.
@@ -104,7 +105,7 @@ error: listing https://example.com/files/?timeout=30: scheme 'http' cannot list
 
 The same applies to [patterns](../guide/many-files.md#patterns-on-the-far-side)
 and to `-r` with an HTTP source: both need a listing. An HTTP *target* refuses
-`-r` for the other reason — there are no directories to create.
+`-r` because there are no directories to create.
 
 ## Sizes and progress
 
