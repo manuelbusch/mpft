@@ -17,7 +17,9 @@ cargo install cargo-license && cargo license
 ## Versions
 
 This guide describes `mpt` 0.1. `mpt --version` prints the version of the
-binary you have, and `mpt --help` is authoritative for that binary.
+binary you have, and `mpt --help` is authoritative for that binary. What is
+kept stable between versions, and what is not, is under [Compatibility and
+stability](../reference/compatibility.md).
 
 ## Reporting a problem
 

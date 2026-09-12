@@ -42,6 +42,7 @@
 - [Relaying through a fast host](server/relay.md)
 - [Running a relay](server/relay-host.md)
 - [Relay topologies: sources and chains](server/relay-topologies.md)
+- [Deployment patterns](server/deployment.md)
 
 # Security
 
@@ -59,12 +60,14 @@
 
 # Reference
 
+- [Quick reference](reference/quick-reference.md)
 - [Command line](reference/cli.md)
 - [Configuration keys](reference/configuration.md)
 - [Environment variables](reference/environment.md)
 - [Exit codes](reference/exit-codes.md)
 - [HTTP API](reference/api.md)
 - [Relay protocol](reference/relay-protocol.md)
+- [Compatibility and stability](reference/compatibility.md)
 
 # Appendix
 
