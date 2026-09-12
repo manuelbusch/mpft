@@ -183,8 +183,8 @@ max_signature_age = "7d"
 ```
 
 ```
-error: signature: the checksum file was signed 30s ago (2026-09-10T18:05:31Z),
-       longer than the 1s the policy allows
+error: signature: the checksum file was signed 9d ago (2026-09-01T18:05:31Z),
+       longer than the 7d the policy allows
 ```
 
 With the policy set, a checksum file with no signing time is refused as well —

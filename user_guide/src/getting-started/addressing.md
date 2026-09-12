@@ -109,9 +109,10 @@ The habit worth forming is to quote every URL that contains a `?`. A plain
 
 Two details inside a URL:
 
-- **`~` is expanded by `mpt`, not by the shell**, in option values such as
-  `key=~/.ssh/id_ed25519`. Inside quotes the shell leaves it alone, and `mpt`
-  resolves it against the home directory.
+- **`~` in a URL option is expanded by `mpt`.** Inside quotes the shell leaves
+  `key=~/.ssh/id_ed25519` alone, and `mpt` resolves the `~` against the home
+  directory. A `~` in a *local path* (`~/reports/x.pdf`) is the shell's job as
+  usual, so write that one unquoted.
 - **Special characters are percent-encoded.** A subject with a space is
   `subject=Report%20KW36`; a `+` in a host-key fingerprint may be written as
   `%2B` or left as it is.

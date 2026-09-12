@@ -96,18 +96,36 @@ mpt cp big.iso "sftp://srv.example.com/in/?timeout=120"     # this endpoint only
 `--timeout 0` disables it, which is worth doing only when something else will
 notice a hung process.
 
-`--retries <n>` repeats the connect-and-login phase when it fails for a
-transient reason. That is safe at any time, because no payload has been read
-yet, and it needs no other flag. A rejected password is never retried. Per
-endpoint the option is `?connect_retries=`.
+Two kinds of retry exist, and they are set differently:
+
+| | Connect retries | Transfer retries |
+|---|---|---|
+| What is repeated | connecting and logging in | the whole transfer to a target that failed |
+| Safe because | no payload has been read yet | the payload is replayed from memory |
+| Needs | nothing else | `--cache` |
+| Set by | `?connect_retries=<n>` on the endpoint, `[defaults] retries`, or `--retries` | `--retries <n>` or `[defaults] retries` |
+
+`--retries <n>` sets **both**: it puts `connect_retries=<n>` on every endpoint
+that does not name its own, and it retries failed transfers. Because the
+second part needs the payload again, `--retries` without `--cache` is an
+error:
+
+```
+$ mpt --retries 2 cp report.pdf sftp://srv.example.com/in/
+error: copy report.pdf: invalid option 'retries': retries need the memory cache (a stream cannot be replayed)
+```
+
+For connect retries alone, put `?connect_retries=` on the endpoint or in its
+[profile](../configuration/profiles.md). A rejected password is never retried;
+only transient failures are.
 
 The wait between attempts grows by a second each time: one second before the
 second attempt, two before the third. Three retries therefore delay a doomed
 connection by six seconds, which is worth knowing when a job has a window to
 finish in.
 
-Retrying the **transfer** itself is a different matter and needs `--cache`; see
-[Several targets at once](fan-out.md#retrying-a-target).
+[Several targets at once](fan-out.md#retrying-a-target) covers transfer
+retries in a fan-out.
 
 ## Checksums in passing
 

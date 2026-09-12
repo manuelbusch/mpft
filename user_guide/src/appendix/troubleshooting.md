@@ -139,7 +139,7 @@ The checksum file does not match its signature — it was changed after signing.
 An `allowed_signers` option (`valid-before`, `valid-after`) excludes the moment
 the file was signed.
 
-**`signature: the checksum file was signed 30s ago …, longer than the 1s the policy allows`** [3]
+**`signature: the checksum file was signed 9d ago …, longer than the 7d the policy allows`** [3]
 
 `[policy] max_signature_age`. Either the file really is old, or the limit is
 too tight for how often it is regenerated.

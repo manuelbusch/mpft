@@ -59,7 +59,8 @@ mpt cp --cache --retries 2 big.iso sftp://a.example.com/ sftp://b.example.com/
 Above the limit the copy fails rather than quietly spilling to disk:
 
 ```
-error: copy report.pdf: I/O error: payload exceeds the configured limit of 1024 bytes
+$ mpt cp --cache big.iso backup/
+error: copy big.iso: I/O error: payload exceeds the configured limit of 268435456 bytes
 ```
 
 Reach for `--cache` when you want retries, when a target needs the size before

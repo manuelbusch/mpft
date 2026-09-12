@@ -67,7 +67,7 @@ Trusted keys for `--check`, used when no `--verify-*` flag is given.
 | Key | Type | Meaning |
 |---|---|---|
 | `allowed_signers` | path | OpenSSH `allowed_signers` file |
-| `keyring` | path | armored OpenPGP public keyring |
+| `keyring` | path | armoured OpenPGP public keyring |
 
 ## `[ssh]`
 

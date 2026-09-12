@@ -27,6 +27,11 @@ first line of standard input, which is what a secret manager's output pipes
 into. All three apply to `sftp`, `scp`, `ftp`, `ftps`, `http` and `webdav`; SMTP
 has `MPT_SMTP_PASSWORD` of its own.
 
+There is also `--password <PW>`, which is the same as `MPT_PASSWORD` but
+stands in the argument list and is therefore visible in `ps` like a password
+in the URL. It is there for a quick test on a machine nobody shares; the other
+three are the ones to use.
+
 SSH keys need none of this. If no key is named, `mpt` tries a running ssh-agent
 and then `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`; a password is only used if
 none of that worked. Naming a key with `?key=`, `[ssh] key` or `$MPT_SSH_KEY`

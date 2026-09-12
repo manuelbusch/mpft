@@ -159,10 +159,12 @@ narrower statement should not be overruled by a broader one. The
 [echoed target](../getting-started/addressing.md#the-echo-tells-you-what-was-used)
 in the result line always shows what was actually used.
 
-Environment variables sit between the two: they are read where no URL option
-and no configuration key says otherwise. `MPT_SSH_KEY`, `MPT_PASSWORD`,
-`MPT_SMTP_URL` and the AWS variables are the common ones; the
-[reference](../reference/environment.md) has them all.
+Environment variables slot in between a URL option and the configuration
+file: a URL option wins over a variable, and a variable wins over the
+configuration key it corresponds to. `MPT_SSH_KEY` therefore overrides
+`[ssh] key`, and `MPT_SSH_USER` overrides `[ssh] user`, but `?key=` in the URL
+overrides both. `MPT_PASSWORD`, `MPT_SMTP_URL` and the AWS variables are the
+other common ones; the [reference](../reference/environment.md) has them all.
 
 ## Values with a shape
 

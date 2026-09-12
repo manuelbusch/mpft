@@ -144,10 +144,12 @@ to a fan-out target that has stopped draining its queue. A transfer that is
 making progress is never cut off, however long it takes; one that has genuinely
 stalled fails instead of hanging until someone notices.
 
-`--retries` repeats connecting and logging in, which is safe because no payload
-has been read at that point, and only for transient failures — a rejected
-password is not retried. That covers the common overnight case of a server that
-is briefly unreachable while it restarts.
+`?connect_retries=<n>` repeats connecting and logging in, which is safe because
+no payload has been read at that point, and only for transient failures — a
+rejected password is not retried. That covers the common overnight case of a
+server that is briefly unreachable while it restarts. `--retries` sets it too,
+but also retries the transfer itself and therefore needs `--cache`;
+[Time limits](copying.md#time-limits) has the two side by side.
 
 Both can be set per endpoint (`?timeout=`, `?connect_retries=`) and in the
 [configuration file](../configuration/file.md), which is the right place for a

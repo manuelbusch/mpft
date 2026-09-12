@@ -24,9 +24,9 @@ mpt cp report.pdf backup/                 # backup/report.pdf
 mpt cp report.pdf backup/2026-09-10.pdf   # renamed
 ```
 
-`~` is expanded by the shell, not by `mpt`, so it works unquoted and does not
-work inside a quoted URL option unless that option is one `mpt` expands itself
-(`?key=~/.ssh/id_ed25519` is).
+A `~` in a local path is expanded by the shell, so write it unquoted. Inside a
+URL option (`?key=~/.ssh/id_ed25519`) it is `mpt` that expands it; see
+[Quoting](../getting-started/addressing.md#quoting).
 
 ## Directories are created
 

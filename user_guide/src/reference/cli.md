@@ -77,7 +77,7 @@ subcommand.
 |---|---|---|
 | `--cache` | off | hold the whole payload in memory instead of streaming; never spills to disk |
 | `--cache-limit <SIZE>` | `256M` | maximum payload for `--cache`; a larger one fails |
-| `--retries <N>` | `0` | retry a failed transfer this often; needs `--cache`. Connecting is retried without it |
+| `--retries <N>` | `0` | retry a failed transfer this often **and** set `?connect_retries=N` on every endpoint without its own. Needs `--cache`; for connect retries alone use the URL option |
 | `--chunk <SIZE>` | `64K` | chunk size when streaming to several targets; values below 1024 are raised to it |
 | `--queue <N>` | `16` | chunks buffered per target before the source is paused; at least 1 |
 | `--timeout <SECONDS>` | `30` | inactivity limit for connections, streams and stalled targets. `0` disables it |
@@ -99,7 +99,7 @@ subcommand.
 | `--check` | verify against a checksum file beside the source; fails if there is none |
 | `--sign <SPEC>` | sign the checksum file. `ssh`, `ssh:<key>` or `pgp:<key.asc>`. Implies `--hash sha256` |
 | `--verify-signers <FILE>` | require an OpenSSH signature from a key in this `allowed_signers`. Implies `--check` |
-| `--verify-keyring <FILE>` | require an OpenPGP signature from a key in this armored keyring. Implies `--check` |
+| `--verify-keyring <FILE>` | require an OpenPGP signature from a key in this armoured keyring. Implies `--check` |
 
 ### Job flags
 
