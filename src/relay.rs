@@ -45,7 +45,7 @@ use crate::options::{JobOptions, LocateFn};
 use crate::stream::{Idle, ReaderEndpoint};
 use crate::transfer::{CopyOptions, FanoutReport, Progress};
 use crate::{Endpoint, Error, Location, Result};
-use broker::RemoteBroker;
+use broker::{RemoteBroker, Who};
 use protocol::{ChannelReader, Frame};
 
 /// The protocol version a client sends.
@@ -246,6 +246,8 @@ pub struct Relay {
 struct Prepared {
     header: Header,
     copy: CopyOptions,
+    /// The source the relay reads itself, when the header names one.
+    source: Option<Box<dyn Endpoint>>,
     targets: Vec<Box<dyn Endpoint>>,
     /// Set for an on-demand session: where the `need` lines come from.
     broker: Option<Arc<RemoteBroker>>,
@@ -294,6 +296,7 @@ where
     let Prepared {
         header,
         copy,
+        source,
         targets,
         broker,
     } = prepared;
@@ -308,29 +311,48 @@ where
     let name = header.name.clone().unwrap_or_default();
     let size = header.size.unwrap_or(0);
     let idle = copy.tee.send_timeout;
-    let (src, intake) = if header.v == 1 {
-        (
-            ReaderEndpoint::new(&name, size, Idle::maybe(reader, idle)),
+    let (src, intake): (Result<Box<dyn Endpoint>>, _) = match source {
+        // The relay reads the source; the client's input carries control
+        // frames only, and its end means the client is gone.
+        Some(source) => {
+            let (data_tx, _data_rx) = mpsc::unbounded_channel();
+            let (_consumed_tx, consumed_rx) = mpsc::unbounded_channel();
+            let intake = tokio::spawn(intake(
+                reader,
+                data_tx,
+                consumed_rx,
+                lines.clone(),
+                broker.clone(),
+                Some(cancel.clone()),
+            ));
+            (Ok(source), Some(intake))
+        }
+        None if header.v == 1 => (
+            ReaderEndpoint::new(&name, size, Idle::maybe(reader, idle))
+                .map(|r| Box::new(r) as Box<dyn Endpoint>),
             None,
-        )
-    } else {
-        let (data_tx, data_rx) = mpsc::unbounded_channel();
-        let (consumed_tx, consumed_rx) = mpsc::unbounded_channel();
-        let intake = tokio::spawn(intake(
-            reader,
-            data_tx,
-            consumed_rx,
-            lines.clone(),
-            broker.clone(),
-        ));
-        (
-            ReaderEndpoint::new(
-                &name,
-                size,
-                Idle::maybe(ChannelReader::new(data_rx, consumed_tx), idle),
-            ),
-            Some(intake),
-        )
+        ),
+        None => {
+            let (data_tx, data_rx) = mpsc::unbounded_channel();
+            let (consumed_tx, consumed_rx) = mpsc::unbounded_channel();
+            let intake = tokio::spawn(intake(
+                reader,
+                data_tx,
+                consumed_rx,
+                lines.clone(),
+                broker.clone(),
+                None,
+            ));
+            (
+                ReaderEndpoint::new(
+                    &name,
+                    size,
+                    Idle::maybe(ChannelReader::new(data_rx, consumed_tx), idle),
+                )
+                .map(|r| Box::new(r) as Box<dyn Endpoint>),
+                Some(intake),
+            )
+        }
     };
     let src = match src {
         Ok(s) => s,
@@ -348,7 +370,7 @@ where
     };
     let progress = copy.progress.clone().unwrap_or_else(Progress::new);
     let refs: Vec<&dyn Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
-    let copying = crate::transfer::copy_many(&src, &refs, &copy);
+    let copying = crate::transfer::copy_many(src.as_ref(), &refs, &copy);
     tokio::pin!(copying);
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -404,13 +426,15 @@ where
 /// Version 2: take the frames apart. Data goes to the copy through
 /// `data`, an answer to the broker, and what the copy has consumed (told
 /// on `consumed`) comes back to the client as credit. Ends when the
-/// client's input does, or when it sends what it may not.
+/// client's input does, or when it sends what it may not; `on_end` is
+/// cancelled then, for a copy whose source is not that input.
 async fn intake<R: AsyncRead + Unpin>(
     mut reader: R,
     data: mpsc::UnboundedSender<Vec<u8>>,
     mut consumed: mpsc::UnboundedReceiver<u64>,
     lines: mpsc::UnboundedSender<Value>,
     broker: Option<Arc<RemoteBroker>>,
+    on_end: Option<CancellationToken>,
 ) {
     let granted = Arc::new(AtomicU64::new(protocol::INITIAL_CREDIT));
     // The copy drops its reader once it has the payload, which ends the
@@ -463,6 +487,9 @@ async fn intake<R: AsyncRead + Unpin>(
     crediting.abort();
     if let Some(broker) = &broker {
         broker.close();
+    }
+    if let Some(cancel) = on_end {
+        cancel.cancel();
     }
 }
 
@@ -520,13 +547,7 @@ async fn prepare<R: AsyncRead + Unpin>(
         }
     }
     match (&header.src, &header.name, &header.size) {
-        (None, Some(_), Some(_)) => {}
-        (Some(_), None, None) => {
-            return Err(Error::invalid_option(
-                "src",
-                "a source the relay reads itself is not supported yet",
-            ));
-        }
+        (None, Some(_), Some(_)) | (Some(_), None, None) => {}
         (Some(_), _, _) => {
             return Err(Error::invalid_option(
                 "src",
@@ -565,7 +586,10 @@ async fn prepare<R: AsyncRead + Unpin>(
     let o = &header.options;
     for (name, set) in [
         ("check", o.check == Some(true)),
-        ("delete_source", o.delete_source == Some(true)),
+        (
+            "delete_source",
+            o.delete_source == Some(true) && header.src.is_none(),
+        ),
         ("resume", o.resume == Some(true)),
         ("recursive", o.recursive == Some(true)),
         ("allow_empty", o.allow_empty == Some(true)),
@@ -579,7 +603,8 @@ async fn prepare<R: AsyncRead + Unpin>(
     let mut copy = header.options.apply(&relay.copy, relay.cache_limit)?;
     copy.check = false;
     copy.verify = None;
-    copy.delete_source = false;
+    // Only a source the relay opened itself can be deleted by it.
+    copy.delete_source = header.src.is_some() && o.delete_source == Some(true);
     copy.cancel = Some(cancel.clone());
     copy.progress = Some(Progress::new());
     let broker = match header.credentials {
@@ -597,12 +622,34 @@ async fn prepare<R: AsyncRead + Unpin>(
     let mut targets = Vec::with_capacity(header.dst.len());
     for (i, dst) in header.dst.iter().enumerate() {
         let loc = (relay.locate)(dst.url(), &header.options)?;
-        let loc = with_broker(loc, &broker, i)?;
+        let loc = with_broker(loc, &broker, Who::Dst(i))?;
         targets.push(crate::protocols::open(with_agent(loc, &agent))?);
     }
+    let source = match &header.src {
+        None => None,
+        Some(url) => {
+            let loc = (relay.locate)(url, &header.options)?;
+            let loc = with_broker(loc, &broker, Who::Src)?;
+            let source = crate::protocols::open(with_agent(loc, &agent))?;
+            if relay.max_size > 0
+                && let Some(size) = source.receiver()?.size().await?
+                && size > relay.max_size
+            {
+                return Err(Error::invalid_option(
+                    "src",
+                    format!(
+                        "{size} bytes is more than this relay takes ({})",
+                        relay.max_size
+                    ),
+                ));
+            }
+            Some(source)
+        }
+    };
     Ok(Prepared {
         header,
         copy,
+        source,
         targets,
         broker,
     })
@@ -625,7 +672,7 @@ fn with_agent(mut loc: Location, agent: &Option<Arc<dyn AgentSource>>) -> Locati
 fn with_broker(
     mut loc: Location,
     broker: &Option<Arc<RemoteBroker>>,
-    index: usize,
+    who: Who,
 ) -> Result<Location> {
     let Some(broker) = broker else {
         return Ok(loc);
@@ -638,7 +685,10 @@ fn with_broker(
     }
     if loc.scheme() != crate::Scheme::File {
         let mut brokers = loc.brokers().clone();
-        brokers.password = Some(broker.for_dst(index));
+        brokers.password = Some(match who {
+            Who::Src => broker.for_src(),
+            Who::Dst(i) => broker.for_dst(i),
+        });
         loc.set_brokers(brokers);
     }
     Ok(loc)
@@ -824,6 +874,75 @@ mod tests {
         assert_eq!(lines.last().unwrap()["report"]["ok"], true);
     }
 
+    /// A source named in the header is read by the relay, and deleted by
+    /// it when asked; nothing of the file comes over the pipe. The
+    /// client's input stays open until the relay is done.
+    #[tokio::test]
+    async fn a_source_the_relay_reads_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("in").join("x.bin");
+        std::fs::create_dir_all(src.parent().unwrap()).unwrap();
+        let payload: Vec<u8> = (0..100_000u32).map(|i| (i % 229) as u8).collect();
+        std::fs::write(&src, &payload).unwrap();
+        let out = dir.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let header = json!({
+            "src": src.display().to_string(),
+            "dst": [format!("{}/", out.display())],
+            "options": { "delete_source": true, "hash": "sha256" }
+        });
+        let (mut client_in, server_in) = duplex(64 << 10);
+        let (server_out, mut client_out) = duplex(64 << 10);
+        let feed = tokio::spawn(async move {
+            let mut line = header.to_string();
+            line.push('\n');
+            client_in.write_all(line.as_bytes()).await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let read = tokio::spawn(async move {
+            let mut text = String::new();
+            client_out.read_to_string(&mut text).await.unwrap();
+            text
+        });
+        let code = run(&relay(0), server_in, server_out).await;
+        feed.abort();
+        let text = read.await.unwrap();
+        let lines: Vec<serde_json::Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(code, 0, "{lines:?}");
+        assert_eq!(std::fs::read(out.join("x.bin")).unwrap(), payload);
+        assert!(out.join("x.bin.sha256").exists());
+        assert!(!src.exists(), "the relay deletes the source it read");
+        let report = &lines.last().unwrap()["report"];
+        assert_eq!(report["source_removed"], true, "{report}");
+        assert_eq!(report["bytes_read"], payload.len());
+
+        // Too large for this relay: refused before anything is read.
+        std::fs::write(&src, &payload).unwrap();
+        let header =
+            json!({ "src": src.display().to_string(), "dst": [format!("{}/", out.display())] });
+        let (mut client_in, server_in) = duplex(64 << 10);
+        let (server_out, mut client_out) = duplex(64 << 10);
+        let feed = tokio::spawn(async move {
+            let mut line = header.to_string();
+            line.push('\n');
+            client_in.write_all(line.as_bytes()).await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let read = tokio::spawn(async move {
+            let mut text = String::new();
+            client_out.read_to_string(&mut text).await.unwrap();
+            text
+        });
+        let code = run(&relay(4_096), server_in, server_out).await;
+        feed.abort();
+        let text = read.await.unwrap();
+        assert_eq!(code, 2, "{text}");
+        assert!(text.contains("more than this relay takes"), "{text}");
+    }
+
     /// A version 2 client that stops before the size is reached fails the
     /// targets like a short version 1 payload does.
     #[tokio::test]
@@ -868,6 +987,7 @@ mod tests {
             (json!({ "v": 1, "name": "x", "size": 1, "dst": [target.clone()], "credentials": "on-demand" }).to_string(), "credentials"),
             (json!({ "name": "x", "dst": [target.clone()] }).to_string(), "header"),
             (json!({ "src": "/x", "name": "x", "size": 1, "dst": [target.clone()] }).to_string(), "src"),
+            (json!({ "v": 1, "src": "/x", "dst": [target.clone()] }).to_string(), "src"),
             (json!({ "name": "x", "size": 1, "dst": [target.clone()], "credentials": "on-demand" }).to_string(), "credentials"),
             (json!({ "name": "x", "size": 1, "dst": ["ftp://u:pw@h/"], "credentials": "on-demand" }).to_string(), "credentials"),
             (json!({ "name": "x", "size": 1, "dst": [target.clone()], "options": { "check": true } }).to_string(), "check"),

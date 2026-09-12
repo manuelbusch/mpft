@@ -54,6 +54,7 @@ impl Relay {
         }
         let child = command
             .env_remove("MPT_CONFIG")
+            .current_dir(d)
             .arg("-vv")
             .arg("relay")
             .arg("--listen")
@@ -349,7 +350,10 @@ fn a_stranger_a_bad_target_and_a_refused_flag() {
 
     let (code, _, err) = relay.cp("client", &["--check", src.to_str().unwrap(), "mpt://a/"]);
     assert_eq!(code, 2, "{err}");
-    assert!(err.contains("--check is not available with a relay"), "{err}");
+    assert!(
+        err.contains("--check is not available with a relay"),
+        "{err}"
+    );
 
     // A key file of a target stays on this side; without the forwarded
     // agent standing in for it, the relay could not use it.
@@ -585,6 +589,76 @@ fn a_profile_picks_its_relay_and_the_rest_is_copied_from_here() {
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("via    mpt://relay"), "{text}");
+}
+
+/// A source whose profile names a relay is read by that relay: a path
+/// only the relay can see arrives at a target behind the same relay, and
+/// nothing of the file comes through here. --delete-source is the
+/// relay's to do then, and refused when any target is not its own.
+#[test]
+fn a_source_behind_the_relay_is_pulled_by_it() {
+    let relay = Relay::start(&[]);
+    // `in/x.bin` relative to the relay's directory; this process runs
+    // elsewhere and has no such file.
+    std::fs::create_dir_all(relay.path("in")).unwrap();
+    let payload: Vec<u8> = (0..300_000u32).map(|i| (i % 223) as u8).collect();
+    std::fs::write(relay.path("in/x.bin"), &payload).unwrap();
+    assert!(!Path::new("in/x.bin").exists());
+    std::fs::write(
+        relay.path("pull.toml"),
+        format!(
+            "[profiles.relay]\nurl = \"{}\"\n\
+             [profiles.src]\nurl = \"in/x.bin\"\nvia = \"mpt://relay\"\n\
+             [profiles.a]\nurl = \"{}/a/\"\nvia = \"mpt://relay\"\n\
+             [profiles.b]\nurl = \"{}/b/\"\n",
+            relay.via("client"),
+            relay.dir.path().display(),
+            relay.dir.path().display()
+        ),
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
+            .env_remove("MPT_CONFIG")
+            .arg("--config")
+            .arg(relay.path("pull.toml"))
+            .args(["--color", "never", "--json", "-vv", "cp"])
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let (code, out, err) = run(&["mpt://src", "mpt://a/"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(std::fs::read(relay.path("a/x.bin")).unwrap(), payload);
+    let report: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(report["ok"], true, "{report}");
+    assert_eq!(report["source"], "in/x.bin");
+    assert_eq!(report["bytes_read"], payload.len());
+    assert!(relay.path("in/x.bin").exists());
+    assert!(!err.contains("spooling"), "{err}");
+
+    // A target from here next to it: refused with --delete-source, since
+    // the relay cannot know when the other target has the file.
+    let (code, _, err) = run(&["--delete-source", "mpt://src", "mpt://a/", "mpt://b/"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(
+        err.contains("behind the relay that reads the source"),
+        "{err}"
+    );
+    assert!(relay.path("in/x.bin").exists());
+
+    // Every target behind the relay: it reads, writes, and removes.
+    let (code, out, err) = run(&["--delete-source", "mpt://src", "mpt://a/again/"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(std::fs::read(relay.path("a/again/x.bin")).unwrap(), payload);
+    let report: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(report["source_removed"], true, "{report}");
+    assert!(!relay.path("in/x.bin").exists());
 }
 
 fn it_env(name: &str) -> Option<String> {

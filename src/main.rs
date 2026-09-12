@@ -2135,7 +2135,6 @@ impl Via {
     ) -> anyhow::Result<Via> {
         for (flag, set) in [
             ("--check", opts.check),
-            ("--delete-source", opts.delete_source),
             ("--resume", opts.resume),
             ("--sign", opts.sign.is_some()),
         ] {
@@ -2174,6 +2173,19 @@ impl Via {
 
         let started = std::time::Instant::now();
         let parts = mpt::relay::plan::plan(&job, &self.table);
+        // The source is deleted by whoever read it, once every target has
+        // the file — which only the relay that reads it can know, and only
+        // when it writes every target.
+        if copy.delete_source && !matches!(parts.as_slice(), [Part::Pull { .. }]) {
+            return (
+                job,
+                Err(mpt::Error::invalid_option(
+                    "delete-source",
+                    "with a relay, only when the source and every target are behind \
+                     the relay that reads the source (a profile with `via`)",
+                )),
+            );
+        }
         let open = |loc: &mpt::Location| mpt::protocols::open(loc.clone());
         let running = parts.iter().enumerate().map(|(n, part)| {
             let job = &job;
@@ -2196,9 +2208,12 @@ impl Via {
                         mpt::batch::run_job(&local, &open, &copy).await
                     }
                     Part::Upload { relay, .. } => self.send(relay, &job.src, &dsts, &copy).await,
+                    Part::Pull { relay, dsts: hops } if hops.iter().all(|(_, v)| v.is_none()) => {
+                        self.pull(relay, &job.src, &dsts, &copy).await
+                    }
                     Part::Pull { .. } => Err(mpt::Error::invalid_option(
                         "via",
-                        "a source behind a relay is not supported yet",
+                        "a target behind another relay than the source's is not supported yet",
                     )),
                 };
                 PartOutcome { indexes, result }
@@ -2209,49 +2224,139 @@ impl Via {
         (job, Ok(report))
     }
 
-    /// The targets as the header carries them: every part encoded, the
+    /// The targets as the header carries them.
+    fn header_targets(&self, dsts: &[mpt::Location]) -> mpt::Result<Vec<String>> {
+        dsts.iter().map(|d| self.header_url(d)).collect()
+    }
+
+    /// An endpoint as the header carries it: every part encoded, the
     /// password left out when the relay is to ask for it, and the key
     /// files left out when the forwarded agent stands in for them.
-    fn header_targets(&self, dsts: &[mpt::Location]) -> mpt::Result<Vec<String>> {
-        let mut dst = Vec::with_capacity(dsts.len());
-        for loc in dsts {
-            let mut loc = loc.clone();
-            for opt in ["key", "cert", "passphrase"] {
-                if loc.opt(opt).is_some() {
-                    if self.agent && loc.scheme().is_ssh() {
-                        loc.remove_option(opt);
-                        continue;
-                    }
+    fn header_url(&self, loc: &mpt::Location) -> mpt::Result<String> {
+        let mut loc = loc.clone();
+        for opt in ["key", "cert", "passphrase"] {
+            if loc.opt(opt).is_some() {
+                if self.agent && loc.scheme().is_ssh() {
+                    loc.remove_option(opt);
+                    continue;
+                }
+                return Err(mpt::Error::invalid_option(
+                    opt,
+                    format!(
+                        "{loc}: names a file on this machine, which the relay cannot read; \
+                         let the relay use the forwarded agent (without --no-via-agent), \
+                         give the target a password, or put the key on the relay"
+                    ),
+                ));
+            }
+        }
+        match self.credentials {
+            mpt::relay::Credentials::Header => Ok(loc.unmasked()),
+            mpt::relay::Credentials::OnDemand => {
+                // The store signs every request itself, so a key handed
+                // out per login has nowhere to go.
+                if loc.scheme() == Scheme::S3 && loc.password().is_some() {
                     return Err(mpt::Error::invalid_option(
-                        opt,
+                        "via-credentials",
                         format!(
-                            "{loc}: names a file on this machine, which the relay cannot read; \
-                             let the relay use the forwarded agent (without --no-via-agent), \
-                             give the target a password, or put the key on the relay"
+                            "{loc}: an S3 key cannot be asked for on demand; use \
+                             --via-credentials header for this target"
                         ),
                     ));
                 }
-            }
-            let loc = &loc;
-            match self.credentials {
-                mpt::relay::Credentials::Header => dst.push(loc.unmasked()),
-                mpt::relay::Credentials::OnDemand => {
-                    // The store signs every request itself, so a key
-                    // handed out per login has nowhere to go.
-                    if loc.scheme() == Scheme::S3 && loc.password().is_some() {
-                        return Err(mpt::Error::invalid_option(
-                            "via-credentials",
-                            format!(
-                                "{loc}: an S3 key cannot be asked for on demand; use \
-                                 --via-credentials header for this target"
-                            ),
-                        ));
-                    }
-                    dst.push(loc.without_password().unmasked());
-                }
+                Ok(loc.without_password().unmasked())
             }
         }
-        Ok(dst)
+    }
+
+    /// The agent to offer for `endpoints`, when an SSH endpoint could use
+    /// it, with the keys this side would have used for them.
+    fn responder(&self, endpoints: &[mpt::Location]) -> Option<mpt::relay::agent::Responder> {
+        (self.agent && endpoints.iter().any(|d| d.scheme().is_ssh()))
+            .then(|| mpt::relay::agent::Responder::for_targets(endpoints))
+    }
+
+    /// The relay reads `src` itself and writes `dsts`; nothing of the
+    /// file passes through here. With `delete_source` the relay removes
+    /// the source once every target has it.
+    async fn pull(
+        &self,
+        relay: &mpt::Location,
+        src: &mpt::Location,
+        dsts: &[mpt::Location],
+        copy: &CopyOptions,
+    ) -> mpt::Result<mpt::FanoutReport> {
+        let dst = self.header_targets(dsts)?;
+        let mut everyone = dsts.to_vec();
+        everyone.push(src.clone());
+        let responder = self.responder(&everyone);
+        let mut options = self.options.clone();
+        options.delete_source = copy.delete_source.then_some(true);
+        let header = mpt::relay::Header {
+            v: mpt::relay::VERSION,
+            src: Some(self.header_url(src)?),
+            name: None,
+            size: None,
+            dst: dst.into_iter().map(mpt::relay::Dst::Url).collect(),
+            credentials: self.credentials,
+            agent: responder.is_some(),
+            options,
+        };
+        let cancel = copy.cancel.clone().unwrap_or_default();
+        let session = mpt::relay::client::Session {
+            via: relay,
+            header: &header,
+            body: None,
+            cancel: &cancel,
+            answer: std::sync::Arc::new(mpt::relay::broker::JobAnswerer {
+                src: Some(src.clone()),
+                dsts: dsts.to_vec(),
+            }),
+            agent: responder
+                .map(|r| std::sync::Arc::new(r) as std::sync::Arc<dyn mpt::broker::AgentSource>),
+        };
+        let mut report = self.outcome(session, copy).await?;
+        report.source = src.to_string();
+        Ok(report)
+    }
+
+    /// Run the session and turn what the relay said into a report, or
+    /// into the error it refused with.
+    async fn outcome(
+        &self,
+        session: mpt::relay::client::Session<'_>,
+        copy: &CopyOptions,
+    ) -> mpt::Result<mpt::FanoutReport> {
+        // The relay's progress is this side's when nothing is uploaded:
+        // what it reports as read is added to the shared count.
+        let counter = match (&copy.progress, session.body.is_none()) {
+            (Some(p), true) => Some(p.counter()),
+            _ => None,
+        };
+        let mut last = 0;
+        let outcome = mpt::relay::client::send(session, |line| {
+            if let (Some(c), Some(read)) = (&counter, line["progress"]["read"].as_u64()) {
+                c.fetch_add(
+                    read.saturating_sub(last),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                last = read;
+            }
+        })
+        .await?;
+        for line in outcome.stderr.lines().filter(|l| !l.trim().is_empty()) {
+            tracing::debug!("relay: {line}");
+        }
+        if let Some(err) = &outcome.error {
+            return Err(mpt::report::error_from_json(err));
+        }
+        let report = outcome.report.ok_or_else(|| {
+            mpt::Error::Remote(format!(
+                "the relay ended with exit {} and no report",
+                outcome.exit
+            ))
+        })?;
+        mpt::report::fanout_from_json(&report)
     }
 
     /// Read `src` here and upload it once to `relay`, which writes `dsts`.
@@ -2279,10 +2384,7 @@ impl Via {
                 (mpt::stream::boxed(file), n)
             }
         };
-        // The agent is offered when an SSH target could use it, with the
-        // keys this side would have used for those targets.
-        let responder = (self.agent && dsts.iter().any(|d| d.scheme().is_ssh()))
-            .then(|| mpt::relay::agent::Responder::for_targets(dsts));
+        let responder = self.responder(dsts);
         let header = mpt::relay::Header {
             credentials: self.credentials,
             agent: responder.is_some(),
@@ -2307,20 +2409,7 @@ impl Via {
             agent: responder
                 .map(|r| std::sync::Arc::new(r) as std::sync::Arc<dyn mpt::broker::AgentSource>),
         };
-        let outcome = mpt::relay::client::send(session, |_| {}).await?;
-        for line in outcome.stderr.lines().filter(|l| !l.trim().is_empty()) {
-            tracing::debug!("relay: {line}");
-        }
-        if let Some(err) = &outcome.error {
-            return Err(mpt::report::error_from_json(err));
-        }
-        let report = outcome.report.ok_or_else(|| {
-            mpt::Error::Remote(format!(
-                "the relay ended with exit {} and no report",
-                outcome.exit
-            ))
-        })?;
-        let mut report = mpt::report::fanout_from_json(&report)?;
+        let mut report = self.outcome(session, copy).await?;
         // The relay knows the file by name only; here it is what was given.
         report.source = src.to_string();
         Ok(report)
