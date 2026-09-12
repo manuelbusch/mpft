@@ -41,7 +41,7 @@ impl Relay {
         let port_file = d.join("port");
         let child = Command::new(env!("CARGO_BIN_EXE_mpt"))
             .env_remove("MPT_CONFIG")
-            .arg("-v")
+            .arg("-vv")
             .arg("relay")
             .arg("--listen")
             .arg("127.0.0.1:0")
@@ -89,12 +89,18 @@ impl Relay {
     /// Run `mpt --config client.toml cp --via … <args>` and return the exit
     /// code, stdout and stderr.
     fn cp(&self, key: &str, args: &[&str]) -> (i32, String, String) {
+        self.cp_with(key, &[], args)
+    }
+
+    /// The same with `global` flags in front of `cp`.
+    fn cp_with(&self, key: &str, global: &[&str], args: &[&str]) -> (i32, String, String) {
         let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
             .env_remove("MPT_CONFIG")
             .arg("--config")
             .arg(self.path("client.toml"))
             .arg("--color")
             .arg("never")
+            .args(global)
             .args(["cp", "--via", &self.via(key)])
             .args(args)
             .output()
@@ -344,32 +350,176 @@ fn a_stranger_a_bad_target_and_a_refused_flag() {
     assert!(err.contains("?key="), "{err}");
 }
 
+/// Both sides have to agree on where the passwords come from; a mismatch
+/// is refused with a message that names both settings.
+#[test]
+fn the_credential_modes_have_to_match() {
+    let src_dir = tempfile::tempdir().unwrap();
+    let src = src_dir.path().join("x.txt");
+    std::fs::write(&src, b"hello").unwrap();
+
+    let header_relay = Relay::start(&[]);
+    let (code, _, err) = header_relay.cp(
+        "client",
+        &[
+            "--via-credentials",
+            "on-demand",
+            src.to_str().unwrap(),
+            "mpt://a/",
+        ],
+    );
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("credentials = \"header\""), "{err}");
+    assert!(err.contains("--credentials on-demand"), "{err}");
+    assert!(!header_relay.path("a/x.txt").exists());
+
+    let demand_relay = Relay::start(&["--credentials", "on-demand"]);
+    let (code, _, err) = demand_relay.cp("client", &[src.to_str().unwrap(), "mpt://a/"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("--via-credentials on-demand"), "{err}");
+    assert!(!demand_relay.path("a/x.txt").exists());
+
+    // Matching, with local targets that never ask: the copy goes through.
+    let (code, _, err) = demand_relay.cp(
+        "client",
+        &[
+            "--via-credentials",
+            "on-demand",
+            src.to_str().unwrap(),
+            "mpt://a/",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        std::fs::read(demand_relay.path("a/x.txt")).unwrap(),
+        b"hello"
+    );
+
+    // A relay set to `any` takes both.
+    let any_relay = Relay::start(&["--credentials", "any"]);
+    for mode in ["header", "on-demand"] {
+        let (code, _, err) = any_relay.cp(
+            "client",
+            &["--via-credentials", mode, src.to_str().unwrap(), "mpt://a/"],
+        );
+        assert_eq!(code, 0, "{mode}: {err}");
+    }
+}
+
+/// With on-demand credentials the relay never sees a password: the client
+/// sends the target without it, the relay asks at every login (FTP logs
+/// in more than once for one file) and the answer is not kept.
+#[test]
+fn passwords_are_asked_for_on_demand() {
+    let Some(ftp) = std::env::var("MPT_IT_FTP").ok().filter(|s| !s.is_empty()) else {
+        eprintln!("skipping: MPT_IT_FTP not set");
+        return;
+    };
+    let (base, query) = ftp.split_once('?').unwrap_or((&ftp, ""));
+    let name = format!("on_demand_{}.bin", std::process::id());
+    let target = format!("{}/{name}?{query}", base.trim_end_matches('/'));
+    let password = base
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split_once('@'))
+        .and_then(|(userinfo, _)| userinfo.split_once(':'))
+        .map(|(_, pw)| pw.to_string())
+        .expect("MPT_IT_FTP carries a password");
+
+    let relay = Relay::start(&["--credentials", "on-demand"]);
+    let payload: Vec<u8> = (0..500_000u32).map(|i| (i % 233) as u8).collect();
+    let src = relay.path("report.bin");
+    std::fs::write(&src, &payload).unwrap();
+    let (code, _, err) = relay.cp_with(
+        "client",
+        &["-vv"],
+        &[
+            "--via-credentials",
+            "on-demand",
+            src.to_str().unwrap(),
+            &target,
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let asked = err.matches("password asked for by the relay").count();
+    assert!(asked >= 2, "asked {asked} times:\n{err}");
+    let log = relay.log();
+    assert!(
+        !log.contains(&password),
+        "the relay logged the password:\n{log}"
+    );
+    assert!(
+        log.matches("asking the client for the password").count() >= 2,
+        "{log}"
+    );
+
+    // What arrived is the file, read back without the relay.
+    let back = relay.path("back.bin");
+    let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .env_remove("MPT_CONFIG")
+        .args(["--color", "never", "cp", &target])
+        .arg(&back)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read(&back).unwrap(), payload);
+}
+
 #[test]
 fn the_relay_reads_stdin_without_a_server() {
     let dir = tempfile::tempdir().unwrap();
     let target = format!("{}/", dir.path().display());
-    let header = serde_json::json!({ "name": "piped.txt", "size": 6, "dst": [target] });
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mpt"))
-        .env_remove("MPT_CONFIG")
-        .arg("relay")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    {
-        use std::io::Write;
-        let mut stdin = child.stdin.take().unwrap();
-        writeln!(stdin, "{header}").unwrap();
-        stdin.write_all(b"hello\n").unwrap();
-    }
-    let out = child.wait_with_output().unwrap();
-    assert_eq!(out.status.code(), Some(0));
-    let text = String::from_utf8_lossy(&out.stdout);
-    let last: serde_json::Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
-    assert_eq!(last["report"]["ok"], true, "{text}");
+    let run = |header: serde_json::Value, body: &[u8]| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_mpt"))
+            .env_remove("MPT_CONFIG")
+            .arg("relay")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        {
+            use std::io::Write;
+            let mut stdin = child.stdin.take().unwrap();
+            writeln!(stdin, "{header}").unwrap();
+            stdin.write_all(body).unwrap();
+        }
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(out.status.code(), Some(0));
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        let last: serde_json::Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+        assert_eq!(last["report"]["ok"], true, "{text}");
+    };
+    // Version 1: the bytes as they are.
+    run(
+        serde_json::json!({ "v": 1, "name": "piped.txt", "size": 6, "dst": [&target] }),
+        b"hello\n",
+    );
     assert_eq!(
         std::fs::read(dir.path().join("piped.txt")).unwrap(),
+        b"hello\n"
+    );
+    // Version 2: in frames, a control frame among them.
+    let mut body = Vec::new();
+    for (kind, payload) in [
+        (1u8, &b"hel"[..]),
+        (2, br#"{"password": {"id": 1}}"#),
+        (1, b"lo\n"),
+    ] {
+        body.push(kind);
+        body.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        body.extend_from_slice(payload);
+    }
+    run(
+        serde_json::json!({ "name": "framed.txt", "size": 6, "dst": [&target] }),
+        &body,
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("framed.txt")).unwrap(),
         b"hello\n"
     );
 }

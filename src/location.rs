@@ -442,6 +442,15 @@ impl Location {
         self.password_from_url
     }
 
+    /// The same location without its password: for handing it to a relay
+    /// that is to ask for the password instead.
+    pub fn without_password(&self) -> Location {
+        let mut loc = self.clone();
+        loc.password = None;
+        loc.password_from_url = false;
+        loc
+    }
+
     /// The brokers this location asks at login time.
     pub fn brokers(&self) -> &Brokers {
         &self.brokers

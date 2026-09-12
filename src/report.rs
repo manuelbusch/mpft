@@ -134,9 +134,61 @@ pub fn error_json(err: &Error) -> Value {
     json!({ "kind": err.kind(), "message": err.to_string() })
 }
 
+/// The error back from its JSON, close enough to keep its exit code: a
+/// relay's refusal is a usage error here too, its authentication failure
+/// one of ours. Everything else is a `relay` transport error carrying the
+/// message.
+pub fn error_from_json(v: &Value) -> Error {
+    let message = v["message"].as_str().unwrap_or("refused");
+    let after = |prefix: &str| message.strip_prefix(prefix).unwrap_or(message).to_string();
+    match v["kind"].as_str().unwrap_or("") {
+        "cancelled" => Error::Cancelled,
+        "auth" => Error::Auth(after("authentication failed: ")),
+        "invalid_option" => {
+            // "invalid option 'name': reason"
+            let rest = after("invalid option '");
+            match rest.split_once("': ") {
+                Some((name, reason)) => Error::InvalidOption {
+                    name: name.to_string(),
+                    reason: reason.to_string(),
+                },
+                None => Error::InvalidOption {
+                    name: "header".into(),
+                    reason: message.to_string(),
+                },
+            }
+        }
+        "invalid_url" => Error::InvalidUrl(after("invalid URL: ")),
+        "config" => Error::Config(after("configuration: ")),
+        _ => Error::Transport {
+            protocol: "relay",
+            source: message.into(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_error_keeps_its_kind_on_the_way_back() {
+        let back = |e: &Error| error_from_json(&error_json(e));
+        let e = back(&Error::invalid_option("credentials", "no"));
+        assert!(
+            matches!(&e, Error::InvalidOption { name, reason } if name == "credentials" && reason == "no"),
+            "{e}"
+        );
+        assert_eq!(e.exit_code(), 2);
+        assert_eq!(
+            back(&Error::Auth("x".into())).to_string(),
+            "authentication failed: x"
+        );
+        assert!(matches!(back(&Error::Cancelled), Error::Cancelled));
+        let e = back(&Error::Remote("gone".into()));
+        assert_eq!(e.to_string(), "relay: remote error: gone");
+        assert_eq!(e.exit_code(), 1);
+    }
 
     #[test]
     fn a_report_survives_the_round_trip() {

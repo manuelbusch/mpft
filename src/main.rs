@@ -237,6 +237,11 @@ struct RelayArgs {
     /// Refuse uploads larger than this, e.g. 10G; 0 for no limit
     #[arg(long, value_name = "SIZE", value_parser = parse_size)]
     max_size: Option<u64>,
+    /// How clients may send the targets' passwords: header (in the URLs,
+    /// the default), on-demand (asked of the client at every login, never
+    /// held here) or any
+    #[arg(long, value_name = "MODE", value_parser = parse_relay_credentials)]
+    credentials: Option<mpt::relay::RelayCredentials>,
     /// Write the port actually bound to this file (for --listen 127.0.0.1:0)
     #[arg(long, value_name = "PATH")]
     port_file: Option<PathBuf>,
@@ -312,6 +317,12 @@ struct BatchArgs {
     #[cfg(feature = "relay")]
     #[arg(long)]
     no_via: bool,
+    /// How the relay gets the targets' passwords: header (in the URLs it
+    /// is sent, the default) or on-demand (asked of this side at every
+    /// login, never held by the relay; the relay has to allow it)
+    #[cfg(feature = "relay")]
+    #[arg(long, value_name = "MODE", value_parser = parse_credentials)]
+    via_credentials: Option<mpt::relay::Credentials>,
 }
 
 impl BatchArgs {
@@ -493,6 +504,9 @@ struct Settings {
     parallel: usize,
     /// The relay `cp` and `batch` send through, if any.
     via: Option<String>,
+    /// How that relay gets the targets' passwords.
+    #[cfg(feature = "relay")]
+    via_credentials: mpt::relay::Credentials,
 }
 
 impl Settings {
@@ -535,6 +549,16 @@ impl Settings {
                 .batch_args()
                 .and_then(|b| b.via(d.via.as_deref()))
                 .map(String::from),
+            #[cfg(feature = "relay")]
+            via_credentials: match cli.cmd.batch_args().and_then(|b| b.via_credentials) {
+                Some(mode) => mode,
+                None => match &d.via_credentials {
+                    Some(v) => v
+                        .parse()
+                        .map_err(|e| anyhow::anyhow!("[defaults] via_credentials: {e}"))?,
+                    None => mpt::relay::Credentials::Header,
+                },
+            },
             parallel: match cli
                 .cmd
                 .batch_args()
@@ -1128,6 +1152,13 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                     (None, Some(v)) => mpt::config::parse_size(v)
                         .map_err(|e| anyhow::anyhow!("[relay] max_size: {e}"))?,
                     (None, None) => 0,
+                },
+                credentials: match (args.credentials, &section.credentials) {
+                    (Some(mode), _) => mode,
+                    (None, Some(v)) => v
+                        .parse()
+                        .map_err(|e| anyhow::anyhow!("[relay] credentials: {e}"))?,
+                    (None, None) => mpt::relay::RelayCredentials::Header,
                 },
                 cancel: cancel.clone(),
             };
@@ -1855,6 +1886,16 @@ fn print_removed(report: &mpt::FanoutReport, prefix: &str) -> Option<(u8, String
 }
 
 /// Parse sizes like `512`, `64K`, `256M`, `2G` (binary units).
+#[cfg(feature = "relay")]
+fn parse_credentials(s: &str) -> Result<mpt::relay::Credentials, String> {
+    s.parse().map_err(|e: mpt::Error| e.to_string())
+}
+
+#[cfg(feature = "relay")]
+fn parse_relay_credentials(s: &str) -> Result<mpt::relay::RelayCredentials, String> {
+    s.parse().map_err(|e: mpt::Error| e.to_string())
+}
+
 fn parse_size(s: &str) -> Result<u64, String> {
     mpt::config::parse_size(s)
 }
@@ -2022,6 +2063,9 @@ struct Via {
     /// What the header carries: the flags of this side that a relay can
     /// honour.
     options: mpt::options::JobOptions,
+    /// Whether the targets' passwords travel in the header or are asked
+    /// for at every login.
+    credentials: mpt::relay::Credentials,
 }
 
 #[cfg(feature = "relay")]
@@ -2053,6 +2097,7 @@ impl Via {
         }
         Ok(Via {
             relay,
+            credentials: settings.via_credentials,
             options: mpt::options::JobOptions {
                 hash: opts.hash.map(|h| h.name().to_string()),
                 atomic: (!opts.atomic).then_some(false),
@@ -2076,9 +2121,11 @@ impl Via {
         (job, result)
     }
 
-    async fn send(&self, job: &mpt::Job, copy: &CopyOptions) -> mpt::Result<mpt::FanoutReport> {
-        let mut dst = Vec::with_capacity(job.dsts.len());
-        for loc in &job.dsts {
+    /// The targets as the header carries them: every part encoded, and
+    /// the password left out when the relay is to ask for it.
+    fn header_targets(&self, dsts: &[mpt::Location]) -> mpt::Result<Vec<String>> {
+        let mut dst = Vec::with_capacity(dsts.len());
+        for loc in dsts {
             for opt in ["key", "cert", "passphrase"] {
                 if loc.opt(opt).is_some() {
                     return Err(mpt::Error::invalid_option(
@@ -2090,8 +2137,29 @@ impl Via {
                     ));
                 }
             }
-            dst.push(loc.unmasked());
+            match self.credentials {
+                mpt::relay::Credentials::Header => dst.push(loc.unmasked()),
+                mpt::relay::Credentials::OnDemand => {
+                    // The store signs every request itself, so a key
+                    // handed out per login has nowhere to go.
+                    if loc.scheme() == Scheme::S3 && loc.password().is_some() {
+                        return Err(mpt::Error::invalid_option(
+                            "via-credentials",
+                            format!(
+                                "{loc}: an S3 key cannot be asked for on demand; use \
+                                 --via-credentials header for this target"
+                            ),
+                        ));
+                    }
+                    dst.push(loc.without_password().unmasked());
+                }
+            }
         }
+        Ok(dst)
+    }
+
+    async fn send(&self, job: &mpt::Job, copy: &CopyOptions) -> mpt::Result<mpt::FanoutReport> {
+        let dst = self.header_targets(&job.dsts)?;
         let name = job
             .src
             .filename()
@@ -2110,11 +2178,9 @@ impl Via {
             }
         };
         let header = mpt::relay::Header {
-            v: mpt::relay::VERSION,
-            name,
-            size,
-            dst,
+            credentials: self.credentials,
             options: self.options.clone(),
+            ..mpt::relay::Header::stream(name, size, dst)
         };
         // The upload is what the progress line counts.
         let body: mpt::ByteStream = match &copy.progress {
@@ -2122,15 +2188,22 @@ impl Via {
             None => stream,
         };
         let cancel = copy.cancel.clone().unwrap_or_default();
-        let outcome = mpt::relay::client::send(&self.relay, &header, body, &cancel, |_| {}).await?;
+        let session = mpt::relay::client::Session {
+            via: &self.relay,
+            header: &header,
+            body: Some(body),
+            cancel: &cancel,
+            answer: std::sync::Arc::new(mpt::relay::broker::JobAnswerer {
+                src: None,
+                dsts: job.dsts.clone(),
+            }),
+        };
+        let outcome = mpt::relay::client::send(session, |_| {}).await?;
         for line in outcome.stderr.lines().filter(|l| !l.trim().is_empty()) {
             tracing::debug!("relay: {line}");
         }
         if let Some(err) = &outcome.error {
-            return Err(mpt::Error::Transport {
-                protocol: "relay",
-                source: err["message"].as_str().unwrap_or("refused").into(),
-            });
+            return Err(mpt::report::error_from_json(err));
         }
         let report = outcome.report.ok_or_else(|| {
             mpt::Error::Remote(format!(
@@ -2239,6 +2312,7 @@ fn show_config(cfg: &mpt::Config) {
         "defaults".log = d.log,
         "defaults".parallel = d.parallel,
         "defaults".via = d.via,
+        "defaults".via_credentials = d.via_credentials,
         "policy".known_hosts = p.known_hosts,
         "policy".refuse_plaintext_auth = p.refuse_plaintext_auth,
         "policy".refuse_insecure_tls = p.refuse_insecure_tls,
@@ -2274,6 +2348,7 @@ fn show_config(cfg: &mpt::Config) {
         "relay".parallel = cfg.relay.parallel,
         "relay".grace = cfg.relay.grace,
         "relay".max_size = cfg.relay.max_size,
+        "relay".credentials = cfg.relay.credentials,
     );
     if !cfg.server.profiles.is_empty() {
         rows.push(("[server] profiles".into(), cfg.server.profiles.join(", ")));
@@ -2319,6 +2394,46 @@ mod tests {
         assert_eq!(s.queue, 4, "the configuration fills in the rest");
         assert_eq!(s.cache_limit, 1 << 30);
         assert_eq!(s.chunk, 64 << 10, "and the built-in value the rest");
+    }
+
+    /// What the relay is sent depends on the credential mode: the
+    /// password in the URL, or no password at all.
+    #[cfg(feature = "relay")]
+    #[test]
+    fn the_header_carries_passwords_only_when_asked_to() {
+        let via = |credentials| Via {
+            relay: mpt::Location::parse("ssh://relay/").unwrap(),
+            options: Default::default(),
+            credentials,
+        };
+        let dsts = vec![
+            mpt::Location::parse("ftp://u:s3cret@h/in/").unwrap(),
+            mpt::Location::parse("/tmp/x/").unwrap(),
+        ];
+        let header = via(mpt::relay::Credentials::Header)
+            .header_targets(&dsts)
+            .unwrap();
+        assert_eq!(header, vec!["ftp://u:s3cret@h/in/", "/tmp/x/"]);
+        let demand = via(mpt::relay::Credentials::OnDemand)
+            .header_targets(&dsts)
+            .unwrap();
+        assert_eq!(demand, vec!["ftp://u@h/in/", "/tmp/x/"]);
+
+        let s3 = vec![mpt::Location::parse("s3://bucket/x?endpoint=http://h").unwrap()];
+        assert!(
+            via(mpt::relay::Credentials::OnDemand)
+                .header_targets(&s3)
+                .is_ok()
+        );
+        let mut keyed = s3.clone();
+        keyed[0].set_password("k");
+        let err = via(mpt::relay::Credentials::OnDemand)
+            .header_targets(&keyed)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("--via-credentials header"),
+            "{err}"
+        );
     }
 
     #[test]

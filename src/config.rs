@@ -108,6 +108,10 @@ pub struct Defaults {
     /// working directory's file, which would otherwise choose where every
     /// target's credentials go.
     pub via: Option<String>,
+    /// How the relay gets the targets' passwords: `header` (in the URLs
+    /// it is sent, the default) or `on-demand` (asked of this side at
+    /// every login, never held). The relay has to allow it as well.
+    pub via_credentials: Option<String>,
 }
 
 /// `[policy]` — rules that hold for every endpoint of the process.
@@ -238,6 +242,9 @@ pub struct RelaySection {
     pub grace: Option<String>,
     /// Refuse uploads larger than this, with a unit: `10G`; 0 for no limit.
     pub max_size: Option<String>,
+    /// Which way a client may send the targets' passwords: `header` (the
+    /// default), `on-demand` or `any`.
+    pub credentials: Option<String>,
 }
 
 /// Which URLs the server accepts in a job.
@@ -484,12 +491,21 @@ impl Config {
             warnings: cfg.warnings,
             ..Config::default()
         };
-        if local.defaults.via.take().is_some() {
-            local.warnings.push(format!(
-                "{}: ignoring [defaults] via — a configuration file in the working \
-                 directory may not choose the relay that receives the targets' credentials",
-                path.display()
-            ));
+        let via_keys = [
+            ("via", local.defaults.via.take().is_some()),
+            (
+                "via_credentials",
+                local.defaults.via_credentials.take().is_some(),
+            ),
+        ];
+        for (key, set) in via_keys {
+            if set {
+                local.warnings.push(format!(
+                    "{}: ignoring [defaults] {key} — a configuration file in the working \
+                     directory may not choose the relay that receives the targets' credentials",
+                    path.display()
+                ));
+            }
         }
         if !ignored.is_empty() {
             local.warnings.push(format!(
@@ -608,12 +624,14 @@ impl Config {
             parallel,
             grace,
             max_size,
+            credentials,
         } = &self.relay;
         if host_key.is_some()
             || authorized_keys.is_some()
             || parallel.is_some()
             || grace.is_some()
             || max_size.is_some()
+            || credentials.is_some()
         {
             out.push("relay");
         }

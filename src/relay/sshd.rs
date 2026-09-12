@@ -276,6 +276,7 @@ async fn relay_on(shared: &Shared, channel: Channel<Msg>, handle: &Handle, id: C
                     cache_limit: shared.relay.cache_limit,
                     locate: Arc::clone(&shared.relay.locate),
                     max_size: shared.relay.max_size,
+                    credentials: shared.relay.credentials,
                     cancel: shared.abort.child_token(),
                 };
                 let code = super::run(&relay, reader, &mut writer).await;
@@ -395,8 +396,24 @@ mod tests {
     use super::*;
     use crate::protocols::ssh::{SshConfig, disconnect};
     use crate::relay::Header;
-    use crate::relay::client::send;
+    use crate::relay::broker::NoAnswer;
+    use crate::relay::client::{Session, send};
     use crate::transfer::CopyOptions;
+
+    fn session<'a>(
+        via: &'a crate::Location,
+        header: &'a Header,
+        body: Vec<u8>,
+        cancel: &'a CancellationToken,
+    ) -> Session<'a> {
+        Session {
+            via,
+            header,
+            body: Some(Box::pin(std::io::Cursor::new(body))),
+            cancel,
+            answer: Arc::new(NoAnswer),
+        }
+    }
 
     /// A listener on a free port with `keys` authorized; the client's key
     /// file and the port come back with it.
@@ -439,6 +456,7 @@ mod tests {
                 cache_limit: 1 << 20,
                 locate: Arc::new(|url, _| crate::Location::parse(url)),
                 max_size: 0,
+                credentials: super::super::RelayCredentials::Header,
                 cancel: CancellationToken::new(),
             });
             let cancel = CancellationToken::new();
@@ -487,21 +505,17 @@ mod tests {
         let out = f.dir.path().join("out");
         std::fs::create_dir_all(&out).unwrap();
         let payload: Vec<u8> = (0..300_000u32).map(|i| (i % 253) as u8).collect();
-        let header = Header {
-            v: 1,
-            name: "blob.bin".into(),
-            size: payload.len() as u64,
-            dst: vec![format!("{}/", out.display())],
-            options: Default::default(),
-        };
+        let header = Header::stream(
+            "blob.bin",
+            payload.len() as u64,
+            vec![format!("{}/", out.display())],
+        );
         let mut lines = Vec::new();
-        let outcome = send(
-            &f.via("client_key"),
-            &header,
-            Box::pin(std::io::Cursor::new(payload.clone())),
-            &CancellationToken::new(),
-            |l| lines.push(l.clone()),
-        )
+        let via = f.via("client_key");
+        let cancel = CancellationToken::new();
+        let outcome = send(session(&via, &header, payload.clone(), &cancel), |l| {
+            lines.push(l.clone())
+        })
         .await
         .unwrap();
         assert_eq!(outcome.exit, 0, "{outcome:?}");
@@ -512,25 +526,44 @@ mod tests {
         f.stop().await;
     }
 
+    /// More than the initial credit: the relay has to grant more as the
+    /// target takes the data, or the client's feeder waits forever.
+    #[tokio::test]
+    async fn credit_keeps_a_large_payload_flowing() {
+        let f = Fixture::start(1).await;
+        let out = f.dir.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let payload: Vec<u8> = (0..(super::super::protocol::INITIAL_CREDIT as usize * 2 + 777))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let header = Header::stream(
+            "big.bin",
+            payload.len() as u64,
+            vec![format!("{}/", out.display())],
+        );
+        let via = f.via("client_key");
+        let cancel = CancellationToken::new();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(30),
+            send(session(&via, &header, payload.clone(), &cancel), |_| {}),
+        )
+        .await
+        .expect("the copy does not stall")
+        .unwrap();
+        assert_eq!(outcome.exit, 0, "{outcome:?}");
+        assert_eq!(std::fs::read(out.join("big.bin")).unwrap(), payload);
+        f.stop().await;
+    }
+
     #[tokio::test]
     async fn a_stranger_is_refused_and_so_is_a_shell() {
         let f = Fixture::start(1).await;
-        let header = Header {
-            v: 1,
-            name: "x".into(),
-            size: 1,
-            dst: vec!["/tmp/".into()],
-            options: Default::default(),
-        };
-        let err = send(
-            &f.via("stranger_key"),
-            &header,
-            Box::pin(std::io::Cursor::new(vec![0u8])),
-            &CancellationToken::new(),
-            |_| {},
-        )
-        .await
-        .unwrap_err();
+        let header = Header::stream("x", 1, vec!["/tmp/".into()]);
+        let via = f.via("stranger_key");
+        let cancel = CancellationToken::new();
+        let err = send(session(&via, &header, vec![0u8], &cancel), |_| {})
+            .await
+            .unwrap_err();
         assert!(matches!(err, Error::Auth(_)), "{err}");
 
         // The right key, but something other than the relay.
@@ -557,22 +590,12 @@ mod tests {
     #[tokio::test]
     async fn a_refused_header_comes_back_as_the_relays_error() {
         let f = Fixture::start(1).await;
-        let header = Header {
-            v: 1,
-            name: "x".into(),
-            size: 1,
-            dst: vec![],
-            options: Default::default(),
-        };
-        let outcome = send(
-            &f.via("client_key"),
-            &header,
-            Box::pin(std::io::Cursor::new(vec![0u8])),
-            &CancellationToken::new(),
-            |_| {},
-        )
-        .await
-        .unwrap();
+        let header = Header::stream("x", 1, vec![]);
+        let via = f.via("client_key");
+        let cancel = CancellationToken::new();
+        let outcome = send(session(&via, &header, vec![0u8], &cancel), |_| {})
+            .await
+            .unwrap();
         assert_eq!(outcome.exit, 2);
         assert_eq!(outcome.error.as_ref().unwrap()["kind"], "invalid_option");
         f.stop().await;
