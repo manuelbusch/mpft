@@ -251,6 +251,10 @@ impl Endpoint for MailEndpoint {
 
 #[async_trait]
 impl Sender for MailEndpoint {
+    fn places_sidecar(&self) -> bool {
+        false
+    }
+
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()> {
         let cfg = self.smtp_config()?;
         let server = &cfg.server;

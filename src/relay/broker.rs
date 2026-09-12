@@ -25,6 +25,8 @@ use crate::{Error, Location, Result};
 pub enum Who {
     Src,
     Dst(usize),
+    /// The relay the target at this index is reached through.
+    Via(usize),
 }
 
 /// A `need` line: what the relay asks for.
@@ -44,10 +46,14 @@ impl Need {
         if value.get("need")?.as_str()? != "password" {
             return None;
         }
-        let who = match value.get("dst").and_then(Value::as_u64) {
-            Some(i) => Who::Dst(i as usize),
-            None if value.get("src").and_then(Value::as_bool) == Some(true) => Who::Src,
-            None => return None,
+        let who = match (
+            value.get("dst").and_then(Value::as_u64),
+            value.get("via").and_then(Value::as_u64),
+        ) {
+            (Some(i), _) => Who::Dst(i as usize),
+            (None, Some(i)) => Who::Via(i as usize),
+            (None, None) if value.get("src").and_then(Value::as_bool) == Some(true) => Who::Src,
+            (None, None) => return None,
         };
         Some(Need {
             id: value.get("id")?.as_u64()?,
@@ -72,6 +78,7 @@ impl Need {
         match self.who {
             Who::Src => line["src"] = json!(true),
             Who::Dst(i) => line["dst"] = json!(i),
+            Who::Via(i) => line["via"] = json!(i),
         }
         if let Some(user) = &self.user {
             line["user"] = json!(user);
@@ -103,6 +110,8 @@ pub trait PasswordAnswerer: Send + Sync {
 pub struct JobAnswerer {
     pub src: Option<Location>,
     pub dsts: Vec<Location>,
+    /// The relay of each target, where a target has one of its own.
+    pub vias: Vec<Option<Location>>,
 }
 
 #[async_trait]
@@ -111,6 +120,7 @@ impl PasswordAnswerer for JobAnswerer {
         let loc = match need.who {
             Who::Src => self.src.as_ref(),
             Who::Dst(i) => self.dsts.get(i),
+            Who::Via(i) => self.vias.get(i).and_then(Option::as_ref),
         }
         .ok_or_else(|| {
             Error::Remote(format!(
@@ -178,6 +188,35 @@ impl RemoteBroker {
             broker: Arc::clone(self),
             who: Who::Src,
         })
+    }
+
+    /// A source for the relay of the target at `index`.
+    pub fn for_via(self: &Arc<Self>, index: usize) -> Arc<dyn PasswordSource> {
+        Arc::new(Remote {
+            broker: Arc::clone(self),
+            who: Who::Via(index),
+        })
+    }
+
+    /// Ask on behalf of a relay further along: its request about its
+    /// target `j` is this relay's request about `who`.
+    pub async fn relay(
+        &self,
+        who: Who,
+        need: &Need,
+        target: &Location,
+    ) -> Result<Option<SecretString>> {
+        let need = Need {
+            id: 0,
+            who,
+            target: need.target.clone(),
+            user: need.user.clone(),
+            attempt: need.attempt,
+        };
+        let timeout = target
+            .timeout_or(Duration::from_secs(30))
+            .unwrap_or(Duration::from_secs(30));
+        self.ask_within(need, timeout).await
     }
 
     /// Take in a control frame from the client. Anything that is not a
@@ -403,6 +442,7 @@ mod tests {
                 Location::parse("ftp://u:one@h/").unwrap(),
                 Location::parse("ftp://u@h/").unwrap(),
             ],
+            vias: vec![None, Some(Location::parse("ssh://r:two@h/").unwrap())],
         };
         let need = |who| Need {
             id: 1,
@@ -423,6 +463,25 @@ mod tests {
         assert!(answerer.answer(&need(Who::Dst(1))).await.unwrap().is_none());
         assert!(answerer.answer(&need(Who::Dst(5))).await.is_err());
         assert!(answerer.answer(&need(Who::Src)).await.is_err());
+        assert_eq!(
+            answerer
+                .answer(&need(Who::Via(1)))
+                .await
+                .unwrap()
+                .unwrap()
+                .expose_secret(),
+            "two"
+        );
+        assert!(answerer.answer(&need(Who::Via(0))).await.is_err());
+        let line = Need {
+            id: 3,
+            who: Who::Via(1),
+            target: "ssh://r@h/".into(),
+            user: Some("r".into()),
+            attempt: 1,
+        }
+        .to_line();
+        assert_eq!(Need::parse(&line).unwrap().who, Who::Via(1));
         let line = answer_line(7, &Ok(Some(SecretString::from("x"))));
         assert_eq!(line["password"]["value"], "x");
         assert_eq!(line["password"]["id"], 7);

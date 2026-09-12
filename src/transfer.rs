@@ -540,7 +540,7 @@ pub async fn copy_many(
         match digests.iter().find(|(a, _)| *a == algo) {
             Some((_, hex)) => {
                 for (t, dst) in targets.iter_mut().zip(&dsts) {
-                    if t.result.is_err() || dst.location().scheme().is_mail() {
+                    if t.result.is_err() || !dst.sender().is_ok_and(|s| s.places_sidecar()) {
                         continue;
                     }
                     match write_sidecar(*dst, algo, hex, &meta, opts.sign.as_deref()).await {

@@ -18,6 +18,11 @@
 //! that; a relay set to `header` refuses a client that asks for it, and
 //! the other way round.
 //!
+//! A target of the header may name a relay of its own. The relay then
+//! writes it through that one ([`endpoint`]), with the same protocol and
+//! the same questions — which it passes on to the client — so a file goes
+//! from one relay's reach to another's without coming through the client.
+//!
 //! Nothing is spooled: the targets read the payload as it arrives, so the
 //! slowest of them sets the pace, and the source ending early (the client
 //! going away) fails them all. Everything `cp` does — checksums, atomic
@@ -26,6 +31,7 @@
 pub mod agent;
 pub mod broker;
 pub mod client;
+pub mod endpoint;
 pub mod plan;
 pub mod protocol;
 pub mod sshd;
@@ -564,12 +570,6 @@ async fn prepare<R: AsyncRead + Unpin>(
     if header.dst.is_empty() {
         return Err(Error::invalid_option("dst", "no target given"));
     }
-    if header.dst.iter().any(|d| matches!(d, Dst::Via { .. })) {
-        return Err(Error::invalid_option(
-            "via",
-            "a target behind another relay is not supported yet",
-        ));
-    }
     relay.credentials.allows(header.credentials)?;
     if let Some(size) = header.size
         && relay.max_size > 0
@@ -622,8 +622,47 @@ async fn prepare<R: AsyncRead + Unpin>(
     let mut targets = Vec::with_capacity(header.dst.len());
     for (i, dst) in header.dst.iter().enumerate() {
         let loc = (relay.locate)(dst.url(), &header.options)?;
-        let loc = with_broker(loc, &broker, Who::Dst(i))?;
-        targets.push(crate::protocols::open(with_agent(loc, &agent))?);
+        match dst {
+            Dst::Url(_) => {
+                let loc = with_broker(loc, &broker, Who::Dst(i))?;
+                targets.push(crate::protocols::open(with_agent(loc, &agent))?);
+            }
+            // The far relay opens the target; here it is only named, and
+            // its password — if one is asked for — is the client's to give.
+            Dst::Via { url, via } => {
+                no_password_on_demand(&loc, &broker)?;
+                let hop = (relay.locate)(via, &header.options)?;
+                if hop.scheme() != crate::Scheme::Ssh {
+                    return Err(Error::invalid_option(
+                        "via",
+                        format!("{hop}: a relay needs an ssh:// URL"),
+                    ));
+                }
+                let hop = with_agent(with_broker(hop, &broker, Who::Via(i))?, &agent);
+                let answer: Arc<dyn broker::PasswordAnswerer> = match &broker {
+                    Some(broker) => Arc::new(endpoint::ChainAnswerer {
+                        broker: Arc::clone(broker),
+                        index: i,
+                        target: loc.clone(),
+                    }),
+                    None => Arc::new(broker::NoAnswer),
+                };
+                // The far relay does the same copy, but it reads no
+                // source: it cannot delete one either.
+                let mut options = header.options.clone();
+                options.delete_source = None;
+                targets.push(Box::new(endpoint::RelayEndpoint {
+                    target: loc,
+                    relay: hop,
+                    header_url: url.clone(),
+                    credentials: header.credentials,
+                    options,
+                    agent: agent.clone(),
+                    answerer: answer,
+                    cancel: cancel.clone(),
+                }));
+            }
+        }
     }
     let source = match &header.src {
         None => None,
@@ -667,6 +706,18 @@ fn with_agent(mut loc: Location, agent: &Option<Arc<dyn AgentSource>>) -> Locati
     loc
 }
 
+/// An on-demand session takes no password in a URL: that is the whole
+/// point of it.
+fn no_password_on_demand(loc: &Location, broker: &Option<Arc<RemoteBroker>>) -> Result<()> {
+    if broker.is_some() && loc.password_in_url() {
+        return Err(Error::invalid_option(
+            "credentials",
+            format!("{loc}: carries a password, but the passwords are to be asked for on demand"),
+        ));
+    }
+    Ok(())
+}
+
 /// An on-demand session's target asks the client for its password, and
 /// must not have brought one along.
 fn with_broker(
@@ -674,20 +725,16 @@ fn with_broker(
     broker: &Option<Arc<RemoteBroker>>,
     who: Who,
 ) -> Result<Location> {
+    no_password_on_demand(&loc, broker)?;
     let Some(broker) = broker else {
         return Ok(loc);
     };
-    if loc.password_in_url() {
-        return Err(Error::invalid_option(
-            "credentials",
-            format!("{loc}: carries a password, but the passwords are to be asked for on demand"),
-        ));
-    }
     if loc.scheme() != crate::Scheme::File {
         let mut brokers = loc.brokers().clone();
         brokers.password = Some(match who {
             Who::Src => broker.for_src(),
             Who::Dst(i) => broker.for_dst(i),
+            Who::Via(i) => broker.for_via(i),
         });
         loc.set_brokers(brokers);
     }

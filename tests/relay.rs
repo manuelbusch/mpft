@@ -661,6 +661,175 @@ fn a_source_behind_the_relay_is_pulled_by_it() {
     assert!(!relay.path("in/x.bin").exists());
 }
 
+/// A chain of two relays: the one that reads the source writes its own
+/// target and hands the target behind the other relay on to it over the
+/// same protocol. Nothing of the file passes through here.
+#[test]
+fn a_target_behind_another_relay_is_served_by_the_first_one() {
+    // r1 has no agent and no keys of its own: the only way into r2 is
+    // the agent this side forwards, passed on by r1.
+    let bare_home = tempfile::tempdir().unwrap();
+    let r1 = Relay::start_env(
+        &["--credentials", "any"],
+        &[("SSH_AUTH_SOCK", None), ("HOME", bare_home.path().to_str())],
+    );
+    let r2 = Relay::start(&["--credentials", "any"]);
+    // `in/chain.bin` is relative to r1's directory: only r1 can read it.
+    std::fs::create_dir_all(r1.path("in")).unwrap();
+    let payload: Vec<u8> = (0..400_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(r1.path("in/chain.bin"), &payload).unwrap();
+    assert!(!Path::new("in/chain.bin").exists());
+    std::fs::write(
+        r1.path("chain.toml"),
+        format!(
+            "[profiles.r1]\nurl = \"{}\"\n\
+             [profiles.r2]\nurl = \"{}\"\n\
+             [profiles.src]\nurl = \"in/chain.bin\"\nvia = \"mpt://r1\"\n\
+             [profiles.a]\nurl = \"{}/a/\"\nvia = \"mpt://r1\"\n\
+             [profiles.b]\nurl = \"{}/b/\"\nvia = \"mpt://r2\"\n",
+            r1.via("client"),
+            r2.via("client"),
+            r1.dir.path().display(),
+            r2.dir.path().display()
+        ),
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .env_remove("MPT_CONFIG")
+        .arg("--config")
+        .arg(r1.path("chain.toml"))
+        .args([
+            "--color", "never", "--json", "-vv", "cp", "--hash", "sha256",
+        ])
+        .args(["mpt://src", "mpt://a/", "mpt://b/"])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(0), "{err}");
+    assert_eq!(std::fs::read(r1.path("a/chain.bin")).unwrap(), payload);
+    assert_eq!(std::fs::read(r2.path("b/chain.bin")).unwrap(), payload);
+    // Each relay writes the checksum of the target it wrote itself.
+    assert!(r1.path("a/chain.bin.sha256").exists());
+    assert!(r2.path("b/chain.bin.sha256").exists());
+    let report: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
+    assert_eq!(report["ok"], true, "{report}");
+    let targets: Vec<&str> = report["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["target"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        targets,
+        vec![
+            format!("{}/a/", r1.dir.path().display()),
+            format!("{}/b/", r2.dir.path().display())
+        ]
+    );
+    assert_eq!(report["source"], "in/chain.bin");
+    assert_eq!(report["bytes_read"], payload.len());
+    assert!(!err.contains("spooling"), "{err}");
+    // One session from here to r1, one from r1 to r2, none from here to r2.
+    assert_eq!(r1.log().matches("relay login").count(), 1, "{}", r1.log());
+    assert_eq!(r2.log().matches("relay login").count(), 1, "{}", r2.log());
+    // r1 logged into r2 with the key this side holds, through the agent.
+    let log = r1.log();
+    assert!(
+        log.contains("authenticated via the forwarded ssh-agent"),
+        "{log}"
+    );
+    assert!(
+        !log.contains(&r2.path("keys/client").display().to_string()),
+        "{log}"
+    );
+}
+
+/// The password of a target two relays away comes from here as well: the
+/// far relay asks the near one, the near one asks the client, and neither
+/// of them logs or keeps it.
+#[test]
+fn a_password_for_a_chained_target_travels_through_both_relays() {
+    let Some(ftp) = it_env("MPT_IT_FTP") else {
+        eprintln!("skipping: MPT_IT_FTP not set");
+        return;
+    };
+    let (base, query) = ftp.split_once('?').unwrap_or((&ftp, ""));
+    let name = format!("chain_{}.bin", std::process::id());
+    let target = format!("{}/{name}?{query}", base.trim_end_matches('/'));
+    let password = base
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split_once('@'))
+        .and_then(|(userinfo, _)| userinfo.split_once(':'))
+        .map(|(_, pw)| pw.to_string())
+        .expect("MPT_IT_FTP carries a password");
+
+    let r1 = Relay::start(&["--credentials", "on-demand"]);
+    let r2 = Relay::start(&["--credentials", "on-demand"]);
+    std::fs::create_dir_all(r1.path("in")).unwrap();
+    let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 199) as u8).collect();
+    std::fs::write(r1.path("in/chain.bin"), &payload).unwrap();
+    std::fs::write(
+        r1.path("demand.toml"),
+        format!(
+            "[profiles.r1]\nurl = \"{}\"\n\
+             [profiles.r2]\nurl = \"{}\"\n\
+             [profiles.src]\nurl = \"in/chain.bin\"\nvia = \"mpt://r1\"\n\
+             [profiles.a]\nurl = \"{}/a/\"\nvia = \"mpt://r1\"\n\
+             [profiles.b]\nurl = \"{target}\"\nvia = \"mpt://r2\"\n",
+            r1.via("client"),
+            r2.via("client"),
+            r1.dir.path().display(),
+        ),
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .env_remove("MPT_CONFIG")
+        .arg("--config")
+        .arg(r1.path("demand.toml"))
+        .args(["--color", "never", "-vv", "cp", "--via-credentials"])
+        .args(["on-demand", "mpt://src", "mpt://a/", "mpt://b"])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(0), "{err}");
+    assert_eq!(std::fs::read(r1.path("a/chain.bin")).unwrap(), payload);
+    // The client answered, the far relay asked, and neither relay's log
+    // has the password in it.
+    let asked = err.matches("password asked for by the relay").count();
+    assert!(asked >= 2, "asked {asked} times:\n{err}");
+    assert!(
+        r2.log()
+            .matches("asking the client for the password")
+            .count()
+            >= 2,
+        "{}",
+        r2.log()
+    );
+    for (which, log) in [("r1", r1.log()), ("r2", r2.log())] {
+        assert!(
+            !log.contains(&password),
+            "{which} logged the password:\n{log}"
+        );
+    }
+
+    // What arrived at the far target is the file, read back from here.
+    let back = r1.path("back.bin");
+    let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .env_remove("MPT_CONFIG")
+        .args(["--color", "never", "cp", &target])
+        .arg(&back)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read(&back).unwrap(), payload);
+}
+
 fn it_env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|s| !s.is_empty())
 }

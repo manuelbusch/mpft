@@ -105,6 +105,13 @@ pub trait Sender: Send + Sync {
     /// Write the payload to the endpoint's path (or deliver it, for mail).
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()>;
 
+    /// Whether a checksum file can be put next to the file. Not for mail,
+    /// which attaches it instead, and not for a relay hop, which writes
+    /// its own on the far side.
+    fn places_sidecar(&self) -> bool {
+        true
+    }
+
     /// Whether the target can rename a file, which is what makes an atomic
     /// finish possible: upload to `<name>.mpt-part`, then rename into place.
     fn supports_rename(&self) -> bool {

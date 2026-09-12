@@ -2194,6 +2194,15 @@ impl Via {
                 let indexes = part.indexes();
                 let dsts: Vec<mpt::Location> =
                     indexes.iter().map(|i| job.dsts[*i].clone()).collect();
+                // A pull carries each target with the relay it is written
+                // from: none for the relay that reads the source itself.
+                let hops: Vec<(mpt::Location, Option<mpt::Location>)> = match part {
+                    Part::Pull { dsts, .. } => dsts
+                        .iter()
+                        .map(|(i, via)| (job.dsts[*i].clone(), via.clone()))
+                        .collect(),
+                    _ => Vec::new(),
+                };
                 // The bytes are counted once, by the first part.
                 let mut copy = copy.clone();
                 if n > 0 {
@@ -2208,13 +2217,7 @@ impl Via {
                         mpt::batch::run_job(&local, &open, &copy).await
                     }
                     Part::Upload { relay, .. } => self.send(relay, &job.src, &dsts, &copy).await,
-                    Part::Pull { relay, dsts: hops } if hops.iter().all(|(_, v)| v.is_none()) => {
-                        self.pull(relay, &job.src, &dsts, &copy).await
-                    }
-                    Part::Pull { .. } => Err(mpt::Error::invalid_option(
-                        "via",
-                        "a target behind another relay than the source's is not supported yet",
-                    )),
+                    Part::Pull { relay, .. } => self.pull(relay, &job.src, &hops, &copy).await,
                 };
                 PartOutcome { indexes, result }
             }
@@ -2283,12 +2286,26 @@ impl Via {
         &self,
         relay: &mpt::Location,
         src: &mpt::Location,
-        dsts: &[mpt::Location],
+        hops: &[(mpt::Location, Option<mpt::Location>)],
         copy: &CopyOptions,
     ) -> mpt::Result<mpt::FanoutReport> {
-        let dst = self.header_targets(dsts)?;
-        let mut everyone = dsts.to_vec();
-        everyone.push(src.clone());
+        // A target with a relay of its own is handed on to it; the others
+        // the pulling relay writes itself.
+        let mut dst = Vec::with_capacity(hops.len());
+        let mut everyone = vec![src.clone()];
+        for (target, via) in hops {
+            everyone.push(target.clone());
+            match via {
+                None => dst.push(mpt::relay::Dst::Url(self.header_url(target)?)),
+                Some(via) => {
+                    everyone.push(via.clone());
+                    dst.push(mpt::relay::Dst::Via {
+                        url: self.header_url(target)?,
+                        via: self.header_url(via)?,
+                    });
+                }
+            }
+        }
         let responder = self.responder(&everyone);
         let mut options = self.options.clone();
         options.delete_source = copy.delete_source.then_some(true);
@@ -2297,7 +2314,7 @@ impl Via {
             src: Some(self.header_url(src)?),
             name: None,
             size: None,
-            dst: dst.into_iter().map(mpt::relay::Dst::Url).collect(),
+            dst,
             credentials: self.credentials,
             agent: responder.is_some(),
             options,
@@ -2310,7 +2327,8 @@ impl Via {
             cancel: &cancel,
             answer: std::sync::Arc::new(mpt::relay::broker::JobAnswerer {
                 src: Some(src.clone()),
-                dsts: dsts.to_vec(),
+                dsts: hops.iter().map(|(t, _)| t.clone()).collect(),
+                vias: hops.iter().map(|(_, v)| v.clone()).collect(),
             }),
             agent: responder
                 .map(|r| std::sync::Arc::new(r) as std::sync::Arc<dyn mpt::broker::AgentSource>),
@@ -2405,6 +2423,7 @@ impl Via {
             answer: std::sync::Arc::new(mpt::relay::broker::JobAnswerer {
                 src: None,
                 dsts: dsts.to_vec(),
+                vias: Vec::new(),
             }),
             agent: responder
                 .map(|r| std::sync::Arc::new(r) as std::sync::Arc<dyn mpt::broker::AgentSource>),
