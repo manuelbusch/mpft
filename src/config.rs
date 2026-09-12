@@ -316,6 +316,10 @@ pub struct Profile {
     pub hash: Option<String>,
     /// Finish through a `.mpt-part` file.
     pub atomic: Option<bool>,
+    /// The relay this endpoint is reached through (an `ssh://` URL or a
+    /// profile with one), instead of `[defaults] via`. A source with one
+    /// is read by that relay, a target with one written by it.
+    pub via: Option<String>,
     #[serde(flatten)]
     options: BTreeMap<String, toml::Value>,
 }
@@ -414,6 +418,7 @@ impl Config {
             use secrecy::ExposeSecret;
             loc.set_password(pw.expose_secret());
         }
+        loc.set_profile(name);
         override_options(&mut loc, profile.options()?);
         if let Some(q) = query {
             override_options(
@@ -758,6 +763,13 @@ impl Config {
     pub async fn resolve_secrets(&mut self, urls: &[&str], signing: bool) -> Result<()> {
         let mut schemes = std::collections::HashSet::new();
         let mut names = Vec::new();
+        // A profile's relay is one more endpoint to log in to.
+        let mut urls: Vec<&str> = urls.to_vec();
+        let vias: Vec<&str> = urls
+            .iter()
+            .filter_map(|u| self.profiles.get(profile_name(u)?)?.via.as_deref())
+            .collect();
+        urls.extend(vias);
         for url in urls {
             if let Some(name) = profile_name(url) {
                 names.push(name.to_string());

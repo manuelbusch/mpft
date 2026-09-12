@@ -26,6 +26,7 @@
 pub mod agent;
 pub mod broker;
 pub mod client;
+pub mod plan;
 pub mod protocol;
 pub mod sshd;
 

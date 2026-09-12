@@ -349,7 +349,7 @@ fn a_stranger_a_bad_target_and_a_refused_flag() {
 
     let (code, _, err) = relay.cp("client", &["--check", src.to_str().unwrap(), "mpt://a/"]);
     assert_eq!(code, 2, "{err}");
-    assert!(err.contains("--check is not available with --via"), "{err}");
+    assert!(err.contains("--check is not available with a relay"), "{err}");
 
     // A key file of a target stays on this side; without the forwarded
     // agent standing in for it, the relay could not use it.
@@ -482,6 +482,109 @@ fn passwords_are_asked_for_on_demand() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(std::fs::read(&back).unwrap(), payload);
+}
+
+/// A profile may name its own relay: that target is written by the relay
+/// and the others from here, in one job with one report.
+#[test]
+fn a_profile_picks_its_relay_and_the_rest_is_copied_from_here() {
+    let relay = Relay::start(&[]);
+    // `a` behind the relay, `b` plain; the relay as a profile of its own.
+    std::fs::write(
+        relay.path("profile_via.toml"),
+        format!(
+            "[profiles.relay]\nurl = \"{}\"\n\
+             [profiles.a]\nurl = \"{}/a/\"\nvia = \"mpt://relay\"\n\
+             [profiles.b]\nurl = \"{}/b/\"\n",
+            relay.via("client"),
+            relay.dir.path().display(),
+            relay.dir.path().display()
+        ),
+    )
+    .unwrap();
+    let src = relay.path("mixed.bin");
+    let payload: Vec<u8> = (0..250_000u32).map(|i| (i % 211) as u8).collect();
+    std::fs::write(&src, &payload).unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
+            .env_remove("MPT_CONFIG")
+            .arg("--config")
+            .arg(relay.path("profile_via.toml"))
+            .args(["--color", "never", "--json", "cp"])
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let (code, out, err) = run(&[
+        "--hash",
+        "sha256",
+        src.to_str().unwrap(),
+        "mpt://a/",
+        "mpt://b/",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(std::fs::read(relay.path("a/mixed.bin")).unwrap(), payload);
+    assert_eq!(std::fs::read(relay.path("b/mixed.bin")).unwrap(), payload);
+    assert!(relay.path("a/mixed.bin.sha256").exists());
+    assert!(relay.path("b/mixed.bin.sha256").exists());
+    let report: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(report["ok"], true, "{report}");
+    let targets: Vec<&str> = report["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["target"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        targets,
+        vec![
+            format!("{}/a/", relay.dir.path().display()),
+            format!("{}/b/", relay.dir.path().display())
+        ]
+    );
+    assert_eq!(report["bytes_read"], payload.len());
+    assert_eq!(
+        relay.log().matches("relay login").count(),
+        1,
+        "{}",
+        relay.log()
+    );
+
+    // The relay's failure is reported for its target only.
+    std::fs::write(relay.path("a/wall"), b"").unwrap();
+    let (code, out, err) = run(&[src.to_str().unwrap(), "mpt://a/wall/", "mpt://b/again/"]);
+    assert_eq!(code, 1, "{err}");
+    let report: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(report["targets"][0]["ok"], false, "{report}");
+    assert_eq!(report["targets"][1]["ok"], true, "{report}");
+    assert!(relay.path("b/again/mixed.bin").exists());
+
+    // --no-via switches every relay off, the profiles' included.
+    let (code, _, err) = run(&["--no-via", src.to_str().unwrap(), "mpt://a/plain/"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(relay.path("a/plain/mixed.bin").exists());
+    assert_eq!(
+        relay.log().matches("relay login").count(),
+        2,
+        "{}",
+        relay.log()
+    );
+
+    // `mpt profiles` shows the relay of a profile.
+    let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .env_remove("MPT_CONFIG")
+        .arg("--config")
+        .arg(relay.path("profile_via.toml"))
+        .args(["--color", "never", "profiles"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("via    mpt://relay"), "{text}");
 }
 
 fn it_env(name: &str) -> Option<String> {

@@ -962,9 +962,12 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
     // A relay does the copying for `--via`; every job goes through the
     // batch machinery then, a single `cp` as a batch of one.
     #[cfg(feature = "relay")]
-    let via = match settings.via.as_deref() {
-        Some(url) => Some(Via::new(url, &locate, &opts, &settings)?),
-        None => None,
+    let via = {
+        let no_via = cli.cmd.batch_args().is_some_and(|b| b.no_via);
+        match Via::table(&settings, no_via, &locate)? {
+            Some(table) => Some(Via::new(table, &opts, &settings)?),
+            None => None,
+        }
     };
     #[cfg(not(feature = "relay"))]
     let via: Option<()> = None;
@@ -2071,12 +2074,15 @@ fn relay_listener(
     })
 }
 
-/// `--via`: the relay that copies instead of this process. The targets are
-/// resolved here, credentials included, so the relay needs no configuration
-/// of its own; the report comes back the way `cp` would have made it.
+/// The relays that copy instead of this process: `--via` for every target
+/// that has no relay of its own, and the one each profile names. A job is
+/// cut into parts along those lines (see [`mpt::relay::plan`]); the
+/// targets are resolved here, credentials included, so a relay needs no
+/// configuration of its own, and the report comes back the way `cp` would
+/// have made it.
 #[cfg(feature = "relay")]
 struct Via {
-    relay: mpt::Location,
+    table: mpt::relay::plan::ViaTable,
     /// What the header carries: the flags of this side that a relay can
     /// honour.
     options: mpt::options::JobOptions,
@@ -2089,9 +2095,41 @@ struct Via {
 
 #[cfg(feature = "relay")]
 impl Via {
-    fn new(
-        url: &str,
+    /// The relays in play: the default one and every profile's, resolved.
+    /// `None` when there is none, or `--no-via` said so.
+    fn table(
+        settings: &Settings,
+        no_via: bool,
         locate: &dyn Fn(&str) -> anyhow::Result<mpt::Location>,
+    ) -> anyhow::Result<Option<mpt::relay::plan::ViaTable>> {
+        if no_via {
+            return Ok(None);
+        }
+        let relay = |what: &str, url: &str| -> anyhow::Result<mpt::Location> {
+            let relay = locate(url)?;
+            if relay.scheme() != Scheme::Ssh {
+                return Err(usage(format!(
+                    "{what} needs an ssh:// URL (or a profile with one), not {relay}"
+                )));
+            }
+            Ok(relay)
+        };
+        let mut table = mpt::relay::plan::ViaTable::default();
+        if let Some(url) = settings.via.as_deref() {
+            table.default = Some(relay("--via", url)?);
+        }
+        for (name, profile) in &mpt::config::global().profiles {
+            if let Some(url) = &profile.via {
+                table
+                    .by_profile
+                    .insert(name.clone(), relay(&format!("[profiles.{name}] via"), url)?);
+            }
+        }
+        Ok((!table.is_empty()).then_some(table))
+    }
+
+    fn new(
+        table: mpt::relay::plan::ViaTable,
         opts: &CopyOptions,
         settings: &Settings,
     ) -> anyhow::Result<Via> {
@@ -2103,19 +2141,13 @@ impl Via {
         ] {
             if set {
                 return Err(usage(format!(
-                    "{flag} is not available with --via: it needs what only this side has \
+                    "{flag} is not available with a relay: it needs what only this side has \
                      (the checksum file, the source, the key)"
                 )));
             }
         }
-        let relay = locate(url)?;
-        if relay.scheme() != Scheme::Ssh {
-            return Err(usage(format!(
-                "--via needs an ssh:// URL (or a profile with one), not {relay}"
-            )));
-        }
         Ok(Via {
-            relay,
+            table,
             credentials: settings.via_credentials,
             agent: settings.via_agent,
             options: mpt::options::JobOptions {
@@ -2130,15 +2162,51 @@ impl Via {
         })
     }
 
-    /// One job through the relay: read the source here, let the relay
-    /// deliver, and hand back its report as if the copy had run here.
+    /// One job, its parts side by side: the targets without a relay from
+    /// here, the rest through their relays, and one report as if the copy
+    /// had run here.
     async fn run(
         &self,
         job: mpt::Job,
         copy: CopyOptions,
     ) -> (mpt::Job, mpt::Result<mpt::FanoutReport>) {
-        let result = self.send(&job, &copy).await;
-        (job, result)
+        use mpt::relay::plan::{Part, PartOutcome};
+
+        let started = std::time::Instant::now();
+        let parts = mpt::relay::plan::plan(&job, &self.table);
+        let open = |loc: &mpt::Location| mpt::protocols::open(loc.clone());
+        let running = parts.iter().enumerate().map(|(n, part)| {
+            let job = &job;
+            let copy = &copy;
+            async move {
+                let indexes = part.indexes();
+                let dsts: Vec<mpt::Location> =
+                    indexes.iter().map(|i| job.dsts[*i].clone()).collect();
+                // The bytes are counted once, by the first part.
+                let mut copy = copy.clone();
+                if n > 0 {
+                    copy.progress = None;
+                }
+                let result = match part {
+                    Part::Local { .. } => {
+                        let local = mpt::Job {
+                            src: job.src.clone(),
+                            dsts,
+                        };
+                        mpt::batch::run_job(&local, &open, &copy).await
+                    }
+                    Part::Upload { relay, .. } => self.send(relay, &job.src, &dsts, &copy).await,
+                    Part::Pull { .. } => Err(mpt::Error::invalid_option(
+                        "via",
+                        "a source behind a relay is not supported yet",
+                    )),
+                };
+                PartOutcome { indexes, result }
+            }
+        });
+        let outcomes = futures::future::join_all(running).await;
+        let report = mpt::relay::plan::merge(&job, outcomes, started.elapsed());
+        (job, Ok(report))
     }
 
     /// The targets as the header carries them: every part encoded, the
@@ -2186,14 +2254,20 @@ impl Via {
         Ok(dst)
     }
 
-    async fn send(&self, job: &mpt::Job, copy: &CopyOptions) -> mpt::Result<mpt::FanoutReport> {
-        let dst = self.header_targets(&job.dsts)?;
-        let name = job
-            .src
+    /// Read `src` here and upload it once to `relay`, which writes `dsts`.
+    async fn send(
+        &self,
+        relay: &mpt::Location,
+        src: &mpt::Location,
+        dsts: &[mpt::Location],
+        copy: &CopyOptions,
+    ) -> mpt::Result<mpt::FanoutReport> {
+        let dst = self.header_targets(dsts)?;
+        let name = src
             .filename()
-            .ok_or_else(|| mpt::Error::InvalidUrl(format!("{}: no file name to relay", job.src)))?
+            .ok_or_else(|| mpt::Error::InvalidUrl(format!("{src}: no file name to relay")))?
             .to_string();
-        let source = mpt::protocols::open(job.src.clone())?;
+        let source = mpt::protocols::open(src.clone())?;
         let receiver = source.receiver()?;
         let size = receiver.size().await?;
         let stream = receiver.receive().await?;
@@ -2207,8 +2281,8 @@ impl Via {
         };
         // The agent is offered when an SSH target could use it, with the
         // keys this side would have used for those targets.
-        let responder = (self.agent && job.dsts.iter().any(|d| d.scheme().is_ssh()))
-            .then(|| mpt::relay::agent::Responder::for_targets(&job.dsts));
+        let responder = (self.agent && dsts.iter().any(|d| d.scheme().is_ssh()))
+            .then(|| mpt::relay::agent::Responder::for_targets(dsts));
         let header = mpt::relay::Header {
             credentials: self.credentials,
             agent: responder.is_some(),
@@ -2222,13 +2296,13 @@ impl Via {
         };
         let cancel = copy.cancel.clone().unwrap_or_default();
         let session = mpt::relay::client::Session {
-            via: &self.relay,
+            via: relay,
             header: &header,
             body: Some(body),
             cancel: &cancel,
             answer: std::sync::Arc::new(mpt::relay::broker::JobAnswerer {
                 src: None,
-                dsts: job.dsts.clone(),
+                dsts: dsts.to_vec(),
             }),
             agent: responder
                 .map(|r| std::sync::Arc::new(r) as std::sync::Arc<dyn mpt::broker::AgentSource>),
@@ -2248,7 +2322,7 @@ impl Via {
         })?;
         let mut report = mpt::report::fanout_from_json(&report)?;
         // The relay knows the file by name only; here it is what was given.
-        report.source = job.src.to_string();
+        report.source = src.to_string();
         Ok(report)
     }
 }
@@ -2292,6 +2366,7 @@ fn show_profiles(cfg: &mpt::Config) {
         for (what, v) in [
             ("sign", profile.sign.as_deref()),
             ("hash", profile.hash.as_deref()),
+            ("via", profile.via.as_deref()),
         ] {
             if let Some(v) = v {
                 anstream::println!("    {what:<6} {NUM}{v}{NUM:#}");
@@ -2439,7 +2514,7 @@ mod tests {
     #[test]
     fn the_header_carries_passwords_only_when_asked_to() {
         let via = |credentials| Via {
-            relay: mpt::Location::parse("ssh://relay/").unwrap(),
+            table: Default::default(),
             options: Default::default(),
             credentials,
             agent: false,

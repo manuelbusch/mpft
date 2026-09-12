@@ -260,6 +260,9 @@ pub struct Location {
     /// Ways to get a secret at login time instead of carrying it here. Not
     /// part of the URL in any form.
     brokers: Brokers,
+    /// The profile this location was resolved from, if any: what decides
+    /// which relay it goes through.
+    profile: Option<String>,
 }
 
 impl Location {
@@ -353,6 +356,7 @@ impl Location {
             options,
             dir_hint,
             brokers: Brokers::default(),
+            profile: None,
         })
     }
 
@@ -378,6 +382,7 @@ impl Location {
             dir_hint: path.ends_with('/') || (cfg!(windows) && path.ends_with('\\')),
             password_from_url: false,
             brokers: Brokers::default(),
+            profile: None,
         }
     }
 
@@ -449,6 +454,14 @@ impl Location {
         loc.password = None;
         loc.password_from_url = false;
         loc
+    }
+
+    /// The profile this location came from.
+    pub fn profile(&self) -> Option<&str> {
+        self.profile.as_deref()
+    }
+    pub fn set_profile(&mut self, name: impl Into<String>) {
+        self.profile = Some(name.into());
     }
 
     /// The brokers this location asks at login time.
