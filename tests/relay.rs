@@ -21,6 +21,12 @@ impl Relay {
     /// authorized client key (`keys/client`) and one that is not
     /// (`keys/stranger`), plus target directories `a` and `b`.
     fn start(extra: &[&str]) -> Relay {
+        Relay::start_env(extra, &[])
+    }
+
+    /// `start` with environment variables set (`Some`) or removed (`None`)
+    /// for the relay process.
+    fn start_env(extra: &[&str], env: &[(&str, Option<&str>)]) -> Relay {
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path();
         for sub in ["a", "b", "keys"] {
@@ -39,7 +45,14 @@ impl Relay {
         )
         .unwrap();
         let port_file = d.join("port");
-        let child = Command::new(env!("CARGO_BIN_EXE_mpt"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_mpt"));
+        for (name, value) in env {
+            match value {
+                Some(v) => command.env(name, v),
+                None => command.env_remove(name),
+            };
+        }
+        let child = command
             .env_remove("MPT_CONFIG")
             .arg("-vv")
             .arg("relay")
@@ -338,10 +351,12 @@ fn a_stranger_a_bad_target_and_a_refused_flag() {
     assert_eq!(code, 2, "{err}");
     assert!(err.contains("--check is not available with --via"), "{err}");
 
-    // A key file of a target stays on this side; the relay cannot use it.
+    // A key file of a target stays on this side; without the forwarded
+    // agent standing in for it, the relay could not use it.
     let (code, _, err) = relay.cp(
         "client",
         &[
+            "--no-via-agent",
             src.to_str().unwrap(),
             "sftp://someone@nowhere/in/?key=/etc/hostname",
         ],
@@ -467,6 +482,101 @@ fn passwords_are_asked_for_on_demand() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(std::fs::read(&back).unwrap(), payload);
+}
+
+fn it_env(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|s| !s.is_empty())
+}
+
+/// The key of an SSH target stays on the client: the relay authenticates
+/// through the forwarded agent, with no agent and no keys of its own.
+#[test]
+fn the_relay_signs_with_the_clients_keys_through_the_forwarded_agent() {
+    let Some(sftp) = it_env("MPT_IT_SFTP") else {
+        eprintln!("skipping: MPT_IT_SFTP not set");
+        return;
+    };
+    let bare_home = tempfile::tempdir().unwrap();
+    let env = [("SSH_AUTH_SOCK", None), ("HOME", bare_home.path().to_str())];
+    let relay = Relay::start_env(&[], &env);
+    let name = format!("agent_{}.bin", std::process::id());
+    let src = relay.path(&name);
+    let payload: Vec<u8> = (0..100_000u32).map(|i| (i % 227) as u8).collect();
+    std::fs::write(&src, &payload).unwrap();
+
+    let (code, _, err) = relay.cp("client", &[src.to_str().unwrap(), &sftp]);
+    assert_eq!(code, 0, "{err}");
+    let log = relay.log();
+    assert!(
+        log.contains("authenticated via the forwarded ssh-agent"),
+        "{log}"
+    );
+    // The key file the URL names was not sent: the relay never saw it.
+    let key_path = sftp
+        .split(['?', '&'])
+        .find_map(|p| p.strip_prefix("key="))
+        .unwrap();
+    assert!(!log.contains(key_path), "{log}");
+    // Read back from here, with the key.
+    let back = relay.path("back.bin");
+    let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .env_remove("MPT_CONFIG")
+        .args(["--color", "never", "cp"])
+        .arg(format!(
+            "{}{name}?{}",
+            sftp.split('?').next().unwrap(),
+            sftp.split('?').nth(1).unwrap_or("")
+        ))
+        .arg(&back)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read(&back).unwrap(), payload);
+
+    // Without the agent from this side the relay has nothing to sign with.
+    let (code, _, err) = relay.cp("client", &["--no-via-agent", src.to_str().unwrap(), &sftp]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("--no-via-agent"), "{err}");
+
+    // A relay that refuses forwarding cannot log in either.
+    let refusing = Relay::start_env(&["--no-agent-forwarding"], &env);
+    let (code, _, err) = refusing.cp("client", &[src.to_str().unwrap(), &sftp]);
+    assert_eq!(code, 4, "{err}");
+    assert!(
+        refusing.log().contains("agent forwarding refused"),
+        "{}",
+        refusing.log()
+    );
+}
+
+/// A certificate is offered through the agent as a certificate, so a key
+/// that authorized_keys does not list gets in through the relay too.
+#[test]
+fn the_relay_authenticates_with_the_clients_certificate() {
+    let Some(cert) = it_env("MPT_IT_SFTP_CERT") else {
+        eprintln!("skipping: MPT_IT_SFTP_CERT not set");
+        return;
+    };
+    let bare_home = tempfile::tempdir().unwrap();
+    let relay = Relay::start_env(
+        &[],
+        &[("SSH_AUTH_SOCK", None), ("HOME", bare_home.path().to_str())],
+    );
+    let src = relay.path("cert.txt");
+    std::fs::write(&src, b"signed by the CA").unwrap();
+    let (code, _, err) = relay.cp("client", &[src.to_str().unwrap(), &cert]);
+    assert_eq!(code, 0, "{err}");
+    let log = relay.log();
+    assert!(log.contains("ssh-agent certificate"), "{log}");
+    assert!(
+        log.contains("authenticated via the forwarded ssh-agent"),
+        "{log}"
+    );
 }
 
 #[test]

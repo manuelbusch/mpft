@@ -112,6 +112,9 @@ pub struct Defaults {
     /// it is sent, the default) or `on-demand` (asked of this side at
     /// every login, never held). The relay has to allow it as well.
     pub via_credentials: Option<String>,
+    /// Forward an ssh-agent to the relay, so it authenticates against the
+    /// SSH targets with this side's keys and certificates (default true).
+    pub via_agent: Option<bool>,
 }
 
 /// `[policy]` — rules that hold for every endpoint of the process.
@@ -245,6 +248,8 @@ pub struct RelaySection {
     /// Which way a client may send the targets' passwords: `header` (the
     /// default), `on-demand` or `any`.
     pub credentials: Option<String>,
+    /// Take the agent a client forwards (default true).
+    pub agent_forwarding: Option<bool>,
 }
 
 /// Which URLs the server accepts in a job.
@@ -497,6 +502,7 @@ impl Config {
                 "via_credentials",
                 local.defaults.via_credentials.take().is_some(),
             ),
+            ("via_agent", local.defaults.via_agent.take().is_some()),
         ];
         for (key, set) in via_keys {
             if set {
@@ -625,6 +631,7 @@ impl Config {
             grace,
             max_size,
             credentials,
+            agent_forwarding,
         } = &self.relay;
         if host_key.is_some()
             || authorized_keys.is_some()
@@ -632,6 +639,7 @@ impl Config {
             || grace.is_some()
             || max_size.is_some()
             || credentials.is_some()
+            || agent_forwarding.is_some()
         {
             out.push("relay");
         }

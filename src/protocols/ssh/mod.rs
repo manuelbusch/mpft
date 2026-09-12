@@ -30,7 +30,7 @@ use russh::keys::{
 use secrecy::{ExposeSecret, SecretString};
 use tracing::{debug, info, warn};
 
-use crate::broker::{AgentStream, Brokers};
+use crate::broker::{AgentSource, AgentStream, Brokers};
 use crate::{Error, Location, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +82,10 @@ pub struct SshConfig {
     /// Where to get the password and an agent at login time when the
     /// location does not carry them: the client behind a relay session.
     pub brokers: Brokers,
+    /// An agent to serve to the server when it asks for one: what a relay
+    /// client forwards so the relay can authenticate with the client's
+    /// keys. Nothing is offered unless the session asks for forwarding.
+    pub forward: Option<Arc<dyn AgentSource>>,
     /// The location itself, for the password it carries or asks for.
     loc: Location,
     /// Logins so far, shared by the clones of this config, so a password
@@ -108,6 +112,7 @@ impl std::fmt::Debug for SshConfig {
             .field("idle", &self.idle)
             .field("connect_retries", &self.connect_retries)
             .field("brokers", &self.brokers)
+            .field("forward", &self.forward.is_some())
             .finish()
     }
 }
@@ -192,6 +197,7 @@ impl SshConfig {
             idle,
             connect_retries: loc.connect_retries()?,
             brokers: loc.brokers().clone(),
+            forward: None,
             loc: loc.clone(),
             logins: Arc::new(AtomicU32::new(0)),
         })
@@ -219,6 +225,7 @@ impl SshConfig {
             pinned: self.pinned_host_keys.clone(),
             known_hosts_file: self.known_hosts_file.clone(),
             rejection: Arc::clone(&rejection),
+            forward: self.forward.clone(),
         };
         debug!(host = %self.host, port = self.port, user = %self.user, "ssh connect");
         let mut handle = tokio::time::timeout(
@@ -430,6 +437,8 @@ pub struct ClientHandler {
     /// Filled with the reason when a host key is refused, so that `connect`
     /// can report it instead of russh's generic "unknown key".
     rejection: Arc<Mutex<Option<String>>>,
+    /// Served on every agent channel the server opens, when set.
+    forward: Option<Arc<dyn AgentSource>>,
 }
 
 impl ClientHandler {
@@ -472,6 +481,38 @@ impl ClientHandler {
 
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
+
+    /// The server wants the agent that was forwarded: connect it to a
+    /// fresh agent stream and copy both ways until either side is done.
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> std::result::Result<(), Self::Error> {
+        let Some(source) = self.forward.clone() else {
+            debug!("agent channel refused: nothing forwarded");
+            reply
+                .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
+            return Ok(());
+        };
+        reply.accept().await;
+        tokio::spawn(async move {
+            let mut agent = match source.open().await {
+                Ok(a) => a,
+                Err(e) => {
+                    debug!("agent channel: {e}");
+                    return;
+                }
+            };
+            let mut stream = channel.into_stream();
+            if let Err(e) = tokio::io::copy_bidirectional(&mut stream, &mut agent).await {
+                debug!("agent channel ended: {e}");
+            }
+        });
+        Ok(())
+    }
 
     async fn check_server_key(
         &mut self,

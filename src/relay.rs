@@ -23,6 +23,7 @@
 //! going away) fails them all. Everything `cp` does — checksums, atomic
 //! finishing, the memory cache with retries, timeouts — applies unchanged.
 
+pub mod agent;
 pub mod broker;
 pub mod client;
 pub mod protocol;
@@ -38,6 +39,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use crate::broker::AgentSource;
 use crate::options::{JobOptions, LocateFn};
 use crate::stream::{Idle, ReaderEndpoint};
 use crate::transfer::{CopyOptions, FanoutReport, Progress};
@@ -251,7 +253,22 @@ struct Prepared {
 /// Run one relay: read the header and the payload from `reader`, write
 /// progress and the outcome to `writer`, and return the exit code `cp`
 /// would give — 0 when every target has the file.
-pub async fn run<R, W>(relay: &Relay, reader: R, mut writer: W) -> u8
+pub async fn run<R, W>(relay: &Relay, reader: R, writer: W) -> u8
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin,
+{
+    run_with(relay, reader, writer, None).await
+}
+
+/// [`run`] with the agent the client forwarded, which the SSH targets
+/// authenticate with when the header asks for it.
+pub async fn run_with<R, W>(
+    relay: &Relay,
+    reader: R,
+    mut writer: W,
+    agent: Option<Arc<dyn AgentSource>>,
+) -> u8
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin,
@@ -261,7 +278,7 @@ where
     // from the intake, `need` from the broker.
     let (lines, mut lines_rx) = mpsc::unbounded_channel::<Value>();
     let cancel = relay.cancel.child_token();
-    let prepared = match prepare(relay, &mut reader, &lines, &cancel).await {
+    let prepared = match prepare(relay, &mut reader, &lines, &cancel, agent).await {
         Ok(p) => p,
         Err(e) => {
             debug!("relay refused: {e}");
@@ -455,6 +472,7 @@ async fn prepare<R: AsyncRead + Unpin>(
     reader: &mut BufReader<R>,
     lines: &mpsc::UnboundedSender<Value>,
     cancel: &CancellationToken,
+    agent: Option<Arc<dyn AgentSource>>,
 ) -> Result<Prepared> {
     let mut raw = Vec::new();
     reader
@@ -567,10 +585,19 @@ async fn prepare<R: AsyncRead + Unpin>(
         Credentials::OnDemand => Some(RemoteBroker::new(lines.clone(), cancel.clone())),
         Credentials::Header => None,
     };
+    let agent = match (header.agent, agent) {
+        (true, Some(agent)) => Some(agent),
+        (true, None) => {
+            debug!("relay: the header asks for the client's agent, but none was forwarded");
+            None
+        }
+        (false, _) => None,
+    };
     let mut targets = Vec::with_capacity(header.dst.len());
     for (i, dst) in header.dst.iter().enumerate() {
         let loc = (relay.locate)(dst.url(), &header.options)?;
-        targets.push(crate::protocols::open(with_broker(loc, &broker, i)?)?);
+        let loc = with_broker(loc, &broker, i)?;
+        targets.push(crate::protocols::open(with_agent(loc, &agent))?);
     }
     Ok(Prepared {
         header,
@@ -578,6 +605,18 @@ async fn prepare<R: AsyncRead + Unpin>(
         targets,
         broker,
     })
+}
+
+/// An SSH target authenticates with the agent the client forwarded.
+fn with_agent(mut loc: Location, agent: &Option<Arc<dyn AgentSource>>) -> Location {
+    if let Some(agent) = agent
+        && loc.scheme().is_ssh()
+    {
+        let mut brokers = loc.brokers().clone();
+        brokers.agent = Some(Arc::clone(agent));
+        loc.set_brokers(brokers);
+    }
+    loc
 }
 
 /// An on-demand session's target asks the client for its password, and

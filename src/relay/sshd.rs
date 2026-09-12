@@ -1,7 +1,8 @@
 //! The relay's own SSH server: a host key, an `authorized_keys` file, and
-//! nothing but `exec "mpt relay"` on a session channel. No shell, no
+//! nothing but `exec "mpt relay"` on a session channel. No shell, no port
 //! forwarding, no sftp — a client that is in the file may relay, and that
-//! is all.
+//! is all. Agent forwarding is taken, unless switched off: it is how the
+//! relay authenticates against the SSH targets with the client's keys.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -35,6 +36,8 @@ pub struct Listener {
     pub grace: Duration,
     /// Write the port actually bound to this file.
     pub port_file: Option<PathBuf>,
+    /// Accept a forwarded agent from the client.
+    pub agent_forwarding: bool,
 }
 
 /// Listen until `cancel` fires, then stop accepting, wait `grace` for the
@@ -78,6 +81,7 @@ pub async fn serve(
         running: AtomicUsize::new(0),
         idle: Notify::new(),
         abort: abort.clone(),
+        agent_forwarding: cfg.agent_forwarding,
     });
     loop {
         let (socket, peer) = tokio::select! {
@@ -97,6 +101,7 @@ pub async fn serve(
             shared: Arc::clone(&shared),
             peer,
             channel: None,
+            agent: false,
         };
         let ssh = Arc::clone(&ssh);
         tokio::spawn(async move {
@@ -139,6 +144,7 @@ struct Shared {
     running: AtomicUsize,
     idle: Notify,
     abort: CancellationToken,
+    agent_forwarding: bool,
 }
 
 /// One client connection: authenticated by a key in the file, then one
@@ -147,6 +153,26 @@ struct Connection {
     shared: Arc<Shared>,
     peer: std::net::SocketAddr,
     channel: Option<Channel<Msg>>,
+    /// The client forwarded its agent and this server took it.
+    agent: bool,
+}
+
+/// The agent the client forwarded, reached by opening an agent channel
+/// back to it for every login.
+struct ForwardedAgent {
+    handle: Handle,
+}
+
+#[async_trait::async_trait]
+impl crate::broker::AgentSource for ForwardedAgent {
+    async fn open(&self) -> Result<crate::broker::AgentStream> {
+        let channel = self
+            .handle
+            .channel_open_agent()
+            .await
+            .map_err(|e| Error::Auth(format!("forwarded ssh-agent: {e}")))?;
+        Ok(Box::new(channel.into_stream()))
+    }
 }
 
 impl Handler for Connection {
@@ -216,6 +242,26 @@ impl Handler for Connection {
         }
     }
 
+    async fn agent_request(
+        &mut self,
+        channel: ChannelId,
+        session: &mut Session,
+    ) -> std::result::Result<bool, Self::Error> {
+        // The reply is a channel reply, which russh does not send for the
+        // bool alone (it would answer a global request instead), so it is
+        // sent here, and the bool is kept at `true` so nothing else goes
+        // out.
+        if self.shared.agent_forwarding {
+            debug!(peer = %self.peer, "agent forwarding accepted");
+            self.agent = true;
+            session.channel_success(channel)?;
+        } else {
+            debug!(peer = %self.peer, "agent forwarding refused (switched off)");
+            session.channel_failure(channel)?;
+        }
+        Ok(true)
+    }
+
     async fn shell_request(
         &mut self,
         channel: ChannelId,
@@ -250,8 +296,13 @@ impl Connection {
         let handle = session.handle();
         let shared = Arc::clone(&self.shared);
         let peer = self.peer;
+        let agent: Option<Arc<dyn crate::broker::AgentSource>> = self.agent.then(|| {
+            Arc::new(ForwardedAgent {
+                handle: handle.clone(),
+            }) as Arc<dyn crate::broker::AgentSource>
+        });
         tokio::spawn(async move {
-            let code = relay_on(&shared, channel, &handle, id).await;
+            let code = relay_on(&shared, channel, &handle, id, agent).await;
             debug!(%peer, code, "relay over");
         });
         Ok(())
@@ -259,7 +310,13 @@ impl Connection {
 }
 
 /// The relay itself, counted for the shutdown, one slot at a time.
-async fn relay_on(shared: &Shared, channel: Channel<Msg>, handle: &Handle, id: ChannelId) -> u8 {
+async fn relay_on(
+    shared: &Shared,
+    channel: Channel<Msg>,
+    handle: &Handle,
+    id: ChannelId,
+    agent: Option<Arc<dyn crate::broker::AgentSource>>,
+) -> u8 {
     shared.running.fetch_add(1, Ordering::SeqCst);
     let code = {
         let permit = tokio::select! {
@@ -279,7 +336,7 @@ async fn relay_on(shared: &Shared, channel: Channel<Msg>, handle: &Handle, id: C
                     credentials: shared.relay.credentials,
                     cancel: shared.abort.child_token(),
                 };
-                let code = super::run(&relay, reader, &mut writer).await;
+                let code = super::run_with(&relay, reader, &mut writer, agent).await;
                 let _ = writer.flush().await;
                 code
             }
@@ -359,7 +416,7 @@ fn load_or_create_host_key(path: &Path) -> Result<PrivateKey> {
 }
 
 /// The operating system's randomness, as the key generator wants it.
-struct OsRandom;
+pub(super) struct OsRandom;
 
 impl ssh_key::rand_core::TryRng for OsRandom {
     type Error = std::convert::Infallible;
@@ -412,6 +469,7 @@ mod tests {
             body: Some(Box::pin(std::io::Cursor::new(body))),
             cancel,
             answer: Arc::new(NoAnswer),
+            agent: None,
         }
     }
 
@@ -450,6 +508,7 @@ mod tests {
                 parallel,
                 grace: Duration::from_secs(5),
                 port_file: Some(dir.path().join("port")),
+                agent_forwarding: true,
             };
             let relay = Arc::new(Relay {
                 copy: CopyOptions::default(),

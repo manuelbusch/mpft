@@ -20,6 +20,7 @@ use tracing::debug;
 use super::broker::{Need, PasswordAnswerer, answer_line};
 use super::protocol::{self, Credit};
 use super::{Credentials, Header};
+use crate::broker::AgentSource;
 use crate::protocols::ssh::{SshConfig, disconnect, ssh_err};
 use crate::{ByteStream, Error, Location, Result};
 
@@ -49,6 +50,9 @@ pub struct Session<'a> {
     pub cancel: &'a CancellationToken,
     /// Answers the relay's `need` lines.
     pub answer: Arc<dyn PasswordAnswerer>,
+    /// The agent to forward, when the header says `agent`: the relay
+    /// authenticates against the SSH targets with what this serves.
+    pub agent: Option<Arc<dyn AgentSource>>,
 }
 
 /// Run a relay for `session`, hand every line the relay writes to
@@ -60,6 +64,7 @@ pub async fn send(session: Session<'_>, mut on_line: impl FnMut(&Value)) -> Resu
         body,
         cancel,
         answer,
+        agent,
     } = session;
     if header.credentials == Credentials::OnDemand {
         for dst in &header.dst {
@@ -74,10 +79,35 @@ pub async fn send(session: Session<'_>, mut on_line: impl FnMut(&Value)) -> Resu
             }
         }
     }
-    let cfg = SshConfig::from_location(via)?;
+    let mut cfg = SshConfig::from_location(via)?;
+    let forwarding = header.agent && agent.is_some();
+    cfg.forward = if forwarding { agent } else { None };
     let handle = cfg.connect().await?;
     let result = async {
         let mut channel = handle.channel_open_session().await.map_err(ssh_err)?;
+        if forwarding {
+            // Asked for before the command, answered before it too; a
+            // relay that does not allow it says so, and goes on without.
+            channel.agent_forward(true).await.map_err(ssh_err)?;
+            loop {
+                match channel.wait().await {
+                    Some(russh::ChannelMsg::Success) => {
+                        debug!("relay: agent forwarding accepted");
+                        break;
+                    }
+                    Some(russh::ChannelMsg::Failure) => {
+                        debug!("relay: agent forwarding refused by the relay");
+                        break;
+                    }
+                    Some(_) => {}
+                    None => {
+                        return Err(Error::Remote(
+                            "the relay closed the channel before the command".into(),
+                        ));
+                    }
+                }
+            }
+        }
         channel.exec(true, "mpt relay").await.map_err(ssh_err)?;
         let mut line =
             serde_json::to_string(header).map_err(|e| Error::invalid_option("header", e))?;

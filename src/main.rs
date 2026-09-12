@@ -242,6 +242,10 @@ struct RelayArgs {
     /// held here) or any
     #[arg(long, value_name = "MODE", value_parser = parse_relay_credentials)]
     credentials: Option<mpt::relay::RelayCredentials>,
+    /// Refuse the client's forwarded ssh-agent (with --listen); the SSH
+    /// targets then authenticate with this side's keys and passwords only
+    #[arg(long)]
+    no_agent_forwarding: bool,
     /// Write the port actually bound to this file (for --listen 127.0.0.1:0)
     #[arg(long, value_name = "PATH")]
     port_file: Option<PathBuf>,
@@ -323,6 +327,12 @@ struct BatchArgs {
     #[cfg(feature = "relay")]
     #[arg(long, value_name = "MODE", value_parser = parse_credentials)]
     via_credentials: Option<mpt::relay::Credentials>,
+    /// Do not forward an ssh-agent to the relay; SSH targets then need a
+    /// password, or a key on the relay (by default the relay signs with
+    /// this side's keys and certificates through the forwarded agent)
+    #[cfg(feature = "relay")]
+    #[arg(long)]
+    no_via_agent: bool,
 }
 
 impl BatchArgs {
@@ -507,6 +517,9 @@ struct Settings {
     /// How that relay gets the targets' passwords.
     #[cfg(feature = "relay")]
     via_credentials: mpt::relay::Credentials,
+    /// Whether that relay gets this side's ssh-agent forwarded.
+    #[cfg(feature = "relay")]
+    via_agent: bool,
 }
 
 impl Settings {
@@ -559,6 +572,9 @@ impl Settings {
                     None => mpt::relay::Credentials::Header,
                 },
             },
+            #[cfg(feature = "relay")]
+            via_agent: !cli.cmd.batch_args().is_some_and(|b| b.no_via_agent)
+                && d.via_agent.unwrap_or(true),
             parallel: match cli
                 .cmd
                 .batch_args()
@@ -2051,6 +2067,7 @@ fn relay_listener(
         parallel,
         grace,
         port_file: args.port_file.clone(),
+        agent_forwarding: !args.no_agent_forwarding && section.agent_forwarding.unwrap_or(true),
     })
 }
 
@@ -2066,6 +2083,8 @@ struct Via {
     /// Whether the targets' passwords travel in the header or are asked
     /// for at every login.
     credentials: mpt::relay::Credentials,
+    /// Forward an ssh-agent serving this side's keys for the SSH targets.
+    agent: bool,
 }
 
 #[cfg(feature = "relay")]
@@ -2098,6 +2117,7 @@ impl Via {
         Ok(Via {
             relay,
             credentials: settings.via_credentials,
+            agent: settings.via_agent,
             options: mpt::options::JobOptions {
                 hash: opts.hash.map(|h| h.name().to_string()),
                 atomic: (!opts.atomic).then_some(false),
@@ -2121,22 +2141,30 @@ impl Via {
         (job, result)
     }
 
-    /// The targets as the header carries them: every part encoded, and
-    /// the password left out when the relay is to ask for it.
+    /// The targets as the header carries them: every part encoded, the
+    /// password left out when the relay is to ask for it, and the key
+    /// files left out when the forwarded agent stands in for them.
     fn header_targets(&self, dsts: &[mpt::Location]) -> mpt::Result<Vec<String>> {
         let mut dst = Vec::with_capacity(dsts.len());
         for loc in dsts {
+            let mut loc = loc.clone();
             for opt in ["key", "cert", "passphrase"] {
                 if loc.opt(opt).is_some() {
+                    if self.agent && loc.scheme().is_ssh() {
+                        loc.remove_option(opt);
+                        continue;
+                    }
                     return Err(mpt::Error::invalid_option(
                         opt,
                         format!(
                             "{loc}: names a file on this machine, which the relay cannot read; \
+                             let the relay use the forwarded agent (without --no-via-agent), \
                              give the target a password, or put the key on the relay"
                         ),
                     ));
                 }
             }
+            let loc = &loc;
             match self.credentials {
                 mpt::relay::Credentials::Header => dst.push(loc.unmasked()),
                 mpt::relay::Credentials::OnDemand => {
@@ -2177,8 +2205,13 @@ impl Via {
                 (mpt::stream::boxed(file), n)
             }
         };
+        // The agent is offered when an SSH target could use it, with the
+        // keys this side would have used for those targets.
+        let responder = (self.agent && job.dsts.iter().any(|d| d.scheme().is_ssh()))
+            .then(|| mpt::relay::agent::Responder::for_targets(&job.dsts));
         let header = mpt::relay::Header {
             credentials: self.credentials,
+            agent: responder.is_some(),
             options: self.options.clone(),
             ..mpt::relay::Header::stream(name, size, dst)
         };
@@ -2197,6 +2230,8 @@ impl Via {
                 src: None,
                 dsts: job.dsts.clone(),
             }),
+            agent: responder
+                .map(|r| std::sync::Arc::new(r) as std::sync::Arc<dyn mpt::broker::AgentSource>),
         };
         let outcome = mpt::relay::client::send(session, |_| {}).await?;
         for line in outcome.stderr.lines().filter(|l| !l.trim().is_empty()) {
@@ -2313,6 +2348,7 @@ fn show_config(cfg: &mpt::Config) {
         "defaults".parallel = d.parallel,
         "defaults".via = d.via,
         "defaults".via_credentials = d.via_credentials,
+        "defaults".via_agent = d.via_agent,
         "policy".known_hosts = p.known_hosts,
         "policy".refuse_plaintext_auth = p.refuse_plaintext_auth,
         "policy".refuse_insecure_tls = p.refuse_insecure_tls,
@@ -2349,6 +2385,7 @@ fn show_config(cfg: &mpt::Config) {
         "relay".grace = cfg.relay.grace,
         "relay".max_size = cfg.relay.max_size,
         "relay".credentials = cfg.relay.credentials,
+        "relay".agent_forwarding = cfg.relay.agent_forwarding,
     );
     if !cfg.server.profiles.is_empty() {
         rows.push(("[server] profiles".into(), cfg.server.profiles.join(", ")));
@@ -2405,6 +2442,7 @@ mod tests {
             relay: mpt::Location::parse("ssh://relay/").unwrap(),
             options: Default::default(),
             credentials,
+            agent: false,
         };
         let dsts = vec![
             mpt::Location::parse("ftp://u:s3cret@h/in/").unwrap(),
@@ -2433,6 +2471,20 @@ mod tests {
         assert!(
             err.to_string().contains("--via-credentials header"),
             "{err}"
+        );
+
+        // A key file stays here: refused without the agent, dropped from
+        // the URL with it.
+        let keyed = vec![mpt::Location::parse("sftp://u@h/in/?key=/k&known_hosts=off").unwrap()];
+        let err = via(mpt::relay::Credentials::Header)
+            .header_targets(&keyed)
+            .unwrap_err();
+        assert!(err.to_string().contains("--no-via-agent"), "{err}");
+        let mut with_agent = via(mpt::relay::Credentials::Header);
+        with_agent.agent = true;
+        assert_eq!(
+            with_agent.header_targets(&keyed).unwrap(),
+            vec!["sftp://u@h/in/?known_hosts=off"]
         );
     }
 

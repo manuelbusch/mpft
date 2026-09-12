@@ -25,6 +25,7 @@ pub fn fanout_json(report: &FanoutReport) -> Value {
                 "attempts": t.attempts,
                 "ok": t.result.is_ok(),
                 "error": t.result.as_ref().err().map(|e| e.to_string()),
+                "kind": t.result.as_ref().err().map(Error::kind),
                 "cancelled": matches!(t.result, Err(Error::Cancelled)),
                 "sidecar": t.sidecar,
                 "signature": t.signature,
@@ -60,8 +61,9 @@ pub fn fanout_json(report: &FanoutReport) -> Value {
 }
 
 /// A report back from its JSON, as a relay hands it over. A target's
-/// failure comes back as a `relay` transport error carrying the message;
-/// a cancelled one as [`Error::Cancelled`].
+/// failure comes back with its kind where that matters for the exit code
+/// (see [`error_from_json`]), otherwise as a `relay` transport error
+/// carrying the message.
 pub fn fanout_from_json(v: &Value) -> Result<FanoutReport> {
     let bad = |what: &str| Error::Remote(format!("report: {what}"));
     let str_of = |v: &Value| v.as_str().map(String::from);
@@ -76,10 +78,10 @@ pub fn fanout_from_json(v: &Value) -> Result<FanoutReport> {
             } else if t["cancelled"] == true {
                 Err(Error::Cancelled)
             } else {
-                Err(Error::Transport {
-                    protocol: "relay",
-                    source: t["error"].as_str().unwrap_or("failed").into(),
-                })
+                Err(error_from_json(&json!({
+                    "kind": t["kind"],
+                    "message": t["error"].as_str().unwrap_or("failed"),
+                })))
             };
             TargetReport {
                 target: str_of(&t["target"]).unwrap_or_default(),
@@ -242,15 +244,13 @@ mod tests {
             back.targets[0].sidecar.as_deref(),
             Some("sftp://u@h/in/report.pdf.b3")
         );
-        let e = back.targets[1].result.as_ref().unwrap_err().to_string();
-        assert_eq!(e, "relay: authentication failed: wrong password");
+        // An authentication failure is one here too: its exit code holds.
+        let e = back.targets[1].result.as_ref().unwrap_err();
+        assert!(matches!(e, Error::Auth(m) if m == "wrong password"), "{e}");
         assert_eq!(back.targets[1].attempts, 2);
         assert!(matches!(back.targets[2].result, Err(Error::Cancelled)));
         assert_eq!(back.digests, vec![(HashAlgo::Blake3, "ab".repeat(32))]);
-        // The JSON of the round-tripped report is the JSON it came from,
-        // but for the error text, which now names the relay.
-        let mut again = fanout_json(&back);
-        again["targets"][1]["error"] = fanout_json(&report)["targets"][1]["error"].clone();
-        assert_eq!(again, fanout_json(&report));
+        // The JSON of the round-tripped report is the JSON it came from.
+        assert_eq!(fanout_json(&back), fanout_json(&report));
     }
 }
