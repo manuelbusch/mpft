@@ -8,14 +8,14 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::StreamExt;
 use futures::TryStreamExt;
 use object_store::aws::AmazonS3Builder;
-use object_store::buffered::BufWriter;
 use object_store::path::Path as ObjPath;
-use object_store::{ClientOptions, ObjectStore, ObjectStoreExt};
-use tokio::io::AsyncWriteExt;
+use object_store::{ClientOptions, MultipartUpload, ObjectStore, ObjectStoreExt};
+use tokio::io::AsyncReadExt;
 use tokio_util::io::StreamReader;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{
     ByteStream, Endpoint, Entry, Error, Location, Receiver, Result, SendMeta, Sender, stream,
@@ -327,22 +327,17 @@ impl Receiver for S3Endpoint {
 
 #[async_trait]
 impl Sender for S3Endpoint {
-    async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()> {
+    async fn send(&self, mut body: ByteStream, meta: &SendMeta) -> Result<()> {
         let path = self.obj_path(meta.filename.as_deref())?;
         debug!(bucket = %self.bucket, %path, "s3 put");
-        let mut w = stream::Idle::maybe(
-            BufWriter::new(self.store.clone(), path),
-            self.loc.timeout()?,
-        );
-        let result = stream::pipe(body, &mut w).await;
-        match result {
-            Ok(_) => w.shutdown().await?,
-            Err(e) => {
-                let _ = w.into_inner().abort().await;
-                return Err(e);
-            }
+        let first = read_part(&mut body).await?;
+        if first.len() < PART_SIZE {
+            self.store.put(&path, first.into()).await.map_err(s3_err)?;
+            return Ok(());
         }
-        Ok(())
+        debug!(bucket = %self.bucket, %path, "s3 multipart upload");
+        let upload = self.store.put_multipart(&path).await.map_err(s3_err)?;
+        send_multipart(upload, first, &mut body).await
     }
 
     fn supports_remove(&self) -> bool {
@@ -367,9 +362,219 @@ impl Sender for S3Endpoint {
     }
 }
 
+/// Size of one part of a multipart upload, and the most a single PUT carries.
+const PART_SIZE: usize = 10 * 1024 * 1024;
+
+/// Parts uploaded in parallel.
+const PARTS_IN_FLIGHT: usize = 8;
+
+/// Up to [`PART_SIZE`] bytes of `body`; fewer only at its end.
+async fn read_part(body: &mut ByteStream) -> Result<bytes::Bytes> {
+    let mut buf = bytes::BytesMut::with_capacity(PART_SIZE);
+    while buf.len() < PART_SIZE {
+        if body.read_buf(&mut buf).await? == 0 {
+            break;
+        }
+    }
+    Ok(buf.freeze())
+}
+
+/// Send `first` and the rest of `body` through `upload`, and complete it.
+///
+/// A multipart upload that is neither completed nor aborted keeps its parts,
+/// and their cost, until a lifecycle rule removes them. Every way out other
+/// than completion therefore aborts it: a failure here, and the future being
+/// dropped (a cancel) through the guard.
+async fn send_multipart(
+    upload: Box<dyn MultipartUpload>,
+    first: bytes::Bytes,
+    body: &mut ByteStream,
+) -> Result<()> {
+    let mut guard = AbortOnDrop(Some(upload));
+    let upload = guard.0.as_deref_mut().expect("armed");
+    let result = upload_parts(upload, first, body).await;
+    let mut upload = guard.0.take().expect("armed");
+    if let Err(e) = result {
+        debug!("aborting the multipart upload");
+        if let Err(abort) = upload.abort().await {
+            warn!("s3: could not abort the multipart upload: {abort}");
+        }
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Send `first` and the rest of `body` as parts, then complete the upload.
+async fn upload_parts(
+    upload: &mut dyn MultipartUpload,
+    first: bytes::Bytes,
+    body: &mut ByteStream,
+) -> Result<()> {
+    let mut parts = futures::stream::FuturesUnordered::new();
+    parts.push(upload.put_part(first.into()));
+    loop {
+        while parts.len() >= PARTS_IN_FLIGHT {
+            if let Some(done) = parts.next().await {
+                done.map_err(s3_err)?;
+            }
+        }
+        let part = read_part(body).await?;
+        if part.is_empty() {
+            break;
+        }
+        let last = part.len() < PART_SIZE;
+        parts.push(upload.put_part(part.into()));
+        if last {
+            break;
+        }
+    }
+    while let Some(done) = parts.next().await {
+        done.map_err(s3_err)?;
+    }
+    upload.complete().await.map_err(s3_err)?;
+    Ok(())
+}
+
+/// Aborts a multipart upload that is dropped before it was completed or
+/// aborted. `Drop` cannot wait, so the abort runs as a task of its own.
+struct AbortOnDrop(Option<Box<dyn MultipartUpload>>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        let Some(mut upload) = self.0.take() else {
+            return;
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(rt) => {
+                debug!("aborting an unfinished multipart upload");
+                rt.spawn(async move {
+                    if let Err(e) = upload.abort().await {
+                        warn!("s3: could not abort the multipart upload: {e}");
+                    }
+                });
+            }
+            Err(_) => warn!("s3: an unfinished multipart upload was left behind"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Counts what happens to it; parts fail from `fail_from` on, and a part
+    /// never finishes when `hang` is set.
+    #[derive(Debug, Default)]
+    struct Upload {
+        parts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        completed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        aborted: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        fail_from: Option<usize>,
+        fail_complete: bool,
+        hang: bool,
+    }
+
+    #[async_trait]
+    impl MultipartUpload for Upload {
+        fn put_part(&mut self, _: object_store::PutPayload) -> object_store::UploadPart {
+            let n = self
+                .parts
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let fail = self.fail_from.is_some_and(|f| n >= f);
+            let hang = self.hang;
+            Box::pin(async move {
+                if hang {
+                    std::future::pending::<()>().await;
+                }
+                if fail {
+                    return Err(object_store::Error::Generic {
+                        store: "test",
+                        source: "part refused".into(),
+                    });
+                }
+                Ok(())
+            })
+        }
+        async fn complete(&mut self) -> object_store::Result<object_store::PutResult> {
+            if self.fail_complete {
+                return Err(object_store::Error::Generic {
+                    store: "test",
+                    source: "complete refused".into(),
+                });
+            }
+            self.completed
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(object_store::PutResult {
+                e_tag: None,
+                version: None,
+                extensions: Default::default(),
+            })
+        }
+        async fn abort(&mut self) -> object_store::Result<()> {
+            self.aborted
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    fn payload(len: usize) -> ByteStream {
+        Box::pin(std::io::Cursor::new(vec![7u8; len]))
+    }
+
+    #[tokio::test]
+    async fn every_failed_multipart_upload_is_aborted() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let body_len = PART_SIZE * 2 + 5;
+
+        let ok = Upload::default();
+        let (completed, aborted) = (ok.completed.clone(), ok.aborted.clone());
+        let mut body = payload(body_len);
+        let first = read_part(&mut body).await.unwrap();
+        send_multipart(Box::new(ok), first, &mut body)
+            .await
+            .unwrap();
+        assert!(completed.load(Relaxed) && !aborted.load(Relaxed));
+
+        for up in [
+            Upload {
+                fail_from: Some(1),
+                ..Default::default()
+            },
+            Upload {
+                fail_complete: true,
+                ..Default::default()
+            },
+        ] {
+            let aborted = up.aborted.clone();
+            let mut body = payload(body_len);
+            let first = read_part(&mut body).await.unwrap();
+            assert!(
+                send_multipart(Box::new(up), first, &mut body)
+                    .await
+                    .is_err()
+            );
+            assert!(aborted.load(Relaxed));
+        }
+
+        // Dropped mid-way, as a cancel does.
+        let up = Upload {
+            hang: true,
+            ..Default::default()
+        };
+        let aborted = up.aborted.clone();
+        let mut body = payload(body_len);
+        let first = read_part(&mut body).await.unwrap();
+        let sending = send_multipart(Box::new(up), first, &mut body);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), sending)
+                .await
+                .is_err()
+        );
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(aborted.load(Relaxed), "a dropped upload is aborted");
+    }
 
     #[test]
     fn keys_are_stored_as_they_are_named() {

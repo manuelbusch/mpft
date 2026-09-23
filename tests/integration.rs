@@ -179,7 +179,8 @@ roundtrip_test!(ftp_roundtrip, "MPT_IT_FTP", 1024 * 1024 + 3, true);
 roundtrip_test!(ftps_roundtrip, "MPT_IT_FTPS", 1024 * 1024 + 9, true);
 roundtrip_test!(http_roundtrip, "MPT_IT_HTTP", 512 * 1024 + 1, false);
 roundtrip_test!(webdav_roundtrip, "MPT_IT_WEBDAV", 700 * 1024 + 7, true);
-roundtrip_test!(s3_roundtrip, "MPT_IT_S3", 6 * 1024 * 1024 + 11, true);
+// Over 10 MiB, so that it goes up as a multipart upload of three parts.
+roundtrip_test!(s3_roundtrip, "MPT_IT_S3", 21 * 1024 * 1024 + 11, true);
 
 /// One source, several real targets at once (stream mode): every target must
 /// receive identical bytes. Uses whichever of sftp/s3/webdav/ftp are configured.
