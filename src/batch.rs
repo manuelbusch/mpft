@@ -94,10 +94,11 @@ pub struct JobReport {
 }
 
 impl JobReport {
-    /// Every target delivered, and the checksum (if checked) matched.
+    /// Every target delivered, the checksum (if checked) matched, and the
+    /// source (if it was to be deleted) is gone.
     pub fn ok(&self) -> bool {
         match &self.result {
-            Ok(r) => r.all_ok() && r.checked.as_ref().is_none_or(|c| c.ok()),
+            Ok(r) => r.ok(),
             Err(_) => false,
         }
     }

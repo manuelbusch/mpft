@@ -235,6 +235,15 @@ impl FanoutReport {
         self.targets.iter().all(|t| t.result.is_ok())
     }
 
+    /// The copy did everything it was asked to: every target has the file,
+    /// the checksum (if checked) matched, and the source (if it was to be
+    /// deleted) is gone.
+    pub fn ok(&self) -> bool {
+        self.all_ok()
+            && self.checked.as_ref().is_none_or(|c| c.ok())
+            && !matches!(self.source_removed, Some(Err(_)))
+    }
+
     pub fn failures(&self) -> impl Iterator<Item = &TargetReport> {
         self.targets.iter().filter(|t| t.result.is_err())
     }

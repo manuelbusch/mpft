@@ -108,7 +108,7 @@ $ mpt --json cp --check out/report.pdf back/ 2>/dev/null
 | Field | Meaning |
 |---|---|
 | `source`, `bytes_read`, `elapsed_ms` | what was read, and how long the whole copy took |
-| `ok` | every target succeeded **and** the check, if any, agreed |
+| `ok` | every target succeeded, the check, if any, agreed, **and** the source, under `--delete-source`, was deleted |
 | `targets[]` | one object per target, in the order they were given |
 | `targets[].ok`, `.error`, `.cancelled` | that target's outcome |
 | `targets[].bytes`, `.elapsed_ms`, `.attempts` | what it took and how often it was tried |
@@ -119,7 +119,8 @@ $ mpt --json cp --check out/report.pdf back/ 2>/dev/null
 | `source_removed`, `remove_error` | `--delete-source`: whether the source went, and why not |
 
 `ok` is the field to branch on. It is not simply "no error": a copy whose
-targets all succeeded but whose checksum did not match is `false`.
+targets all succeeded but whose checksum did not match is `false`, and so is
+one whose source `--delete-source` could not delete.
 
 `mpt --json ls <url>` prints the listing as an array, with `modified` in RFC
 3339:

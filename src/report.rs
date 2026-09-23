@@ -51,7 +51,7 @@ pub fn fanout_json(report: &FanoutReport) -> Value {
         "source": report.source,
         "bytes_read": report.bytes_read,
         "elapsed_ms": report.elapsed.as_millis() as u64,
-        "ok": report.all_ok() && report.checked.as_ref().is_none_or(|c| c.ok()),
+        "ok": report.ok(),
         "targets": targets,
         "digests": digests,
         "check": check,
@@ -252,5 +252,32 @@ mod tests {
         assert_eq!(back.digests, vec![(HashAlgo::Blake3, "ab".repeat(32))]);
         // The JSON of the round-tripped report is the JSON it came from.
         assert_eq!(fanout_json(&back), fanout_json(&report));
+    }
+
+    #[test]
+    fn a_source_that_could_not_be_deleted_is_not_ok() {
+        let mut report = FanoutReport {
+            source: "report.pdf".into(),
+            bytes_read: 0,
+            elapsed: Duration::ZERO,
+            targets: vec![TargetReport {
+                target: "/tmp/".into(),
+                bytes: 0,
+                elapsed: Duration::ZERO,
+                attempts: 0,
+                result: Ok(()),
+                sidecar: None,
+                signature: None,
+                skipped: true,
+            }],
+            digests: Vec::new(),
+            checked: None,
+            source_removed: Some(Ok(())),
+        };
+        assert_eq!(fanout_json(&report)["ok"], true);
+        report.source_removed = Some(Err(Error::Remote("permission denied".into())));
+        let v = fanout_json(&report);
+        assert_eq!(v["ok"], false);
+        assert_eq!(v["source_removed"], false);
     }
 }

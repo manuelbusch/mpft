@@ -1302,7 +1302,7 @@ fn print_report(
                 report.source,
                 t.target
             );
-            return None;
+            return print_removed(report, prefix);
         }
         anstream::eprintln!(
             "{prefix}{DIM}{}{DIM:#} -> {DIM}{}{DIM:#}: {NUM}{}{NUM:#} bytes in {NUM}{:.2?}{NUM:#}",
