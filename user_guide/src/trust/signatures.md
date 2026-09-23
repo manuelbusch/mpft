@@ -150,7 +150,9 @@ release@example.com valid-after=20260101,valid-before=20270101 ssh-ed25519 AAAAC
 
 For OpenPGP the keyring's self-signatures are verified when it is loaded.
 Revoked keys and subkeys are refused, and so are keys that have expired, or
-have not yet come into force, at the moment of verification.
+have not yet come into force, at the moment of verification. A subkey counts
+only if its binding marks it as a signing key; a signature from an encryption
+or authentication subkey is refused.
 
 ## Signing time
 

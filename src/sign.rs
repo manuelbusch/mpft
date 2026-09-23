@@ -886,6 +886,16 @@ pub mod pgp {
         })
     }
 
+    /// Whether a subkey may make data signatures: the key flags of its newest
+    /// binding signature must include "sign". An encryption or authentication
+    /// subkey that happens to use a signing algorithm does not qualify.
+    fn may_sign(sigs: &[Signature]) -> bool {
+        sigs.iter()
+            .filter(|s| s.typ() == Some(SignatureType::SubkeyBinding))
+            .max_by_key(|s| s.created().map(SystemTime::from).unwrap_or(UNIX_EPOCH))
+            .is_some_and(|s| s.key_flags().sign())
+    }
+
     /// `None` when the component was usable at `at`, otherwise the reason.
     fn invalid_at(
         created: SystemTime,
@@ -974,6 +984,10 @@ pub mod pgp {
                     }
                     if revoked(&sub.signatures) {
                         why.push(format!("subkey {} is revoked", sub.fingerprint()));
+                        continue;
+                    }
+                    if !may_sign(&sub.signatures) {
+                        why.push(format!("subkey {} is not a signing key", sub.fingerprint()));
                         continue;
                     }
                     let created = SystemTime::from(sub.created_at());
@@ -1394,6 +1408,62 @@ mod tests {
         let earlier = SystemTime::now() - CLOCK_SKEW - Duration::from_secs(60);
         let e = verifier.verify_at(msg, &sig, earlier).unwrap_err();
         assert!(e.to_string().contains("in the future"), "{e}");
+    }
+
+    /// A subkey is accepted only if its binding allows it to sign; a
+    /// signature from an authentication or encryption subkey is refused even
+    /// when its algorithm could sign.
+    #[cfg(feature = "sign-pgp")]
+    #[test]
+    fn pgp_subkeys_must_be_signing_keys() {
+        use ::pgp::composed::{
+            ArmorOptions, DetachedSignature, KeyType, SecretKeyParamsBuilder, SignedPublicKey,
+            SubkeyParamsBuilder,
+        };
+        use ::pgp::crypto::hash::HashAlgorithm;
+        use ::pgp::types::Password;
+        let subkey = |can_sign: bool| {
+            SubkeyParamsBuilder::default()
+                .key_type(KeyType::Ed25519Legacy)
+                .can_sign(can_sign)
+                .can_authenticate(!can_sign)
+                .build()
+                .unwrap()
+        };
+        let secret = SecretKeyParamsBuilder::default()
+            .key_type(KeyType::Ed25519Legacy)
+            .can_certify(true)
+            .primary_user_id("Dave <dave@example.com>".to_string())
+            .subkeys(vec![subkey(true), subkey(false)])
+            .build()
+            .unwrap()
+            .generate(rand::thread_rng())
+            .unwrap();
+        let public: SignedPublicKey = secret.clone().into();
+        let keyring = pgp::Keyring::parse(
+            public
+                .to_armored_string(ArmorOptions::default())
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
+        let msg = b"deadbeef  report.pdf\n";
+        let sign_with = |i: usize| {
+            DetachedSignature::sign_binary_data(
+                rand::thread_rng(),
+                &secret.secret_subkeys[i].key,
+                &Password::empty(),
+                HashAlgorithm::Sha256,
+                &msg[..],
+            )
+            .unwrap()
+            .to_armored_bytes(ArmorOptions::default())
+            .unwrap()
+        };
+        let who = keyring.verify(msg, &sign_with(0)).unwrap();
+        assert!(who.contains("subkey"), "{who}");
+        let e = keyring.verify(msg, &sign_with(1)).unwrap_err();
+        assert!(e.to_string().contains("is not a signing key"), "{e}");
     }
 
     #[cfg(feature = "sign-pgp")]
