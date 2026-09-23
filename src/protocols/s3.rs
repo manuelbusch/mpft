@@ -60,12 +60,15 @@ impl S3Endpoint {
                 .with_allow_http(true);
         }
         if let Some(t) = loc.timeout()? {
-            // `timeout` bounds one request (object_store defaults to 30 s too),
-            // `read_timeout` the gap between two reads of a response.
+            // An inactivity limit, as everywhere else, and no deadline for a
+            // whole request: object_store's own default of 30 s would cut off
+            // any download that takes longer. `read_timeout` covers the wait
+            // for a reply, which includes sending one part of an upload, and
+            // then the gap between two reads of it.
             client = client
                 .with_connect_timeout(t)
                 .with_read_timeout(t)
-                .with_timeout(t);
+                .with_timeout_disabled();
         } else {
             client = client
                 .with_timeout_disabled()
@@ -574,6 +577,41 @@ mod tests {
             tokio::task::yield_now().await;
         }
         assert!(aborted.load(Relaxed), "a dropped upload is aborted");
+    }
+
+    /// A download that takes longer than the timeout, but never pauses that
+    /// long, is not cut off.
+    #[tokio::test]
+    async fn a_slow_but_steady_download_is_not_cut_off() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut conn, _) = listener.accept().await.unwrap();
+            let mut req = [0u8; 4096];
+            let _ = conn.read(&mut req).await;
+            conn.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\
+                  Last-Modified: Wed, 21 Oct 2015 07:28:00 GMT\r\nETag: \"x\"\r\n\r\n",
+            )
+            .await
+            .unwrap();
+            for _ in 0..15 {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                conn.write_all(b"z").await.unwrap();
+            }
+        });
+        let ep = S3Endpoint::new(
+            Location::parse(&format!(
+                "s3://k:s@bucket/slow.bin?endpoint=http://127.0.0.1:{port}&timeout=1"
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut body = ep.receive().await.expect("get");
+        let mut got = Vec::new();
+        body.read_to_end(&mut got).await.expect("a steady trickle");
+        assert_eq!(got, b"zzzzzzzzzzzzzzz");
     }
 
     #[test]

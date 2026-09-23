@@ -79,7 +79,8 @@ has the details, including what `--resume` keeps.
 deadline. Any read or write that makes progress resets it. A large file over a
 slow but steady line is therefore fine, while a connection that has stopped
 answering is given up on. It covers connecting, logging in, and every byte
-after that.
+after that. S3 uploads count their progress per part instead; [Timeouts on
+S3](../protocols/s3.md#timeouts-on-s3) has the detail.
 
 ```
 mpt --timeout 120 cp big.iso sftp://srv.example.com/in/
