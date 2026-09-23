@@ -307,7 +307,7 @@ pub struct Resolved {
 /// Besides the reserved keys below, every entry becomes a URL option of the
 /// resolved location, so a profile can carry anything the scheme understands
 /// (`key`, `known_hosts`, `hostkey`, `timeout`, `tls`, `subject`, …).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct Profile {
     /// The endpoint this profile stands for.
     pub url: String,
@@ -325,6 +325,37 @@ pub struct Profile {
     pub via: Option<String>,
     #[serde(flatten)]
     options: BTreeMap<String, toml::Value>,
+}
+
+/// The options with a secret written out in them shown as `***`, like a
+/// location shows them.
+impl std::fmt::Debug for Profile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let options: Vec<(String, String)> = self
+            .options
+            .keys()
+            .map(|k| {
+                let shown = match self.options.get(k) {
+                    Some(toml::Value::Table(t)) => format!("{t}"),
+                    Some(_) if crate::location::is_secret_option(k) || k == "header" => {
+                        "***".to_string()
+                    }
+                    Some(v) => v.to_string(),
+                    None => String::new(),
+                };
+                (k.clone(), shown)
+            })
+            .collect();
+        f.debug_struct("Profile")
+            .field("url", &self.url)
+            .field("password", &self.password)
+            .field("sign", &self.sign)
+            .field("hash", &self.hash)
+            .field("atomic", &self.atomic)
+            .field("via", &self.via)
+            .field("options", &options)
+            .finish()
+    }
 }
 
 /// A free-form entry of a profile: a value written out, or a credential
@@ -946,6 +977,8 @@ impl Config {
             }
         }
         let uses = |wanted: &[crate::Scheme]| wanted.iter().any(|s| schemes.contains(s));
+        // This configuration's rule, which is not installed yet at the start.
+        let strict = self.policy().strict_permissions;
         // A profile can ask for signing on its own.
         let signing = signing
             || names
@@ -959,7 +992,7 @@ impl Config {
             };
             if let Some(secret) = &profile.password {
                 let pw = secret
-                    .resolve(&format!("password of profile '{name}'"))
+                    .resolve_under(&format!("password of profile '{name}'"), strict)
                     .await?;
                 self.resolved.profile_passwords.insert(name.clone(), pw);
             }
@@ -967,7 +1000,7 @@ impl Config {
             for (key, value) in profile.option_values()? {
                 if let OptionValue::Secret(r) = value {
                     let v = Secret::Reference(r)
-                        .resolve(&format!("{key} of profile '{name}'"))
+                        .resolve_under(&format!("{key} of profile '{name}'"), strict)
                         .await?;
                     options.push((key, v));
                 }
@@ -979,12 +1012,12 @@ impl Config {
         if uses(&[crate::Scheme::Sftp, crate::Scheme::Scp, crate::Scheme::Ssh])
             && let Some(s) = &self.ssh.passphrase
         {
-            self.resolved.ssh_passphrase = Some(s.resolve("[ssh] passphrase").await?);
+            self.resolved.ssh_passphrase = Some(s.resolve_under("[ssh] passphrase", strict).await?);
         }
         if uses(&[crate::Scheme::Mailto, crate::Scheme::Smtp])
             && let Some(s) = &self.mail.password
         {
-            self.resolved.mail_password = Some(s.resolve("[mail] password").await?);
+            self.resolved.mail_password = Some(s.resolve_under("[mail] password", strict).await?);
         }
         if uses(&[
             crate::Scheme::Http,
@@ -993,19 +1026,21 @@ impl Config {
             crate::Scheme::WebDavs,
         ]) && let Some(s) = &self.http.token
         {
-            self.resolved.http_token = Some(s.resolve("[http] token").await?);
+            self.resolved.http_token = Some(s.resolve_under("[http] token", strict).await?);
         }
         if uses(&[crate::Scheme::S3]) {
             if let Some(s) = &self.s3.access_key_id {
-                self.resolved.s3_access_key_id = Some(s.resolve("[s3] access_key_id").await?);
+                self.resolved.s3_access_key_id =
+                    Some(s.resolve_under("[s3] access_key_id", strict).await?);
             }
             if let Some(s) = &self.s3.secret_access_key {
                 self.resolved.s3_secret_access_key =
-                    Some(s.resolve("[s3] secret_access_key").await?);
+                    Some(s.resolve_under("[s3] secret_access_key", strict).await?);
             }
         }
         if signing && let Some(s) = &self.signing.passphrase {
-            self.resolved.signing_passphrase = Some(s.resolve("[signing] passphrase").await?);
+            self.resolved.signing_passphrase =
+                Some(s.resolve_under("[signing] passphrase", strict).await?);
         }
         Ok(())
     }
@@ -1630,7 +1665,19 @@ mod tests {
             ["Authorization: Bearer abc", "Accept:text/plain"]
         );
 
-        // A literal secret option is a credential too; a plain profile is not.
+        // A literal secret option is a credential too, and does not show in
+        // debug output; a plain profile is neither.
+        let debug = format!(
+            "{:?}",
+            Config::parse(
+                "[profiles.p]\nurl = \"sftp://u:pw1@h/\"\npassword = \"pw2\"\npassphrase = \"pw3\"\n\
+                 header = \"Authorization: pw4\"\n[ssh]\npassphrase = \"pw5\"\n"
+            )
+            .unwrap()
+        );
+        for secret in ["pw2", "pw3", "pw4", "pw5"] {
+            assert!(!debug.contains(secret), "{secret} in {debug}");
+        }
         let literal = Config::parse("[profiles.p]\nurl = \"sftp://h/\"\npassphrase = \"x\"\n");
         assert!(literal.unwrap().holds_credentials());
         let header = Config::parse(

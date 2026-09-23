@@ -24,8 +24,9 @@ pub struct Policy {
     pub refuse_insecure_tls: bool,
     /// `--check` must verify a signature as well as the checksum.
     pub require_signature: bool,
-    /// A configuration file with credentials that others can read is an
-    /// error rather than a warning.
+    /// A secret file (`{ file = … }`, `--password-file`) that others can
+    /// read is an error rather than a warning. A configuration file is
+    /// judged by its own `[policy]` when it is read.
     pub strict_permissions: bool,
     /// How old a signature may be, judged against the signing time recorded
     /// in the checksum file. `None` puts no limit on it.

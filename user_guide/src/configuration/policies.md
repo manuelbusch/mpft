@@ -103,8 +103,10 @@ policy.
 
 A configuration file that holds credentials, or names a command that produces
 them, is [warned about](file.md#permissions) when others can read it.
-`strict_permissions = true` makes it an error instead. Set it on a shared
-machine and in any image where the file is baked in.
+`strict_permissions = true` makes it an error instead, and does the same for
+a [secret file](credentials.md#files-with-secrets-in-them) the configuration
+or `--password-file` names. Set it on a shared machine and in any image where
+the file is baked in.
 
 ## Where to put a policy
 

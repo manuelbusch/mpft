@@ -31,8 +31,9 @@ use tracing::{debug, warn};
 
 use crate::{Error, Result};
 
-/// A password, passphrase or access key in the configuration.
-#[derive(Debug, Clone, Deserialize)]
+/// A password, passphrase or access key in the configuration. Its `Debug`
+/// shows a literal as `***`, so a configuration can be logged.
+#[derive(Clone, Deserialize)]
 #[serde(untagged)]
 pub enum Secret {
     /// Written out in the file. Works, but warns: anyone who can read the
@@ -121,11 +122,34 @@ pub enum Source {
     Vault(String),
 }
 
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Secret::Literal(_) => f.write_str("Literal(***)"),
+            Secret::Reference(r) => f.debug_tuple("Reference").field(r).finish(),
+        }
+    }
+}
+
 impl Secret {
     /// The secret itself, fetching it if necessary. Results of the providers
-    /// that cost something (a process, a network call) are kept for the rest
-    /// of the process, so several endpoints can share one reference.
+    /// that cost something (a process, a network call) are kept for a while
+    /// (see [`DEFAULT_TTL`]), so several endpoints can share one reference.
+    /// A secret file others can read is refused under the installed
+    /// policy's `strict_permissions`, and warned about otherwise.
     pub async fn resolve(&self, what: &str) -> Result<SecretString> {
+        self.resolve_under(what, crate::policy::policy().strict_permissions)
+            .await
+    }
+
+    /// [`Secret::resolve`] with `strict_permissions` given rather than taken
+    /// from the installed policy: for a configuration that is not installed
+    /// yet.
+    pub async fn resolve_under(
+        &self,
+        what: &str,
+        strict_permissions: bool,
+    ) -> Result<SecretString> {
         match self {
             Secret::Literal(v) => {
                 warn!(
@@ -134,7 +158,7 @@ impl Secret {
                 );
                 Ok(SecretString::from(v.clone()))
             }
-            Secret::Reference(r) => r.resolve(what).await,
+            Secret::Reference(r) => r.resolve(what, strict_permissions).await,
         }
     }
 
@@ -145,7 +169,7 @@ impl Secret {
 }
 
 impl SecretRef {
-    async fn resolve(&self, what: &str) -> Result<SecretString> {
+    async fn resolve(&self, what: &str, strict_permissions: bool) -> Result<SecretString> {
         let ttl = self.ttl.unwrap_or(DEFAULT_TTL);
         if let Some(hit) = cached(&self.source, ttl) {
             debug!(%what, "secret already fetched");
@@ -156,7 +180,7 @@ impl SecretRef {
         let fail = |e: String| Error::Auth(format!("{what}: {e}"));
         let value = match &self.source {
             Source::Env(name) => from_env(name),
-            Source::File(path) => from_file(path),
+            Source::File(path) => from_file(path, strict_permissions),
             Source::Cmd(cmd) => from_cmd(cmd).await,
             Source::Keyring(entry) => from_keyring(entry).await,
             Source::Vault(path) => from_vault(path).await,
@@ -221,9 +245,17 @@ fn from_env(name: &str) -> Fetched {
         .map_err(|_| format!("${name} is not set"))
 }
 
-fn from_file(path: &str) -> Fetched {
+fn from_file(path: &str, strict_permissions: bool) -> Fetched {
     let path = std::path::PathBuf::from(crate::config::expand_tilde(path));
-    warn_if_world_readable(&path);
+    match exposure(&path) {
+        Some(complaint) if strict_permissions => {
+            return Err(format!(
+                "{complaint} (refused by policy.strict_permissions)"
+            ));
+        }
+        Some(complaint) => warn!("{complaint}"),
+        None => {}
+    }
     let text =
         std::fs::read_to_string(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
     Ok(SecretString::from(first_line(&text)))
@@ -361,7 +393,7 @@ pub fn keyring_delete(entry: &str) -> Result<()> {
 #[cfg(feature = "keyring")]
 pub async fn keyring_get(entry: &str) -> Result<SecretString> {
     SecretRef::from(Source::Keyring(entry.to_string()))
-        .resolve(&format!("keyring {entry}"))
+        .resolve(&format!("keyring {entry}"), false)
         .await
 }
 
@@ -372,32 +404,53 @@ pub fn first_line(text: &str) -> String {
 }
 
 /// A secret file that others can read is a secret everyone has.
+pub fn warn_if_world_readable(path: &std::path::Path) {
+    if let Some(complaint) = exposure(path) {
+        warn!("{complaint}");
+    }
+}
+
+/// [`warn_if_world_readable`], or with `strict_permissions` a refusal to
+/// use the file at all.
+pub fn check_secret_file(path: &std::path::Path, strict_permissions: bool) -> Result<()> {
+    match exposure(path) {
+        Some(complaint) if strict_permissions => Err(Error::Config(format!(
+            "{complaint} (refused by policy.strict_permissions)"
+        ))),
+        Some(complaint) => {
+            warn!("{complaint}");
+            Ok(())
+        }
+        None => Ok(()),
+    }
+}
+
+/// What is wrong with where a secret file lies, if anything.
 ///
 /// Windows has no mode bits to look at; the nearest useful check there is
 /// whether the file lies outside the user's own profile, where the
 /// inherited permissions are anybody's guess.
-pub fn warn_if_world_readable(path: &std::path::Path) {
+fn exposure(path: &std::path::Path) -> Option<String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(md) = std::fs::metadata(path)
-            && md.permissions().mode() & 0o077 != 0
-        {
-            warn!(
-                "{} is readable by others (mode {:o}); chmod 600 it",
-                path.display(),
-                md.permissions().mode() & 0o777
-            );
-        }
+        let md = std::fs::metadata(path).ok()?;
+        let mode = md.permissions().mode() & 0o777;
+        (mode & 0o077 != 0).then(|| {
+            format!(
+                "{} is readable by others (mode {mode:o}); chmod 600 it",
+                path.display()
+            )
+        })
     }
     #[cfg(not(unix))]
-    if outside_home(path) {
-        warn!(
+    outside_home(path).then(|| {
+        format!(
             "{} holds a secret and lies outside your profile directory; \
              check who else can read it",
             path.display()
-        );
-    }
+        )
+    })
 }
 
 /// Whether `path` is outside the user's home directory (`%USERPROFILE%`).
@@ -517,7 +570,7 @@ mod tests {
                 ttl,
             };
             async move {
-                r.resolve("test")
+                r.resolve("test", false)
                     .await
                     .unwrap()
                     .expose_secret()
@@ -532,6 +585,35 @@ mod tests {
         assert_eq!(fetch(Some(Duration::from_nanos(1))).await, "2");
         assert_eq!(fetch(Some(Duration::ZERO)).await, "3");
         assert_eq!(fetch(Some(Duration::ZERO)).await, "4", "never kept");
+    }
+
+    /// A literal does not show in debug output, and a secret file others
+    /// can read is refused under strict_permissions.
+    #[tokio::test]
+    async fn literals_are_redacted_and_loose_files_refused() {
+        let literal = parse("password = \"hunter2\"");
+        assert!(!format!("{literal:?}").contains("hunter2"));
+        let r = parse("password = { env = \"PW\" }");
+        assert!(format!("{r:?}").contains("PW"), "a reference is shown");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("pw");
+            std::fs::write(&path, "s3cret\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let file = Secret::Reference(SecretRef::from(Source::File(path.display().to_string())));
+            assert!(file.resolve_under("test", false).await.is_ok(), "a warning");
+            let err = file
+                .resolve_under("test", true)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("readable by others"), "{err}");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(file.resolve_under("test", true).await.is_ok());
+        }
     }
 
     #[test]

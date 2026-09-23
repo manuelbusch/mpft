@@ -173,9 +173,18 @@ The `file` provider and `--password-file` both check permissions:
 WARN mpt::credentials: /home/deploy/partner.pw is readable by others (mode 644); chmod 600 it
 ```
 
+With `[policy] strict_permissions = true` (in the configuration that names the
+reference, or the one in force for `--password-file`) such a file is refused
+instead of read:
+
+```
+error: authentication failed: [http] token: /home/deploy/partner.pw is readable by others
+       (mode 644); chmod 600 it (refused by policy.strict_permissions)
+```
+
 The same applies to SSH keys, which OpenSSH already insists on. On Windows,
 where there are no mode bits, a file outside the user's profile directory is
-warned about instead.
+warned about, or refused, instead.
 
 ## Single sign-on
 

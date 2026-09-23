@@ -789,9 +789,9 @@ fn init_logging(verbosity: u8, configured: Option<&str>) {
 /// Read a password from a file or from standard input, without keeping the
 /// trailing newline an editor or `echo` leaves behind.
 fn read_password(cli: &Cli) -> anyhow::Result<Option<secrecy::SecretString>> {
-    use mpt::credentials::{first_line, warn_if_world_readable};
+    use mpt::credentials::{check_secret_file, first_line};
     if let Some(path) = &cli.password_file {
-        warn_if_world_readable(path);
+        check_secret_file(path, mpt::policy::policy().strict_permissions)?;
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading the password from {}", path.display()))?;
         return Ok(Some(first_line(&text).into()));
