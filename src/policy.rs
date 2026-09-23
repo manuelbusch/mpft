@@ -4,7 +4,9 @@
 //! the one a caller happens to look at, so they live in a global rather than
 //! in [`crate::Location`]. Defaults come from the environment; the `[policy]`
 //! section of the configuration file replaces them (see
-//! [`crate::config::install`]), and the CLI flags replace those.
+//! [`crate::config::install`]), and the CLI flags replace those; they are
+//! kept as [`Overrides`] so that they survive the configuration being
+//! installed again.
 
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock, RwLock};
@@ -58,10 +60,48 @@ pub fn policy() -> Policy {
     slot().read().map(|p| p.clone()).unwrap_or_default()
 }
 
-/// Replace the policy, usually with the `[policy]` section of the configuration.
-pub fn set_policy(p: Policy) {
+/// Rules the command line sets. They are kept apart from the policy and
+/// laid over it whenever it is replaced, so a configuration installed
+/// again later (for a job list's endpoints, for a server's submission)
+/// cannot undo a flag.
+#[derive(Debug, Clone, Default)]
+pub struct Overrides {
+    /// `--refuse-plaintext-auth`.
+    pub refuse_plaintext_auth: Option<bool>,
+}
+
+impl Overrides {
+    fn apply(&self, p: &mut Policy) {
+        if let Some(v) = self.refuse_plaintext_auth {
+            p.refuse_plaintext_auth = v;
+        }
+    }
+}
+
+fn overrides() -> &'static RwLock<Overrides> {
+    static OVERRIDES: OnceLock<RwLock<Overrides>> = OnceLock::new();
+    OVERRIDES.get_or_init(|| RwLock::new(Overrides::default()))
+}
+
+/// Replace the policy, usually with the `[policy]` section of the
+/// configuration. The command line's [`Overrides`] still win.
+pub fn set_policy(mut p: Policy) {
+    if let Ok(o) = overrides().read() {
+        o.apply(&mut p);
+    }
     if let Ok(mut slot) = slot().write() {
         *slot = p;
+    }
+}
+
+/// Set the command line's rules, which hold from now on over every
+/// policy installed.
+pub fn set_overrides(o: Overrides) {
+    if let Ok(mut slot) = slot().write() {
+        o.apply(&mut slot);
+    }
+    if let Ok(mut current) = overrides().write() {
+        *current = o;
     }
 }
 
@@ -70,11 +110,12 @@ pub fn refuse_plaintext_auth() -> bool {
     policy().refuse_plaintext_auth
 }
 
-/// Override just that one rule (the `--refuse-plaintext-auth` flag).
+/// Override just that one rule (the `--refuse-plaintext-auth` flag), for
+/// the rest of the process.
 pub fn set_refuse_plaintext_auth(refuse: bool) {
-    if let Ok(mut slot) = slot().write() {
-        slot.refuse_plaintext_auth = refuse;
-    }
+    let mut o = overrides().read().map(|o| o.clone()).unwrap_or_default();
+    o.refuse_plaintext_auth = Some(refuse);
+    set_overrides(o);
 }
 
 /// Emit `message` at most once per process; the same warning would otherwise
@@ -201,6 +242,29 @@ mod tests {
         assert!(err.contains("unencrypted"), "{err}");
         set_refuse_plaintext_auth(false);
         assert!(check_credentials(&l).is_ok());
+        set_overrides(Overrides::default());
+    }
+
+    /// A flag holds over a policy installed after it, as a configuration
+    /// installed again for new endpoints does.
+    #[test]
+    fn a_flag_survives_a_new_policy() {
+        let _guard = exclusive();
+        set_refuse_plaintext_auth(true);
+        set_policy(Policy::default());
+        assert!(refuse_plaintext_auth());
+        set_policy(Policy {
+            refuse_insecure_tls: true,
+            ..Policy::default()
+        });
+        assert!(refuse_plaintext_auth());
+        assert!(
+            policy().refuse_insecure_tls,
+            "the rest comes from the policy"
+        );
+        set_overrides(Overrides::default());
+        set_policy(Policy::default());
+        assert!(!refuse_plaintext_auth());
     }
 
     #[test]
