@@ -97,8 +97,9 @@ impl MailEndpoint {
                 s
             }
         };
+        let cfg = crate::config::global();
         if server.password().is_none()
-            && let Some(pw) = &crate::config::global().resolved.mail_password
+            && let Some(pw) = &cfg.resolved.mail_password
         {
             use secrecy::ExposeSecret;
             server.set_password(pw.expose_secret());
@@ -137,7 +138,7 @@ impl MailEndpoint {
             self.loc
                 .opt("auth")
                 .or_else(|| server.opt("auth"))
-                .or_else(|| crate::config::global().mail.auth.as_deref()),
+                .or_else(|| cfg.mail.auth.as_deref()),
         )?;
         Ok(SmtpConfig {
             server,
@@ -152,7 +153,8 @@ impl MailEndpoint {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .or_else(|| {
-                let v = crate::config::global().mail.max_attachment.as_deref()?;
+                let cfg = crate::config::global();
+                let v = cfg.mail.max_attachment.as_deref()?;
                 crate::config::parse_size(v)
                     .map_err(|e| tracing::warn!("[mail] max_attachment: {e}"))
                     .ok()

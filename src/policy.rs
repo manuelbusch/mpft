@@ -190,18 +190,20 @@ pub fn check_credentials(loc: &Location) -> Result<()> {
     Ok(())
 }
 
+/// The policy is global, so the tests that change it (installing a
+/// configuration does) must not overlap.
+#[cfg(test)]
+pub(crate) fn exclusive() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn loc(u: &str) -> Location {
         Location::parse(u).unwrap()
-    }
-
-    /// The policy is global, so the tests that change it must not overlap.
-    fn exclusive() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: Mutex<()> = Mutex::new(());
-        LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     #[test]

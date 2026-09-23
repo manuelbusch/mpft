@@ -24,7 +24,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use secrecy::SecretString;
 use serde::Deserialize;
@@ -906,20 +906,20 @@ impl Config {
     }
 }
 
-/// The installed configuration, leaked on purpose: it is read from every
-/// protocol for the rest of the process, and a reference costs nothing.
-static GLOBAL: RwLock<Option<&'static Config>> = RwLock::new(None);
+/// The installed configuration. Replaced as a whole by [`install`]; whoever
+/// still holds the previous one keeps it until they drop it.
+static GLOBAL: RwLock<Option<Arc<Config>>> = RwLock::new(None);
 
 /// The configuration this process runs with. Empty unless [`install`] was
 /// called, so the library keeps working without a configuration file.
-pub fn global() -> &'static Config {
+pub fn global() -> Arc<Config> {
     if let Ok(g) = GLOBAL.read()
-        && let Some(cfg) = *g
+        && let Some(cfg) = &*g
     {
-        return cfg;
+        return cfg.clone();
     }
-    static EMPTY: OnceLock<Config> = OnceLock::new();
-    EMPTY.get_or_init(Config::default)
+    static EMPTY: OnceLock<Arc<Config>> = OnceLock::new();
+    EMPTY.get_or_init(|| Arc::new(Config::default())).clone()
 }
 
 /// Parse a URL, resolving `mpt://<profile>/…` against the loaded
@@ -932,8 +932,8 @@ pub fn locate(url: &str) -> Result<Location> {
 }
 
 /// The profile a URL refers to, if it refers to one at all.
-pub fn profile_of(url: &str) -> Option<&'static Profile> {
-    global().profiles.get(profile_name(url)?)
+pub fn profile_of(url: &str) -> Option<Profile> {
+    global().profiles.get(profile_name(url)?).cloned()
 }
 
 /// The profile name a `mpt://` URL names, without looking it up.
@@ -982,9 +982,15 @@ impl Resolved {
 /// turn up after the start (a job list read as it arrives); references
 /// already fetched come from the process-wide cache, so this is cheap when
 /// there is nothing new.
+///
+/// One resolution at a time: two that ran side by side (two submissions to
+/// the server) would each start from the same configuration, and the one
+/// published last would drop what the other fetched.
 pub async fn resolve_more(urls: &[&str], signing: bool) -> Result<()> {
+    static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _turn = ONE_AT_A_TIME.lock().await;
     let current = global();
-    let mut cfg = current.clone();
+    let mut cfg = Config::clone(&current);
     cfg.resolve_secrets(urls, signing).await?;
     if cfg.resolved.count() > current.resolved.count() {
         tracing::debug!("new credentials fetched, configuration republished");
@@ -997,9 +1003,8 @@ pub async fn resolve_more(urls: &[&str], signing: bool) -> Result<()> {
 /// its `[policy]` section.
 pub fn install(cfg: Config) {
     crate::policy::set_policy(cfg.policy());
-    let cfg: &'static Config = Box::leak(Box::new(cfg));
     if let Ok(mut g) = GLOBAL.write() {
-        *g = Some(cfg);
+        *g = Some(Arc::new(cfg));
     }
 }
 
@@ -1352,6 +1357,39 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("profile 'other'"), "{err}");
+    }
+
+    /// Two resolutions side by side (two submissions to the server) both
+    /// end up in the published configuration.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::await_holding_lock)] // it keeps the synchronous policy tests out
+    async fn concurrent_resolutions_keep_each_others_secrets() {
+        let _guard = crate::policy::exclusive();
+        install(
+            Config::parse(
+                r#"
+                [profiles.race_a]
+                url = "sftp://h/a/"
+                password = { cmd = "sleep 0.3; echo pw-a" }
+
+                [profiles.race_b]
+                url = "sftp://h/b/"
+                password = { cmd = "sleep 0.3; echo pw-b" }
+                "#,
+            )
+            .unwrap(),
+        );
+        let (a, b) = tokio::join!(
+            resolve_more(&["mpt://race_a/x"], false),
+            resolve_more(&["mpt://race_b/x"], false)
+        );
+        a.unwrap();
+        b.unwrap();
+        let cfg = global();
+        let names: Vec<&String> = cfg.resolved.profile_passwords.keys().collect();
+        assert_eq!(names, ["race_a", "race_b"]);
+        install(Config::default());
     }
 
     #[test]

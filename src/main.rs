@@ -854,7 +854,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
     }
     let password = read_password(&cli)?;
     // A profile can ask for signing and a checksum of its own; the flags win.
-    let profiles: Vec<&mpt::config::Profile> = work
+    let profiles: Vec<mpt::config::Profile> = work
         .endpoint_urls()
         .iter()
         .filter_map(|u| mpt::config::profile_of(u))
@@ -1108,17 +1108,17 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Profiles => {
-            show_profiles(mpt::config::global());
+            show_profiles(&mpt::config::global());
             Ok(())
         }
         Cmd::Config { action } => {
             let ConfigCmd::Check = action;
-            show_config(mpt::config::global());
+            show_config(&mpt::config::global());
             Ok(())
         }
         #[cfg(feature = "server")]
         Cmd::Serve(args) => {
-            let server = server_config(args, mpt::config::global()).await?;
+            let server = server_config(args, &mpt::config::global()).await?;
             // Ctrl-C is the drain signal here, not the copies' cancel: a
             // running job finishes (or is cancelled by the server's grace
             // timer), and there is no terminal to draw progress on.

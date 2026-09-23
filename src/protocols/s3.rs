@@ -109,7 +109,7 @@ impl S3Endpoint {
             b = b
                 .with_access_key_id(id.expose_secret())
                 .with_secret_access_key(key.expose_secret());
-        } else if let Some(profile) = aws_profile(&loc, cfg)? {
+        } else if let Some(profile) = aws_profile(&loc, &cfg)? {
             b = attach_chain(b, profile, loc.opt("region").map(String::from));
         }
         let store = b.build().map_err(|e| Error::transport("s3", e))?;
