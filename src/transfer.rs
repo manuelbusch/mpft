@@ -453,7 +453,8 @@ pub async fn copy_many(
 
     let targets = match opts.cache {
         CacheMode::Memory { limit } => {
-            let cache = MemoryCache::from_stream(body, limit).await?;
+            let cache =
+                cancellable(opts.cancel.as_ref(), MemoryCache::from_stream(body, limit)).await?;
             meta.size = Some(cache.len());
             // The exact size is only known once everything is buffered.
             for job in &mut jobs {
@@ -478,7 +479,10 @@ pub async fn copy_many(
                             Err(Error::Cancelled) => break Err(Error::Cancelled),
                             Err(e) if attempts <= opts.retries => {
                                 warn!(target = %job.dst.location(), attempt = attempts, "send failed, retrying: {e}");
-                                tokio::time::sleep(Duration::from_secs(attempts as u64)).await;
+                                let pause = tokio::time::sleep(Duration::from_secs(attempts as u64));
+                                if cancellable(opts.cancel.as_ref(), async { pause.await; Ok(()) }).await.is_err() {
+                                    break Err(Error::Cancelled);
+                                }
                             }
                             Err(e) => break Err(e),
                         }
@@ -520,8 +524,18 @@ pub async fn copy_many(
                 }
             });
             let targets = futures::future::join_all(running).await;
-            if let Some(driver) = driver {
-                match driver.await {
+            if let Some(mut driver) = driver {
+                // After a cancel the driver may still wait for the source;
+                // nobody needs what it reads any more.
+                let joined = tokio::select! {
+                    biased;
+                    () = cancelled(opts.cancel.as_ref()) => {
+                        driver.abort();
+                        Ok(Ok(()))
+                    }
+                    r = &mut driver => r,
+                };
+                match joined {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => return Err(Error::Io(e)),
                     Err(e) => {
@@ -645,10 +659,10 @@ async fn remove_source(src: &dyn Endpoint) -> Result<()> {
 
 /// Run `fut`, but give up as soon as `cancel` fires. The future is dropped,
 /// which closes whatever connection it was using.
-async fn cancellable<F: std::future::Future<Output = Result<()>>>(
+async fn cancellable<T, F: std::future::Future<Output = Result<T>>>(
     cancel: Option<&CancellationToken>,
     fut: F,
-) -> Result<()> {
+) -> Result<T> {
     match cancel {
         None => fut.await,
         Some(token) => {
@@ -658,6 +672,14 @@ async fn cancellable<F: std::future::Future<Output = Result<()>>>(
                 r = fut => r,
             }
         }
+    }
+}
+
+/// Resolves when `cancel` fires, and never without one.
+async fn cancelled(cancel: Option<&CancellationToken>) {
+    match cancel {
+        Some(token) => token.cancelled().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -1339,6 +1361,153 @@ mod tests {
         assert!(
             !dir.path().join("out/src.bin.mpt-part").exists(),
             "the partial file must be cleaned up"
+        );
+    }
+
+    /// A source that yields a little and then waits for ever.
+    struct HangingSource {
+        loc: crate::Location,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::Receiver for HangingSource {
+        async fn receive(&self) -> Result<crate::ByteStream> {
+            let first = futures::stream::iter([Ok::<_, std::io::Error>(
+                bytes::Bytes::from_static(&[7u8; 1024]),
+            )]);
+            let s = futures::StreamExt::chain(first, futures::stream::pending());
+            Ok(Box::pin(tokio_util::io::StreamReader::new(s)))
+        }
+        async fn list(&self) -> Result<Vec<crate::Entry>> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl Endpoint for HangingSource {
+        fn location(&self) -> &crate::Location {
+            &self.loc
+        }
+        fn as_receiver(&self) -> Option<&dyn crate::Receiver> {
+            Some(self)
+        }
+        fn as_sender(&self) -> Option<&dyn crate::Sender> {
+            None
+        }
+    }
+
+    /// A target whose every send fails with `error`.
+    struct FailingSink {
+        loc: crate::Location,
+        error: fn() -> Error,
+        sends: std::sync::atomic::AtomicU32,
+    }
+
+    impl FailingSink {
+        fn new(error: fn() -> Error) -> Self {
+            FailingSink {
+                loc: crate::Location::parse("/nowhere/out/").unwrap(),
+                error,
+                sends: Default::default(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::Sender for FailingSink {
+        async fn send(&self, _: crate::ByteStream, _: &SendMeta) -> Result<()> {
+            self.sends
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err((self.error)())
+        }
+    }
+
+    impl Endpoint for FailingSink {
+        fn location(&self) -> &crate::Location {
+            &self.loc
+        }
+        fn as_receiver(&self) -> Option<&dyn crate::Receiver> {
+            None
+        }
+        fn as_sender(&self) -> Option<&dyn crate::Sender> {
+            Some(self)
+        }
+    }
+
+    fn reset() -> Error {
+        Error::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset))
+    }
+
+    /// Run `copy_many` and cancel it after a moment; it must end promptly.
+    async fn cancel_soon(
+        src: &dyn Endpoint,
+        dsts: &[&dyn Endpoint],
+        opts: CopyOptions,
+    ) -> Result<FanoutReport> {
+        let cancel = CancellationToken::new();
+        let opts = CopyOptions {
+            cancel: Some(cancel.clone()),
+            ..opts
+        };
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            cancel.cancel();
+        });
+        tokio::time::timeout(Duration::from_secs(5), copy_many(src, dsts, &opts))
+            .await
+            .expect("cancellation must end the copy")
+    }
+
+    #[tokio::test]
+    async fn cancelling_stops_filling_the_memory_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = HangingSource {
+            loc: crate::Location::parse("/nowhere/src.bin").unwrap(),
+        };
+        let dst = crate::open(&format!("{}/out/", dir.path().display())).unwrap();
+        let opts = CopyOptions {
+            cache: CacheMode::Memory { limit: 1 << 20 },
+            ..Default::default()
+        };
+        let err = cancel_soon(&src, &[dst.as_ref()], opts).await.unwrap_err();
+        assert!(matches!(err, Error::Cancelled), "{err}");
+    }
+
+    #[tokio::test]
+    async fn cancelling_cuts_the_pause_between_retries_short() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("src.bin");
+        std::fs::write(&src_path, b"payload").unwrap();
+        let src = crate::open(src_path.to_str().unwrap()).unwrap();
+        let sink = FailingSink::new(reset);
+        let opts = CopyOptions {
+            cache: CacheMode::Memory { limit: 1 << 20 },
+            retries: 5,
+            ..Default::default()
+        };
+        let report = cancel_soon(src.as_ref(), &[&sink], opts).await.unwrap();
+        assert!(
+            matches!(report.targets[0].result, Err(Error::Cancelled)),
+            "{:?}",
+            report.targets[0].result
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_does_not_wait_for_a_hanging_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = HangingSource {
+            loc: crate::Location::parse("/nowhere/src.bin").unwrap(),
+        };
+        let a = crate::open(&format!("{}/a/", dir.path().display())).unwrap();
+        let b = crate::open(&format!("{}/b/", dir.path().display())).unwrap();
+        let report = cancel_soon(&src, &[a.as_ref(), b.as_ref()], CopyOptions::default())
+            .await
+            .unwrap();
+        assert!(
+            report
+                .targets
+                .iter()
+                .all(|t| matches!(t.result, Err(Error::Cancelled)))
         );
     }
 
