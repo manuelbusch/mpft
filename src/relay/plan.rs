@@ -99,10 +99,12 @@ pub fn plan(job: &Job, table: &ViaTable) -> Vec<Part> {
     let mut groups: Vec<(Option<Location>, Vec<usize>)> = Vec::new();
     for (i, dst) in job.dsts.iter().enumerate() {
         let via = table.for_target(dst).cloned();
-        let key = via.as_ref().map(ToString::to_string);
+        // Compared in full: the masked form would take two relays that
+        // differ only in a secret option for one.
+        let key = via.as_ref().map(Location::unmasked);
         match groups
             .iter_mut()
-            .find(|(v, _)| v.as_ref().map(ToString::to_string) == key)
+            .find(|(v, _)| v.as_ref().map(Location::unmasked) == key)
         {
             Some((_, dsts)) => dsts.push(i),
             None => groups.push((via, vec![i])),
@@ -117,13 +119,13 @@ pub fn plan(job: &Job, table: &ViaTable) -> Vec<Part> {
             })
             .collect(),
         Some(source_relay) => {
-            let source_key = source_relay.to_string();
+            let source_key = source_relay.unmasked();
             let mut parts = Vec::new();
             let mut pull: Vec<(usize, Option<Location>)> = Vec::new();
             for (via, dsts) in groups {
                 match via {
                     None => parts.push(Part::Local { dsts }),
-                    Some(relay) if relay.to_string() == source_key => {
+                    Some(relay) if relay.unmasked() == source_key => {
                         pull.extend(dsts.into_iter().map(|i| (i, None)));
                     }
                     Some(relay) => {

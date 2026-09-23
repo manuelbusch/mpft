@@ -68,7 +68,8 @@ stable. Parse the [JSON report](scripting.md#the-json-report), not the log.
 ## What is never logged
 
 A password, a token or a passphrase does not reach the log at any level.
-Every URL in a log line is written with the password as `***`, the
+Every URL in a log line is written with the password and [secret
+options](../configuration/credentials.md#in-memory) as `***`, the
 `Authorization` header is marked sensitive, and a relay that asks for a
 password on demand logs the target it asked about, not the answer. Pasting a
 `-vv` log into a ticket is safe.

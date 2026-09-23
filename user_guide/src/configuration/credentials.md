@@ -181,5 +181,10 @@ The protocol pages have the worked examples.
 
 Passwords and passphrases are held in a type that redacts itself in debug
 output and overwrites its memory when dropped, so a secret does not linger
-after use or appear in a log line by accident. Every log line that mentions a
-URL shows the password as `***`.
+after use or appear in a log line by accident. Every log line, error, report
+or listing that shows a URL shows its password as `***`, and the value of
+every option that carries a secret too: `passphrase`, `token`, an option named
+like a password, token, secret or API key (`api_key=`), and a
+`header=Authorization:…` (or `Cookie`, `X-Api-Key`, …) as
+`header=Authorization:***`. A URL that cannot be parsed is quoted in its error
+message the same way.

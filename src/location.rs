@@ -249,7 +249,11 @@ impl fmt::Display for Scheme {
 }
 
 /// A parsed endpoint address.
-#[derive(Debug, Clone)]
+///
+/// `Debug` and `Display` show it with the password and every secret option
+/// (see [`is_secret_option`]) masked; [`Location::unmasked`] is the one way
+/// to get them back.
+#[derive(Clone)]
 pub struct Location {
     scheme: Scheme,
     username: Option<String>,
@@ -292,14 +296,15 @@ impl Location {
             return Ok(Location::local(input));
         }
 
-        let url = Url::parse(input).map_err(|e| Error::InvalidUrl(format!("{input}: {e}")))?;
+        let url =
+            Url::parse(input).map_err(|e| Error::InvalidUrl(format!("{}: {e}", masked(input))))?;
         let scheme = Scheme::parse(url.scheme())
             .ok_or_else(|| Error::UnsupportedScheme(url.scheme().to_string()))?;
 
         if scheme == Scheme::File {
-            let path = url
-                .to_file_path()
-                .map_err(|_| Error::InvalidUrl(format!("{input}: not a valid file URL")))?;
+            let path = url.to_file_path().map_err(|_| {
+                Error::InvalidUrl(format!("{}: not a valid file URL", masked(input)))
+            })?;
             let mut loc = Location::local(&path.to_string_lossy());
             loc.dir_hint = url.path().ends_with('/');
             return Ok(loc);
@@ -995,13 +1000,84 @@ impl fmt::Display for Location {
         }
         if !self.options.is_empty() {
             let q: Vec<String> = self
-                .options
-                .iter()
+                .masked_options()
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect();
             write!(f, "?{}", q.join("&"))?;
         }
         Ok(())
+    }
+}
+
+impl fmt::Debug for Location {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let options: Vec<(&str, std::borrow::Cow<'_, str>)> = self.masked_options().collect();
+        f.debug_struct("Location")
+            .field("scheme", &self.scheme)
+            .field("username", &self.username)
+            .field("password", &self.password)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("path", &self.path)
+            .field("options", &options)
+            .field("dir_hint", &self.dir_hint)
+            .field("password_from_url", &self.password_from_url)
+            .field("brokers", &self.brokers)
+            .field("profile", &self.profile)
+            .finish()
+    }
+}
+
+impl Location {
+    /// The options with every secret value replaced by `***`.
+    fn masked_options(&self) -> impl Iterator<Item = (&str, std::borrow::Cow<'_, str>)> {
+        self.options
+            .iter()
+            .map(|(k, v)| (k.as_str(), mask_option(k, v)))
+    }
+}
+
+/// Whether an option carries a secret, so that its value must not be shown:
+/// `passphrase`, `token`, and whatever else is named like a password, a
+/// token, a secret, a signature or an API key. A key file (`key`), a
+/// host-key fingerprint and the SASL mechanism (`auth`) are not secrets.
+pub fn is_secret_option(key: &str) -> bool {
+    let k = key.trim().to_ascii_lowercase();
+    if matches!(k.as_str(), "key" | "hostkey" | "auth") {
+        return false;
+    }
+    [
+        "passw",
+        "passphrase",
+        "token",
+        "secret",
+        "signature",
+        "credential",
+        "auth",
+        "cookie",
+        "session",
+        "private",
+    ]
+    .iter()
+    .any(|w| k.contains(w))
+        || matches!(k.as_str(), "pass" | "pw" | "pwd" | "sig")
+        || k.ends_with("key")
+}
+
+/// An option's value as it may be shown. A `header=Name:Value` is judged by
+/// the header's name (`Authorization`, `Cookie`, `X-Api-Key`, …).
+fn mask_option<'a>(key: &str, value: &'a str) -> std::borrow::Cow<'a, str> {
+    use std::borrow::Cow;
+    if key == "header" {
+        return match value.split_once(':') {
+            Some((name, _)) if is_secret_option(name) => Cow::Owned(format!("{name}:***")),
+            _ => Cow::Borrowed(value),
+        };
+    }
+    if is_secret_option(key) && !value.is_empty() {
+        Cow::Borrowed("***")
+    } else {
+        Cow::Borrowed(value)
     }
 }
 
@@ -1090,15 +1166,55 @@ fn non_empty(s: String) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
-/// Mask `user:password@` in a raw URL string (for error messages before parsing succeeded).
+/// Mask the password of `user:password@` and every secret option in a raw
+/// URL string, for error messages about input that did not parse. Works on
+/// the text alone, since a URL that failed to parse cannot be asked.
 fn masked(raw: &str) -> String {
-    match Url::parse(raw) {
-        Ok(mut u) if u.password().is_some() => {
-            let _ = u.set_password(Some("***"));
-            u.to_string()
+    let Some(start) = raw.find("://").map(|i| i + 3).or_else(|| {
+        // `mailto:` has no authority, only options.
+        raw.find(':').map(|i| i + 1)
+    }) else {
+        return raw.to_string();
+    };
+    let (head, rest) = raw.split_at(start);
+    let mut out = head.to_string();
+    // The authority ends at the first `/`, `?` or `#`; the password is
+    // what lies between its first `:` and its last `@`.
+    let auth_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, rest) = rest.split_at(auth_end);
+    match authority.rfind('@') {
+        Some(at) if authority[..at].contains(':') => {
+            let colon = authority.find(':').unwrap_or(at);
+            out.push_str(&authority[..colon]);
+            out.push_str(":***");
+            out.push_str(&authority[at..]);
         }
-        _ => raw.to_string(),
+        _ => out.push_str(authority),
     }
+    let (before_frag, frag) = rest.split_at(rest.find('#').unwrap_or(rest.len()));
+    match before_frag.split_once('?') {
+        Some((path, query)) => {
+            out.push_str(path);
+            out.push('?');
+            let pairs: Vec<String> = query
+                .split('&')
+                .map(|pair| match pair.split_once('=') {
+                    Some((k, v)) => {
+                        let (dk, dv) = (percent_decode(k), percent_decode(v));
+                        match mask_option(&dk, &dv) {
+                            std::borrow::Cow::Borrowed(same) if same == dv => pair.to_string(),
+                            shown => format!("{k}={shown}"),
+                        }
+                    }
+                    None => pair.to_string(),
+                })
+                .collect();
+            out.push_str(&pairs.join("&"));
+        }
+        None => out.push_str(before_frag),
+    }
+    out.push_str(frag);
+    out
 }
 
 #[cfg(test)]
@@ -1456,13 +1572,55 @@ mod tests {
 
     #[test]
     fn secrets_stay_out_of_debug_output() {
-        let l = Location::parse("ftps://u:hunter2@h/x?passphrase=y").unwrap();
+        let l = Location::parse(
+            "ftps://u:hunter2@h/x?passphrase=letmein&token=t0ken&header=Authorization:Basic%20c2VjcmV0\
+             &header=Accept:text/plain&api_key=k3y&key=/k/id&hostkey=SHA256:abc",
+        )
+        .unwrap();
         let debug = format!("{l:?}");
-        assert!(!debug.contains("hunter2"), "{debug}");
+        let shown = l.to_string();
+        for secret in ["hunter2", "letmein", "t0ken", "c2VjcmV0", "k3y"] {
+            assert!(!debug.contains(secret), "{secret} in {debug}");
+            assert!(!shown.contains(secret), "{secret} in {shown}");
+            assert!(!l.masked().contains(secret), "{secret} in masked()");
+        }
         assert!(debug.contains("REDACTED"), "{debug}");
-        // Display masks it as before, and the value is still usable.
-        assert!(!l.to_string().contains("hunter2"), "{l}");
+        // What is not a secret is still shown.
+        for plain in [
+            "Accept:text/plain",
+            "key=/k/id",
+            "hostkey=SHA256:abc",
+            "Authorization:***",
+        ] {
+            assert!(shown.contains(plain), "{plain} missing from {shown}");
+        }
+        // The values are still usable, and unmasked() keeps them.
         assert_eq!(l.password(), Some("hunter2"));
+        assert_eq!(l.opt("token"), Some("t0ken"));
+        assert!(l.unmasked().contains("letmein"));
+    }
+
+    /// A URL that does not parse is quoted in the error without its
+    /// password or its secret options.
+    #[test]
+    fn a_parse_error_does_not_quote_secrets() {
+        for raw in [
+            "sftp://u:secret@h:99999/x",
+            "sftp://u:secret@h:99999/x?token=secret",
+            "https://u:p:secret@[::1/x?passphrase=secret",
+        ] {
+            let err = Location::parse(raw).unwrap_err().to_string();
+            assert!(!err.contains("secret"), "{err}");
+            assert!(err.contains("***"), "{err}");
+        }
+        assert_eq!(
+            masked("ftp://h/x?a=1&passive=no"),
+            "ftp://h/x?a=1&passive=no"
+        );
+        assert_eq!(
+            masked("mailto:a@b.c?token=x&subject=hi"),
+            "mailto:a@b.c?token=***&subject=hi"
+        );
     }
 
     #[test]
