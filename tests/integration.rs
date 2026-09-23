@@ -257,7 +257,13 @@ async fn fanout_many(cache: mpt::CacheMode, retries: u32) {
         bad.target
     );
     if retries > 0 {
-        assert_eq!(bad.attempts, retries + 1);
+        // Refused credentials are not worth another attempt; an unreachable
+        // host is.
+        let expected = match bad.result {
+            Err(mpt::Error::Auth(_)) => 1,
+            _ => retries + 1,
+        };
+        assert_eq!(bad.attempts, expected, "{:?}", bad.result);
     }
     for (t, base) in report.targets.iter().zip(&bases) {
         assert!(t.result.is_ok(), "{}: {:?}", t.target, t.result);
