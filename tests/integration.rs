@@ -695,6 +695,40 @@ async fn profile_urls_resolve_against_the_configuration() {
     .expect("timeout");
 }
 
+/// A key with characters that object_store would escape is stored under its
+/// own name, and the name a listing returns fetches it again.
+#[tokio::test]
+async fn s3_keys_keep_their_special_characters() {
+    let Some(base) = env("MPT_IT_S3") else {
+        eprintln!("skipping: MPT_IT_S3 not set");
+        return;
+    };
+    mpt::init_crypto();
+    let name = format!("odd [1] #{} 100%.bin", std::process::id());
+    let dst = mpt::open(&base).unwrap();
+    let meta = SendMeta::from_filename(&name).unwrap();
+    dst.sender()
+        .unwrap()
+        .send(Box::pin(std::io::Cursor::new(b"odd".to_vec())), &meta)
+        .await
+        .expect("upload");
+
+    let listing = dst.receiver().unwrap().list().await.expect("list");
+    assert!(
+        listing.iter().any(|e| e.name == name),
+        "{name} is missing from the listing"
+    );
+    let file =
+        mpt::protocols::open(Location::parse(&base).unwrap().sibling(&name).unwrap()).unwrap();
+    let mut stream = file.receiver().unwrap().receive().await.expect("download");
+    let mut got = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut got)
+        .await
+        .unwrap();
+    assert_eq!(got, b"odd");
+    file.sender().unwrap().remove(&name).await.expect("delete");
+}
+
 /// With the `s3-aws-auth` feature, credentials come from the AWS chain — here
 /// from a profile file, the same path `aws sso login` fills in.
 #[cfg(feature = "s3-aws-auth")]

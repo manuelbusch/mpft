@@ -123,8 +123,15 @@ impl S3Endpoint {
             (true, Some(name)) => format!("{}{}", self.key, crate::location::safe_name(name)?),
             _ => self.key.clone(),
         };
-        Ok(ObjPath::from(key))
+        obj_key(&key)
     }
+}
+
+/// An object key as it is, not escaped: `Path::from` would percent-encode
+/// characters such as `%`, `#` or `[`, storing a key under another name
+/// than the one asked for, and one that a listing hands back escaped.
+fn obj_key(key: &str) -> Result<ObjPath> {
+    ObjPath::parse(key).map_err(|e| Error::InvalidUrl(format!("s3: {e}")))
 }
 
 /// Which AWS profile to take credentials from, if the chain should be used
@@ -282,7 +289,7 @@ impl Receiver for S3Endpoint {
         let prefix = if self.key.is_empty() {
             None
         } else {
-            Some(ObjPath::from(self.key.trim_end_matches('/')))
+            Some(obj_key(self.key.trim_end_matches('/'))?)
         };
         let res = self
             .store
@@ -345,7 +352,7 @@ impl Sender for S3Endpoint {
     async fn remove(&self, name: &str) -> Result<()> {
         let sibling = self.loc.sibling(name)?;
         let key = sibling.path().split_once('/').map(|(_, k)| k).unwrap_or("");
-        let path = ObjPath::from(key);
+        let path = obj_key(key)?;
         debug!(bucket = %self.bucket, %path, "s3 delete");
         self.store.delete(&path).await.map_err(s3_err)
     }
@@ -357,5 +364,22 @@ impl Sender for S3Endpoint {
 
     async fn mkdir_all(&self) -> Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keys_are_stored_as_they_are_named() {
+        let ep = S3Endpoint::new(
+            Location::parse("s3://bucket/in/?endpoint=http://127.0.0.1:1").unwrap(),
+        )
+        .unwrap();
+        let path = ep.obj_path(Some("report [1] #2 100%.pdf")).unwrap();
+        assert_eq!(path.as_ref(), "in/report [1] #2 100%.pdf");
+        // A listing hands the key back the same way.
+        assert_eq!(path.filename(), Some("report [1] #2 100%.pdf"));
     }
 }
