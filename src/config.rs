@@ -718,8 +718,11 @@ impl Config {
             defaults.timeout,
             defaults.atomic,
             defaults.resume,
+            defaults.skip_existing,
+            defaults.delete_source,
             defaults.log,
             defaults.json,
+            defaults.parallel,
             signing.key,
             signing.agent_fingerprint,
             verify.allowed_signers,
@@ -1701,5 +1704,69 @@ mod tests {
         user.merge(&mut local);
         assert_eq!(user.defaults.timeout, Some(5));
         assert_eq!(user.defaults.queue, Some(4), "untouched values survive");
+    }
+
+    /// Every key of `[defaults]` a working directory may set reaches the
+    /// merged configuration; the three relay keys are dropped earlier, in
+    /// `read_local`.
+    #[test]
+    fn every_local_default_is_merged() {
+        let (_dir, mut local) = local(
+            r#"
+            [defaults]
+            color = "never"
+            hash = "blake3"
+            cache = true
+            cache_limit = "1M"
+            retries = 3
+            chunk = "8K"
+            queue = 2
+            timeout = 9
+            atomic = false
+            resume = true
+            skip_existing = true
+            delete_source = true
+            log = "debug"
+            json = true
+            parallel = 7
+            "#,
+        );
+        let mut user = Config::default();
+        user.merge(&mut local);
+        let Defaults {
+            color,
+            hash,
+            cache,
+            cache_limit,
+            retries,
+            chunk,
+            queue,
+            timeout,
+            atomic,
+            resume,
+            skip_existing,
+            delete_source,
+            log,
+            json,
+            parallel,
+            via: _,
+            via_credentials: _,
+            via_agent: _,
+        } = user.defaults;
+        assert_eq!(color.as_deref(), Some("never"));
+        assert_eq!(hash.as_deref(), Some("blake3"));
+        assert_eq!(cache, Some(true));
+        assert_eq!(cache_limit.as_deref(), Some("1M"));
+        assert_eq!(retries, Some(3));
+        assert_eq!(chunk.as_deref(), Some("8K"));
+        assert_eq!(queue, Some(2));
+        assert_eq!(timeout, Some(9));
+        assert_eq!(atomic, Some(false));
+        assert_eq!(resume, Some(true));
+        assert_eq!(skip_existing, Some(true));
+        assert_eq!(delete_source, Some(true));
+        assert_eq!(log.as_deref(), Some("debug"));
+        assert_eq!(json, Some(true));
+        assert_eq!(parallel, Some(7));
     }
 }
