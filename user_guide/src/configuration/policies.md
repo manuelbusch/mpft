@@ -25,7 +25,8 @@ warning](../trust/connections.md#credentials-in-the-clear).
 `refuse_plaintext_auth = true` makes that a refusal instead, before any
 connection is made; that page shows the message. `--refuse-plaintext-auth`
 and `MPT_REFUSE_PLAINTEXT_AUTH=1` do the same for one run, which shows what
-the policy would break before it is made permanent.
+the policy would break before it is made permanent. Either of them holds even
+where the file says `refuse_plaintext_auth = false`.
 
 ## Refusing to skip certificate checks
 
@@ -112,9 +113,9 @@ For a person, `~/.config/mpt/config.toml` is the whole story.
 For a service account, put the file where the account reads it and cannot edit
 it, and name it explicitly with `--config` or `$MPT_CONFIG`; see [where it is
 read from](file.md#where-it-is-read-from). A policy in a file the running user
-can rewrite is a reminder, not a control. The same goes for `./mpt.toml`,
-which *may* set `[policy]`, stricter or looser alike, and is therefore only
-advice from the directory you are standing in.
+can rewrite is a reminder, not a control. `./mpt.toml` may add to a policy
+but [only make it stricter](file.md#the-file-in-the-working-directory), so a
+directory you are standing in cannot switch a rule off.
 
 Because `[policy]` is process-wide, it applies to every endpoint of a run,
 including the ones a [profile](profiles.md) or a

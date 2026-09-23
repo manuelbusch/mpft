@@ -720,12 +720,6 @@ impl Config {
             defaults.resume,
             defaults.log,
             defaults.json,
-            policy.known_hosts,
-            policy.refuse_plaintext_auth,
-            policy.refuse_insecure_tls,
-            policy.require_signature,
-            policy.strict_permissions,
-            policy.max_signature_age,
             signing.key,
             signing.agent_fingerprint,
             verify.allowed_signers,
@@ -743,6 +737,7 @@ impl Config {
             s3.path_style,
             s3.profile,
         );
+        self.tighten_policy(other);
         if !other.profiles.is_empty() {
             self.profiles.append(&mut other.profiles);
         }
@@ -751,6 +746,85 @@ impl Config {
         }
         self.sources.append(&mut other.sources);
         self.warnings.append(&mut other.warnings);
+    }
+
+    /// Lay the `[policy]` of `other` (`./mpt.toml`) over this one's, taking a
+    /// value only where it is stricter than what is in force already: a
+    /// directory one happens to stand in may tighten the rules, never
+    /// loosen them. A value that would is ignored with a warning.
+    fn tighten_policy(&mut self, other: &mut Config) {
+        let from = other
+            .sources
+            .first()
+            .map_or_else(|| "mpt.toml".to_string(), |p| p.display().to_string());
+        let mut refused = Vec::new();
+        let theirs = std::mem::take(&mut other.policy);
+        let ours = &mut self.policy;
+
+        // strict > accept-new > off; strict is the built-in default.
+        let rank = |v: &str| match v.trim().to_ascii_lowercase().as_str() {
+            "off" | "no" | "false" => 0,
+            "accept-new" | "accept_new" => 1,
+            _ => 2,
+        };
+        if let Some(v) = theirs.known_hosts {
+            let current = ours.known_hosts.as_deref().map_or(2, rank);
+            if rank(&v) >= current {
+                ours.known_hosts = Some(v);
+            } else {
+                refused.push(format!("known_hosts = \"{v}\""));
+            }
+        }
+        // For the switches, true is the strict side and false the default.
+        for (name, mine, wanted) in [
+            (
+                "refuse_plaintext_auth",
+                &mut ours.refuse_plaintext_auth,
+                theirs.refuse_plaintext_auth,
+            ),
+            (
+                "refuse_insecure_tls",
+                &mut ours.refuse_insecure_tls,
+                theirs.refuse_insecure_tls,
+            ),
+            (
+                "require_signature",
+                &mut ours.require_signature,
+                theirs.require_signature,
+            ),
+            (
+                "strict_permissions",
+                &mut ours.strict_permissions,
+                theirs.strict_permissions,
+            ),
+        ] {
+            match wanted {
+                Some(true) => *mine = Some(true),
+                Some(false) if *mine == Some(true) => refused.push(format!("{name} = false")),
+                Some(false) | None => {}
+            }
+        }
+        // A shorter limit is stricter; 0 is no limit at all. Both values
+        // were checked when their files were read.
+        if let Some(v) = theirs.max_signature_age {
+            let limit = |v: &str| parse_duration(v).ok().filter(|d| !d.is_zero());
+            let looser = match (ours.max_signature_age.as_deref().and_then(limit), limit(&v)) {
+                (Some(_), None) => true,
+                (Some(current), Some(new)) => new > current,
+                (None, _) => false,
+            };
+            if looser {
+                refused.push(format!("max_signature_age = \"{v}\""));
+            } else {
+                ours.max_signature_age = Some(v);
+            }
+        }
+        for what in refused {
+            self.warnings.push(format!(
+                "{from}: ignoring [policy] {what} — a configuration file in the working \
+                 directory may only make the policy stricter"
+            ));
+        }
     }
 
     /// Fetch the secrets the given URLs will need, and no others: a
@@ -883,8 +957,10 @@ impl Config {
     /// environment already says.
     pub fn policy(&self) -> crate::policy::Policy {
         let mut p = crate::policy::Policy::from_env();
+        // The variable can only switch the refusal on, for one run; the
+        // file cannot switch it off again.
         if let Some(v) = self.policy.refuse_plaintext_auth {
-            p.refuse_plaintext_auth = v;
+            p.refuse_plaintext_auth |= v;
         }
         if let Some(v) = self.policy.refuse_insecure_tls {
             p.refuse_insecure_tls = v;
@@ -1549,6 +1625,73 @@ mod tests {
         assert_eq!(cfg.server.allow_delete, Some(true));
         assert_eq!(cfg.server.max_queued, Some(5));
         assert!(Config::parse("[server]\nmax_body = \"big\"\n").is_err());
+    }
+
+    /// `./mpt.toml` may tighten the policy of the user file, never loosen
+    /// it, and says so when it tries.
+    #[test]
+    fn a_local_file_only_tightens_the_policy() {
+        let mut user = Config::parse(
+            "[policy]\nknown_hosts = \"accept-new\"\nrefuse_plaintext_auth = true\n\
+             require_signature = true\nmax_signature_age = \"7d\"\n",
+        )
+        .unwrap();
+        let mut local = Config::parse(
+            "[policy]\nknown_hosts = \"off\"\nrefuse_plaintext_auth = false\n\
+             require_signature = false\nmax_signature_age = \"0\"\nrefuse_insecure_tls = true\n",
+        )
+        .unwrap();
+        user.merge(&mut local);
+        let p = &user.policy;
+        assert_eq!(p.known_hosts.as_deref(), Some("accept-new"));
+        assert_eq!(p.refuse_plaintext_auth, Some(true));
+        assert_eq!(p.require_signature, Some(true));
+        assert_eq!(p.max_signature_age.as_deref(), Some("7d"));
+        assert_eq!(p.refuse_insecure_tls, Some(true), "tightening is taken");
+        for key in [
+            "known_hosts",
+            "refuse_plaintext_auth",
+            "require_signature",
+            "max_signature_age",
+        ] {
+            assert!(
+                user.warnings.iter().any(|w| w.contains(key)),
+                "{key}: {:?}",
+                user.warnings
+            );
+        }
+        assert!(
+            !user
+                .warnings
+                .iter()
+                .any(|w| w.contains("refuse_insecure_tls"))
+        );
+
+        // Against the built-in defaults: `off` loosens strict, a shorter
+        // signature age tightens a longer one.
+        let mut user = Config::parse("[policy]\nmax_signature_age = \"7d\"\n").unwrap();
+        let mut local =
+            Config::parse("[policy]\nknown_hosts = \"off\"\nmax_signature_age = \"1d\"\n").unwrap();
+        user.merge(&mut local);
+        assert_eq!(user.policy.known_hosts, None);
+        assert_eq!(user.policy.max_signature_age.as_deref(), Some("1d"));
+        let mut local = Config::parse("[policy]\nknown_hosts = \"strict\"\n").unwrap();
+        user.merge(&mut local);
+        assert_eq!(user.policy.known_hosts.as_deref(), Some("strict"));
+    }
+
+    /// The environment can switch the refusal of plaintext credentials on
+    /// for a run; the file cannot switch it off again.
+    #[test]
+    fn the_file_cannot_undo_the_environment_refusal() {
+        let _guard = crate::policy::exclusive();
+        // SAFETY: the policy lock keeps the other readers of the variable out.
+        unsafe { std::env::set_var("MPT_REFUSE_PLAINTEXT_AUTH", "1") };
+        let cfg = Config::parse("[policy]\nrefuse_plaintext_auth = false\n").unwrap();
+        let refused = cfg.policy().refuse_plaintext_auth;
+        unsafe { std::env::remove_var("MPT_REFUSE_PLAINTEXT_AUTH") };
+        assert!(refused);
+        assert!(!cfg.policy().refuse_plaintext_auth);
     }
 
     #[test]

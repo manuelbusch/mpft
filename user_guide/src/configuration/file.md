@@ -192,6 +192,17 @@ for `[defaults]` and `[policy]`. A directory you happen to be standing in may
 tune how a transfer runs; it must not be able to say *where* a transfer goes or
 which key signs it.
 
+Its `[policy]` can only make the rules stricter. A value is taken where it is
+stricter than what the user file (or the built-in default) already says —
+`known_hosts` ranks `strict` over `accept-new` over `off`, a switch counts when
+it is `true`, a shorter `max_signature_age` beats a longer one and `"0"` is the
+loosest — and ignored with a warning where it is not:
+
+```
+warning mpt.toml: ignoring [policy] known_hosts = "off" — a configuration file in the
+        working directory may only make the policy stricter
+```
+
 ```
 $ mpt config check
 WARN mpt: mpt.toml: ignoring [ssh] — a configuration file in the working directory
