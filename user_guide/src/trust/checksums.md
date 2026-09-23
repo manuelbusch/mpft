@@ -79,6 +79,22 @@ The algorithm comes from whichever file is there. `mpt` tries `<name>.b3`,
 then `<name>.sha256`, then `<name>.sha512`, and uses the first it finds. That
 is why the run above reports BLAKE3 without having been asked for it.
 
+The digest used is the one on the line that names the source, `report.pdf`
+or `./report.pdf`, so a file with an entry per file in the format of
+`SHA256SUMS` works too. A checksum file that lists only other files is
+refused rather than read for its first line:
+
+```
+error: remote error: check: out/report.pdf.sha256 is not a checksum file for report.pdf:
+       it has no entry for 'report.pdf' (it lists 'other.bin')
+```
+
+A file that holds nothing but a digest, as some download sites publish, is
+taken for the file it sits beside. A [signed](signatures.md) checksum file
+must name the file, since otherwise the signature would not say which file it
+covers; a signed file for another file, renamed to sit beside this one, fails
+with exit code 3.
+
 A mismatch shows both digests:
 
 ```

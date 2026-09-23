@@ -125,6 +125,12 @@ What arrived is not what the checksum file says. The transferred file is left
 in place so you can look at it. Repeat the transfer; if it mismatches again the
 source or the checksum file is wrong, not the line.
 
+**`check: report.pdf.sha256 is not a checksum file for report.pdf: it has no entry for 'report.pdf' …`** [1, or 3 when signed]
+
+The checksum file beside the source names other files. It was written for a
+file of another name, or renamed; see [Verifying a download with
+`--check`](../trust/checksums.md#verifying-a-download-with---check).
+
 **`signature: made by SHA256:…, which is not in allowed_signers`** [3]
 
 The signature is valid but the key is not one you trust. Add it to the trust

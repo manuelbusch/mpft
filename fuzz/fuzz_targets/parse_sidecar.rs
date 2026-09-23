@@ -8,11 +8,12 @@ fuzz_target!(|data: &[u8]| {
     let Ok(text) = std::str::from_utf8(data) else {
         return;
     };
-    if let Some((hex, name)) = mpt::hash::parse_sidecar(text) {
-        assert!(hex.len() >= 32, "{hex:?}");
-        assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()), "{hex:?}");
-        assert_eq!(hex, hex.to_ascii_lowercase());
-        assert!(!name.starts_with('*'), "{name:?}");
+    for (name, bare) in [("report.pdf", false), ("x", true)] {
+        if let Ok(hex) = mpt::hash::sidecar_digest(text, name, bare) {
+            assert!(hex.len() >= 32, "{hex:?}");
+            assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()), "{hex:?}");
+            assert_eq!(hex, hex.to_ascii_lowercase());
+        }
     }
     // The signing time is read before the signature is checked, so its
     // parser sees untrusted text as well.

@@ -239,12 +239,9 @@ pub fn parse_signed_at(text: &str) -> Option<SystemTime> {
     }
 }
 
-/// Parse the first line of a sidecar file: hex digest and file name (the
-/// name may be prefixed with `*` for binary mode, as coreutils does).
-pub fn parse_sidecar(text: &str) -> Option<(String, String)> {
-    let line = text
-        .lines()
-        .find(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))?;
+/// One `<hex>  <name>` line: digest and file name (the name may be prefixed
+/// with `*` for binary mode, as coreutils does, and may be empty).
+fn parse_entry(line: &str) -> Option<(String, String)> {
     let mut it = line.split_whitespace();
     let hex = it.next()?;
     if hex.len() < 32 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -253,6 +250,65 @@ pub fn parse_sidecar(text: &str) -> Option<(String, String)> {
     let name = it.collect::<Vec<_>>().join(" ");
     let name = name.trim_start_matches('*').to_string();
     Some((hex.to_ascii_lowercase(), name))
+}
+
+/// The digest a checksum file gives for the file `name`, or why it gives
+/// none. The entry must name that file (`name`, `./name`): a checksum file
+/// for another file, renamed to sit beside this one, does not count, and a
+/// file with several entries (`SHA256SUMS`) is searched for the right one.
+///
+/// A file that holds nothing but a digest names no file; `allow_bare` takes
+/// it for the file it sits beside. A signed checksum file must name the file,
+/// or the signature would not say which file it vouches for.
+pub fn sidecar_digest(
+    text: &str,
+    name: &str,
+    allow_bare: bool,
+) -> std::result::Result<String, String> {
+    let mut entries = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let entry =
+            parse_entry(line).ok_or_else(|| format!("line {} is not '<hex>  <name>'", n + 1))?;
+        entries.push(entry);
+    }
+    let mut found = entries
+        .iter()
+        .filter(|(_, n)| n == name || n.strip_prefix("./") == Some(name))
+        .map(|(hex, _)| hex);
+    if let Some(hex) = found.next() {
+        if found.any(|other| other != hex) {
+            return Err(format!("it lists '{name}' twice, with different digests"));
+        }
+        return Ok(hex.clone());
+    }
+    match entries.as_slice() {
+        [] => Err("it holds no checksum".into()),
+        [(hex, n)] if n.is_empty() => {
+            if allow_bare {
+                Ok(hex.clone())
+            } else {
+                Err(format!(
+                    "its digest names no file, and a signed checksum file must name '{name}'"
+                ))
+            }
+        }
+        _ => {
+            let names: Vec<String> = entries
+                .iter()
+                .take(3)
+                .map(|(_, n)| format!("'{n}'"))
+                .collect();
+            let more = if entries.len() > 3 { ", …" } else { "" };
+            Err(format!(
+                "it has no entry for '{name}' (it lists {}{more})",
+                names.join(", ")
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -309,20 +365,67 @@ mod tests {
     fn sidecar_roundtrip_and_parse() {
         let c = sidecar_content(SHA256_ABC, "report.pdf");
         assert_eq!(c, format!("{SHA256_ABC}  report.pdf\n"));
-        assert_eq!(
-            parse_sidecar(&c).unwrap(),
-            (SHA256_ABC.to_string(), "report.pdf".to_string())
-        );
-        // coreutils binary-mode marker and a path with spaces
-        let (h, n) = parse_sidecar(&format!(
-            "{}  *dir/my file.bin\n",
-            SHA256_EMPTY.to_uppercase()
-        ))
+        assert_eq!(sidecar_digest(&c, "report.pdf", false).unwrap(), SHA256_ABC);
+        // coreutils binary-mode marker, a leading "./" and a name with spaces
+        let hex = sidecar_digest(
+            &format!("{}  *my file.bin\n", SHA256_EMPTY.to_uppercase()),
+            "my file.bin",
+            false,
+        )
         .unwrap();
-        assert_eq!(h, SHA256_EMPTY);
-        assert_eq!(n, "dir/my file.bin");
-        assert!(parse_sidecar("not a hash  x").is_none());
-        assert!(parse_sidecar("").is_none());
+        assert_eq!(hex, SHA256_EMPTY);
+        assert_eq!(
+            sidecar_digest(&format!("{SHA256_ABC}  ./x\n"), "x", false).unwrap(),
+            SHA256_ABC
+        );
+        assert!(sidecar_digest("not a hash  x", "x", true).is_err());
+        assert!(sidecar_digest("", "x", true).is_err());
+        assert!(sidecar_digest("# only a comment\n", "x", true).is_err());
+    }
+
+    /// A checksum file is only good for the file it names, so a signed one
+    /// for another file cannot be renamed to vouch for this one.
+    #[test]
+    fn the_entry_must_name_the_file() {
+        let other = sidecar_content(SHA256_ABC, "other.bin");
+        let e = sidecar_digest(&other, "report.pdf", true).unwrap_err();
+        assert!(e.contains("no entry for 'report.pdf'"), "{e}");
+        assert!(e.contains("'other.bin'"), "{e}");
+        // A path to a file of the same name elsewhere is another file.
+        assert!(
+            sidecar_digest(
+                &format!("{SHA256_ABC}  dir/report.pdf\n"),
+                "report.pdf",
+                true
+            )
+            .is_err()
+        );
+
+        // SHA256SUMS: the matching line, wherever it is.
+        let sums =
+            format!("{SHA256_EMPTY}  a.bin\n{SHA256_ABC}  report.pdf\n{SHA256_EMPTY}  z.bin\n");
+        assert_eq!(
+            sidecar_digest(&sums, "report.pdf", false).unwrap(),
+            SHA256_ABC
+        );
+        assert_eq!(sidecar_digest(&sums, "z.bin", false).unwrap(), SHA256_EMPTY);
+        // One name with two different digests is not a checksum file to trust.
+        let twice = format!("{SHA256_EMPTY}  x\n{SHA256_ABC}  x\n");
+        assert!(
+            sidecar_digest(&twice, "x", true)
+                .unwrap_err()
+                .contains("twice")
+        );
+        // A malformed line spoils the file rather than being skipped.
+        let e = sidecar_digest(&format!("{SHA256_ABC}  x\ngarbage\n"), "x", true).unwrap_err();
+        assert!(e.contains("line 2"), "{e}");
+
+        // A bare digest is taken for the file it sits beside, but only when
+        // no signature has to say which file it covers.
+        let bare = format!("{SHA256_ABC}\n");
+        assert_eq!(sidecar_digest(&bare, "x", true).unwrap(), SHA256_ABC);
+        let e = sidecar_digest(&bare, "x", false).unwrap_err();
+        assert!(e.contains("names no file"), "{e}");
     }
 
     #[test]
@@ -333,15 +436,15 @@ mod tests {
             c,
             format!("{SHA256_ABC}  report.pdf\n# mpt-signed-at: 2023-11-14T22:13:20Z\n")
         );
-        // The digest is still the first thing a checker sees.
-        assert_eq!(parse_sidecar(&c).unwrap().0, SHA256_ABC);
+        // The comment does not get in the way of the digest.
+        assert_eq!(sidecar_digest(&c, "report.pdf", false).unwrap(), SHA256_ABC);
         assert_eq!(parse_signed_at(&c), Some(t));
         // Without the comment, and with an unreadable one.
         assert_eq!(parse_signed_at(&sidecar_content(SHA256_ABC, "x")), None);
         assert_eq!(parse_signed_at("# mpt-signed-at: yesterday\n"), None);
         // A file that leads with comments still parses.
-        let (hex, name) = parse_sidecar(&format!("# a comment\n{SHA256_ABC}  x\n")).unwrap();
-        assert_eq!((hex.as_str(), name.as_str()), (SHA256_ABC, "x"));
+        let hex = sidecar_digest(&format!("# a comment\n{SHA256_ABC}  x\n"), "x", false).unwrap();
+        assert_eq!(hex, SHA256_ABC);
     }
 
     #[test]

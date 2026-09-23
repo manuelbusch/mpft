@@ -7,7 +7,7 @@ use tracing::{debug, info, warn};
 
 use std::sync::Arc;
 
-use crate::hash::{DigestHandle, HashAlgo, hashing, parse_sidecar, sidecar_content_at};
+use crate::hash::{DigestHandle, HashAlgo, hashing, sidecar_content_at, sidecar_digest};
 use crate::sign::{Signer, Verifier};
 use crate::stream::{Counted, MemoryCache, TeeOptions, tee};
 use crate::{Endpoint, Error, Result, SendMeta};
@@ -721,7 +721,7 @@ async fn target_checksum(dst: &dyn Endpoint, name: &str) -> Option<(HashAlgo, St
         let Ok(text) = read_sibling(dst, &algo.sidecar_name(name), 8192).await else {
             continue;
         };
-        if let Some((hex, _)) = parse_sidecar(&String::from_utf8_lossy(&text)) {
+        if let Ok(hex) = sidecar_digest(&String::from_utf8_lossy(&text), name, true) {
             return Some((algo, hex));
         }
     }
@@ -1043,11 +1043,6 @@ async fn find_source_checksum(
                 continue;
             }
         };
-        let Some((hex, _)) = parse_sidecar(&text) else {
-            return Err(Error::Remote(format!(
-                "check: {loc} is not a valid checksum file"
-            )));
-        };
         info!(algo = %algo, "checksum file found");
         debug!(%loc, "checksum file found");
         let mut signer = None;
@@ -1071,6 +1066,18 @@ async fn find_source_checksum(
             info!(%who, signed_at = ?signed_at.map(crate::sign::format_time), "checksum file signature verified");
             signer = Some(who);
         }
+        // The entry must name the source. Unsigned, a file that holds nothing
+        // but a digest is taken for the source it sits beside; signed, it must
+        // say which file it vouches for, or a validly signed checksum file of
+        // another file could be renamed to sit beside this one.
+        let hex = sidecar_digest(&text, &name, verifier.is_none()).map_err(|why| {
+            let msg = format!("check: {loc} is not a checksum file for {name}: {why}");
+            if verifier.is_some() {
+                Error::Signature(msg)
+            } else {
+                Error::Remote(msg)
+            }
+        })?;
         return Ok((algo, hex, signer));
     }
     Err(Error::Remote(format!(
@@ -1994,7 +2001,7 @@ mod tests {
         .unwrap();
         let opts = CopyOptions {
             hash: Some(HashAlgo::Sha256),
-            sign: Some(signer),
+            sign: Some(signer.clone()),
             ..Default::default()
         };
         let report = copy_many(src.as_ref(), &[dst.as_ref()], &opts)
@@ -2034,6 +2041,35 @@ mod tests {
         let c = report.checked.unwrap();
         assert!(c.ok());
         assert!(c.signer.as_deref().unwrap().starts_with("ci@example.com"));
+
+        // Another file's signed checksum file, renamed to sit beside this
+        // one, verifies as a signature but names the wrong file.
+        let other_path = dir.path().join("other.bin");
+        std::fs::write(&other_path, vec![4u8; 10_000]).unwrap();
+        let other = crate::open(other_path.to_str().unwrap()).unwrap();
+        let sign_opts = CopyOptions {
+            hash: Some(HashAlgo::Sha256),
+            sign: Some(signer),
+            ..Default::default()
+        };
+        let report = copy_many(other.as_ref(), &[dst.as_ref()], &sign_opts)
+            .await
+            .unwrap();
+        assert!(report.all_ok(), "{:?}", report.targets);
+        let out = dir.path().join("out");
+        let saved = (
+            std::fs::read(out.join("data.bin.sha256")).unwrap(),
+            std::fs::read(&sig_path).unwrap(),
+        );
+        std::fs::copy(out.join("other.bin.sha256"), out.join("data.bin.sha256")).unwrap();
+        std::fs::copy(out.join("other.bin.sha256.sig"), &sig_path).unwrap();
+        let err = copy_many(out_file.as_ref(), &[back.as_ref()], &opts)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Signature(_)), "{err}");
+        assert!(err.to_string().contains("no entry for 'data.bin'"), "{err}");
+        std::fs::write(out.join("data.bin.sha256"), saved.0).unwrap();
+        std::fs::write(&sig_path, saved.1).unwrap();
 
         // Tampered checksum file → signature invalid → error before any transfer.
         let sidecar = dir.path().join("out/data.bin.sha256");
