@@ -28,6 +28,8 @@ pub enum Scheme {
     S3,
     Mailto,
     Smtp,
+    /// SMTP over implicit TLS (port 465 by default).
+    Smtps,
 }
 
 /// Static description of a scheme, used by `mpt schemes`.
@@ -175,6 +177,16 @@ impl Scheme {
             options: "tls=starttls|implicit|none, subject=, cc=, bcc=, body=, from=, filename=",
             feature: "mail",
         },
+        SchemeInfo {
+            scheme: Scheme::Smtps,
+            prefix: "smtps://",
+            description: "like smtp://, over implicit TLS",
+            can_receive: false,
+            can_send: true,
+            default_port: Some(465),
+            options: "subject=, cc=, bcc=, body=, from=, filename=",
+            feature: "mail",
+        },
     ];
 
     pub fn parse(s: &str) -> Option<Scheme> {
@@ -191,7 +203,8 @@ impl Scheme {
             "webdavs" | "webdav+https" | "davs" => Scheme::WebDavs,
             "s3" => Scheme::S3,
             "mailto" => Scheme::Mailto,
-            "smtp" | "smtps" => Scheme::Smtp,
+            "smtp" => Scheme::Smtp,
+            "smtps" => Scheme::Smtps,
             _ => return None,
         })
     }
@@ -222,9 +235,15 @@ impl Scheme {
         self.info().default_port
     }
 
-    /// True for `mailto:` / `smtp://`, whose "path" is a recipient list.
+    /// True for `mailto:` / `smtp://` / `smtps://`, whose "path" is a
+    /// recipient list.
     pub fn is_mail(self) -> bool {
-        matches!(self, Scheme::Mailto | Scheme::Smtp)
+        matches!(self, Scheme::Mailto | Scheme::Smtp | Scheme::Smtps)
+    }
+
+    /// True for `smtp://` and `smtps://`, which name their server.
+    pub fn is_smtp(self) -> bool {
+        matches!(self, Scheme::Smtp | Scheme::Smtps)
     }
 
     /// Whether `MPT_PASSWORD`, `--password`, `--password-file` and
@@ -250,7 +269,7 @@ impl Scheme {
     /// when the URL has none.
     pub fn password_variable(self) -> Option<&'static str> {
         match self {
-            Scheme::Mailto | Scheme::Smtp => Some("MPT_SMTP_PASSWORD"),
+            Scheme::Mailto | Scheme::Smtp | Scheme::Smtps => Some("MPT_SMTP_PASSWORD"),
             s if s.takes_default_password() => Some("MPT_PASSWORD"),
             _ => None,
         }
@@ -372,7 +391,7 @@ impl Location {
                 }
                 (recipients, false)
             }
-            Scheme::Smtp => {
+            Scheme::Smtp | Scheme::Smtps => {
                 // smtp://user@host/ziel@x?…  -> path is recipient list
                 let p = percent_decode(url.path());
                 (p.trim_matches('/').to_string(), false)
@@ -885,7 +904,7 @@ impl Location {
                 if let Some(p) = self.port {
                     out.push_str(&format!(":{p}"));
                 }
-                if self.scheme == Scheme::Smtp {
+                if self.scheme.is_smtp() {
                     out.push('/');
                 }
                 match &self.wire_path {
@@ -1019,7 +1038,7 @@ impl fmt::Display for Location {
                 if let Some(p) = self.port {
                     write!(f, ":{p}")?;
                 }
-                if self.scheme == Scheme::Smtp {
+                if self.scheme.is_smtp() {
                     write!(f, "/{}", self.path)?;
                 } else {
                     f.write_str(&self.path)?;
@@ -1478,6 +1497,16 @@ mod tests {
 
     #[test]
     fn smtp_url() {
+        let l = Location::parse("smtps://mail.example.com/team@example.com").unwrap();
+        assert_eq!(l.scheme(), Scheme::Smtps);
+        assert_eq!(l.port_or_default(), 465);
+        assert_eq!(l.recipients(), vec!["team@example.com"]);
+        assert_eq!(
+            Location::parse(&l.unmasked()).unwrap().scheme(),
+            Scheme::Smtps
+        );
+        assert_eq!(l.to_string(), "smtps://mail.example.com/team@example.com");
+
         let l = Location::parse("smtp://me%40mail.example.com:pw@mail.example.com:465/team@example.com?tls=implicit&subject=Daten").unwrap();
         assert_eq!(l.scheme(), Scheme::Smtp);
         assert_eq!(l.username(), Some("me@mail.example.com"));

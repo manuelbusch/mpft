@@ -147,7 +147,7 @@ fn plaintext_exposure(loc: &Location) -> Option<&'static str> {
              is sent in the clear",
         ),
         // `mailto:` is judged on its resolved server, see protocols::mail.
-        Scheme::Smtp if has_password && smtp_without_tls(loc) => {
+        Scheme::Smtp | Scheme::Smtps if has_password && smtp_without_tls(loc) => {
             Some("SMTP without TLS sends the password unencrypted")
         }
         _ => None,
@@ -169,7 +169,7 @@ fn sends_http_credentials(loc: &Location) -> bool {
 fn smtp_without_tls(loc: &Location) -> bool {
     match loc.opt("tls").map(|s| s.to_ascii_lowercase()).as_deref() {
         Some("none") | Some("off") | Some("false") => true,
-        None => loc.port() == Some(25),
+        None => loc.scheme() == Scheme::Smtp && loc.port() == Some(25),
         _ => false,
     }
 }
@@ -240,6 +240,7 @@ mod tests {
         assert!(plaintext_exposure(&loc("smtp://u:p@h:25/a@b.c")).is_some());
         assert!(plaintext_exposure(&loc("smtp://u:p@h:587/a@b.c?tls=none")).is_some());
         assert!(plaintext_exposure(&loc("smtp://u:p@h:587/a@b.c")).is_none());
+        assert!(plaintext_exposure(&loc("smtps://u:p@h:25/a@b.c")).is_none());
         assert!(plaintext_exposure(&loc("sftp://u:p@h/x")).is_none());
         // A token or an authorization header counts as much as a password.
         assert!(plaintext_exposure(&loc("http://h/x?token=t")).is_some());

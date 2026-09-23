@@ -1014,8 +1014,11 @@ impl Config {
         {
             self.resolved.ssh_passphrase = Some(s.resolve_under("[ssh] passphrase", strict).await?);
         }
-        if uses(&[crate::Scheme::Mailto, crate::Scheme::Smtp])
-            && let Some(s) = &self.mail.password
+        if uses(&[
+            crate::Scheme::Mailto,
+            crate::Scheme::Smtp,
+            crate::Scheme::Smtps,
+        ]) && let Some(s) = &self.mail.password
         {
             self.resolved.mail_password = Some(s.resolve_under("[mail] password", strict).await?);
         }

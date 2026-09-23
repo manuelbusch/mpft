@@ -23,6 +23,7 @@ were compiled in.
 | `s3://` | [S3-compatible storage](s3.md) | – | `s3` |
 | `mailto:` | [e-mail, server from the configuration](mail.md) | – | `mail` |
 | `smtp://` | [e-mail, server in the URL](mail.md) | 587 | `mail` |
+| `smtps://` | [the same over implicit TLS](mail.md#encryption-and-login) | 465 | `mail` |
 | `mpt://` | a [profile](../configuration/profiles.md) — resolves to one of the above | – | always |
 | `ssh://` | an SSH host running [`mpt relay`](../server/relay.md), for `--via` only; it holds no files | 22 | `relay` |
 
@@ -37,7 +38,7 @@ were compiled in.
 | `http://`, `https://` | ✓ | – | ✓ | ✓ | – | – | – |
 | `webdav://`, `webdavs://` | ✓ | ✓ | ✓ | ✓ | ✓ | – | ✓ |
 | `s3://` | ✓ | ✓ | ✓ | ✓ | – | – | n/a |
-| `mailto:`, `smtp://` | – | – | – | ✓ | – | – | – |
+| `mailto:`, `smtp(s)://` | – | – | – | ✓ | – | – | – |
 
 | Column | Meaning | Feature it enables |
 |---|---|---|

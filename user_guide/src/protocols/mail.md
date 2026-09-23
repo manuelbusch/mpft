@@ -114,6 +114,13 @@ the fourth rule is usually the one that applies.
 | `implicit` | TLS from the first byte | 465 |
 | `none` | no encryption; for a local relay only | 25 |
 
+`smtps://` is `smtp://` with `tls=implicit` and port 465 by default, the way
+other programs read that prefix:
+
+```
+mpt cp report.pdf "smtps://reports@mail.example.com/boss@example.com"
+```
+
 `tls=none` with a password [warns](../trust/connections.md#credentials-in-the-clear),
 and `[policy] refuse_plaintext_auth = true` refuses it.
 

@@ -120,7 +120,9 @@ pub fn open(mut loc: Location) -> Result<Box<dyn Endpoint>> {
         Scheme::S3 => Ok(Box::new(s3::S3Endpoint::new(loc)?)),
 
         #[cfg(feature = "mail")]
-        Scheme::Mailto | Scheme::Smtp => Ok(Box::new(mail::MailEndpoint::new(loc)?)),
+        Scheme::Mailto | Scheme::Smtp | Scheme::Smtps => {
+            Ok(Box::new(mail::MailEndpoint::new(loc)?))
+        }
 
         #[allow(unreachable_patterns)]
         other => Err(Error::UnsupportedScheme(format!(

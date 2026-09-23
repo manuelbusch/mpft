@@ -74,7 +74,7 @@ impl MailEndpoint {
     /// Resolve the SMTP server: the URL itself for `smtp://`, `MPT_SMTP_URL` for `mailto:`.
     fn smtp_config(&self) -> Result<SmtpConfig> {
         let mut server = match self.loc.scheme() {
-            Scheme::Smtp => self.loc.clone(),
+            Scheme::Smtp | Scheme::Smtps => self.loc.clone(),
             _ => {
                 let url = std::env::var("MPT_SMTP_URL")
                     .ok()
@@ -87,9 +87,9 @@ impl MailEndpoint {
                         )
                     })?;
                 let mut s = Location::parse(&url)?;
-                if s.scheme() != Scheme::Smtp {
+                if !s.scheme().is_smtp() {
                     return Err(Error::InvalidUrl(format!(
-                        "MPT_SMTP_URL must be an smtp:// URL, got '{}'",
+                        "MPT_SMTP_URL must be an smtp:// or smtps:// URL, got '{}'",
                         s.scheme()
                     )));
                 }
@@ -117,6 +117,7 @@ impl MailEndpoint {
             Some("starttls") | Some("required") => SmtpTls::StartTls,
             Some("implicit") | Some("wrapper") | Some("tls") => SmtpTls::Implicit,
             Some("none") | Some("off") | Some("false") => SmtpTls::None,
+            None if server.scheme() == Scheme::Smtps => SmtpTls::Implicit,
             None => match server.port() {
                 Some(465) => SmtpTls::Implicit,
                 Some(25) => SmtpTls::None,
@@ -376,5 +377,34 @@ mod tests {
             MailEndpoint::new(Location::parse("smtp://user@mail.example.com:587/a@b.c").unwrap())
                 .unwrap();
         assert_eq!(ep.smtp_config().unwrap().auth, None);
+    }
+
+    fn tls_of(url: &str) -> SmtpTls {
+        MailEndpoint::new(Location::parse(url).unwrap())
+            .unwrap()
+            .smtp_config()
+            .unwrap()
+            .tls
+    }
+
+    /// `smtps://` is implicit TLS, on 465 unless the URL names a port.
+    #[test]
+    fn smtps_means_implicit_tls() {
+        assert_eq!(tls_of("smtps://mail.example.com/a@b.c"), SmtpTls::Implicit);
+        assert_eq!(
+            tls_of("SMTPS://mail.example.com:2465/a@b.c"),
+            SmtpTls::Implicit
+        );
+        assert_eq!(tls_of("smtp://mail.example.com/a@b.c"), SmtpTls::StartTls);
+        assert_eq!(
+            tls_of("smtp://mail.example.com:465/a@b.c"),
+            SmtpTls::Implicit
+        );
+        assert_eq!(
+            Location::parse("smtps://mail.example.com/a@b.c")
+                .unwrap()
+                .port_or_default(),
+            465
+        );
     }
 }
