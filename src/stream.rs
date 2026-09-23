@@ -265,12 +265,25 @@ pub fn tee(
             let n = match tokio::io::AsyncReadExt::read_buf(&mut body, &mut buf).await {
                 Ok(n) => n,
                 Err(e) => {
-                    // io::Error is not Clone: rebuild it for every reader.
-                    for (tx, _) in &senders {
-                        let _ = tx
-                            .send(Err(std::io::Error::new(e.kind(), e.to_string())))
-                            .await;
-                    }
+                    // io::Error is not Clone: rebuild it for every reader. All
+                    // of them hear of it in parallel and under the same
+                    // timeout as a chunk, so one stalled reader cannot keep
+                    // the others waiting, nor the driver from ending.
+                    let deliveries = senders.iter().map(|(tx, stalled)| {
+                        let err = std::io::Error::new(e.kind(), e.to_string());
+                        async move {
+                            if let Some(t) = send_timeout {
+                                if let Err(mpsc::error::SendTimeoutError::Timeout(_)) =
+                                    tx.send_timeout(Err(err), t).await
+                                {
+                                    stalled.store(true, Ordering::Relaxed);
+                                }
+                            } else {
+                                let _ = tx.send(Err(err)).await;
+                            }
+                        }
+                    });
+                    futures::future::join_all(deliveries).await;
                     return Err(e);
                 }
             };
@@ -565,6 +578,56 @@ mod tests {
             assert!(err.to_string().contains("boom"));
         }
         assert!(driver.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_stalled_reader_does_not_hold_up_a_source_error() {
+        struct Failing(usize);
+        impl AsyncRead for Failing {
+            fn poll_read(
+                mut self: Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+                buf: &mut tokio::io::ReadBuf<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                if self.0 == 0 {
+                    return std::task::Poll::Ready(Err(std::io::Error::other("boom")));
+                }
+                self.0 -= 1;
+                buf.put_slice(&[1u8; 100]);
+                std::task::Poll::Ready(Ok(()))
+            }
+        }
+        // The stalled reader's queue is full (one chunk) when the error comes.
+        let (mut readers, driver) = tee(
+            boxed(Failing(1)),
+            2,
+            TeeOptions {
+                chunk_size: 1024,
+                capacity: 1,
+                send_timeout: Some(std::time::Duration::from_millis(150)),
+            },
+        );
+        let mut stalled = readers.pop().unwrap();
+        let mut healthy = readers.pop().unwrap();
+        let mut v = Vec::new();
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            healthy.read_to_end(&mut v),
+        )
+        .await
+        .expect("a stalled reader must not hold up the error")
+        .unwrap_err();
+        assert!(err.to_string().contains("boom"), "{err}");
+        tokio::time::timeout(std::time::Duration::from_secs(10), driver)
+            .await
+            .expect("the driver must end")
+            .unwrap()
+            .unwrap_err();
+
+        // The stalled reader gets its chunk, then an error, not a clean end.
+        let mut rest = Vec::new();
+        let err = stalled.read_to_end(&mut rest).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut, "{err}");
     }
 
     #[tokio::test]
