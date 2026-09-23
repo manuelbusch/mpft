@@ -133,11 +133,18 @@ fn warn_once(key: String, message: &str) {
 
 /// What would be readable on the wire for this endpoint, if anything.
 fn plaintext_exposure(loc: &Location) -> Option<&'static str> {
-    let has_password = loc.password().is_some_and(|p| !p.is_empty());
+    // A password a broker hands out at login travels the same way as one
+    // the location carries.
+    let has_password =
+        loc.password().is_some_and(|p| !p.is_empty()) || loc.brokers().password.is_some();
     match loc.scheme() {
         Scheme::Ftp if has_password => Some("FTP without TLS sends the password unencrypted"),
         Scheme::Http | Scheme::WebDav if has_password && loc.username().is_some() => Some(
             "HTTP basic authentication over an unencrypted connection sends the password in the clear",
+        ),
+        Scheme::Http | Scheme::WebDav if sends_http_credentials(loc) => Some(
+            "a bearer token or an authorization header over an unencrypted connection \
+             is sent in the clear",
         ),
         // `mailto:` is judged on its resolved server, see protocols::mail.
         Scheme::Smtp if has_password && smtp_without_tls(loc) => {
@@ -145,6 +152,18 @@ fn plaintext_exposure(loc: &Location) -> Option<&'static str> {
         }
         _ => None,
     }
+}
+
+/// Whether an HTTP request to this endpoint carries a credential besides
+/// basic authentication: `?token=`, `[http] token`, or a header named like
+/// one (`Authorization`, `Cookie`, `X-Api-Key`, …).
+fn sends_http_credentials(loc: &Location) -> bool {
+    loc.opt("token").is_some_and(|t| !t.is_empty())
+        || crate::config::global().resolved.http_token.is_some()
+        || loc.opts("header").any(|h| {
+            h.split_once(':')
+                .is_some_and(|(name, _)| crate::location::is_secret_option(name))
+        })
 }
 
 fn smtp_without_tls(loc: &Location) -> bool {
@@ -222,6 +241,38 @@ mod tests {
         assert!(plaintext_exposure(&loc("smtp://u:p@h:587/a@b.c?tls=none")).is_some());
         assert!(plaintext_exposure(&loc("smtp://u:p@h:587/a@b.c")).is_none());
         assert!(plaintext_exposure(&loc("sftp://u:p@h/x")).is_none());
+        // A token or an authorization header counts as much as a password.
+        assert!(plaintext_exposure(&loc("http://h/x?token=t")).is_some());
+        assert!(plaintext_exposure(&loc("webdav://h/x?header=Authorization:Bearer%20t")).is_some());
+        assert!(plaintext_exposure(&loc("http://h/x?header=X-Api-Key:k")).is_some());
+        assert!(plaintext_exposure(&loc("https://h/x?token=t")).is_none());
+        assert!(plaintext_exposure(&loc("http://h/x?header=Accept:text/plain")).is_none());
+    }
+
+    /// A password a broker supplies at login (a relay asking its client)
+    /// is judged like one in the URL.
+    #[test]
+    fn a_brokered_password_counts() {
+        use crate::broker::{Brokers, PasswordRequest, PasswordSource};
+        struct Never;
+        #[async_trait::async_trait]
+        impl PasswordSource for Never {
+            async fn password(
+                &self,
+                _: &PasswordRequest<'_>,
+            ) -> Result<Option<secrecy::SecretString>> {
+                Ok(None)
+            }
+        }
+        for url in ["ftp://u@h/x", "http://u@h/x"] {
+            let mut l = loc(url);
+            assert!(plaintext_exposure(&l).is_none(), "{url}");
+            l.set_brokers(Brokers {
+                password: Some(std::sync::Arc::new(Never)),
+                agent: None,
+            });
+            assert!(plaintext_exposure(&l).is_some(), "{url}");
+        }
     }
 
     #[test]

@@ -129,9 +129,13 @@ takes the option away entirely.
 
 ## Credentials in the clear
 
-Three combinations hand a password to anyone on the path: `ftp://` with a
-password, `http://` or `webdav://` with basic authentication, and SMTP with
-`tls=none`. Each produces one warning per run:
+Four combinations hand a credential to anyone on the path: `ftp://` with a
+password, `http://` or `webdav://` with basic authentication, `http://` or
+`webdav://` with a bearer token (`?token=`, `[http] token`) or a header named
+like a credential (`header=Authorization:…`, `Cookie`, `X-Api-Key`), and SMTP
+with `tls=none`. A password counts whether the URL carries it or it is asked
+for at login, as a [relay asks](../server/relay.md) on demand. Each produces
+one warning per run:
 
 ```
 WARN mpt::policy: ftp://ftp.example.com: FTP without TLS sends the password unencrypted.
