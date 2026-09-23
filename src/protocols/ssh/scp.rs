@@ -71,7 +71,7 @@ impl ScpEndpoint {
         let mut channel = handle.channel_open_session().await.map_err(ssh_err)?;
         debug!(%command, "ssh exec");
         channel.exec(true, command).await.map_err(ssh_err)?;
-        let mut status = None;
+        let mut ended = Ended::Unknown;
         let mut output = Vec::new();
         let collect = async {
             while let Some(msg) = channel.wait().await {
@@ -80,7 +80,12 @@ impl ScpEndpoint {
                     | russh::ChannelMsg::ExtendedData { data, .. } => {
                         output.extend_from_slice(&data)
                     }
-                    russh::ChannelMsg::ExitStatus { exit_status } => status = Some(exit_status),
+                    russh::ChannelMsg::ExitStatus { exit_status } => {
+                        ended = Ended::Status(exit_status)
+                    }
+                    russh::ChannelMsg::ExitSignal { signal_name, .. } => {
+                        ended = Ended::Signal(format!("{signal_name:?}"))
+                    }
                     _ => {}
                 }
             }
@@ -95,17 +100,33 @@ impl ScpEndpoint {
                 self.cfg.timeout
             )));
         }
-        match status {
-            Some(0) => Ok(()),
-            None => {
-                debug!(%command, "server reported no exit status; assuming success");
-                Ok(())
-            }
-            Some(code) => Err(Error::Remote(format!(
-                "ssh: `{command}` failed (exit {code}) {}",
-                String::from_utf8_lossy(&output).trim()
-            ))),
-        }
+        judge(command, ended, &output)
+    }
+}
+
+/// How a remote command ended, as far as the server said.
+enum Ended {
+    Status(u32),
+    Signal(String),
+    Unknown,
+}
+
+/// Only an exit status of 0 is success. A command killed by a signal, or
+/// one whose end the server did not report, may have done nothing.
+fn judge(command: &str, ended: Ended, output: &[u8]) -> Result<()> {
+    let output = String::from_utf8_lossy(output);
+    let output = output.trim();
+    match ended {
+        Ended::Status(0) => Ok(()),
+        Ended::Status(code) => Err(Error::Remote(format!(
+            "ssh: `{command}` failed (exit {code}) {output}"
+        ))),
+        Ended::Signal(sig) => Err(Error::Remote(format!(
+            "ssh: `{command}` was killed by signal {sig} {output}"
+        ))),
+        Ended::Unknown => Err(Error::Remote(format!(
+            "ssh: `{command}` ended without an exit status {output}"
+        ))),
     }
 }
 
@@ -471,6 +492,16 @@ mod tests {
         let res = reader.read_to_end(&mut got).await.map(|_| got);
         drop(reader);
         (res, remote.await.unwrap())
+    }
+
+    #[test]
+    fn only_exit_status_zero_is_success() {
+        assert!(judge("mv a b", Ended::Status(0), b"").is_ok());
+        let err = judge("mv a b", Ended::Status(1), b"no such file\n").unwrap_err();
+        assert!(err.to_string().contains("exit 1) no such file"), "{err}");
+        let err = judge("mv a b", Ended::Signal("KILL".into()), b"").unwrap_err();
+        assert!(err.to_string().contains("signal KILL"), "{err}");
+        assert!(judge("mv a b", Ended::Unknown, b"").is_err());
     }
 
     #[tokio::test]
