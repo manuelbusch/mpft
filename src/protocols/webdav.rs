@@ -1,4 +1,8 @@
 //! `webdav://` (HTTP) and `webdavs://` (HTTPS): GET / PUT / PROPFIND via reqwest_dav.
+//!
+//! reqwest_dav puts a path into its URL (and the `Destination` of a MOVE)
+//! as it is given, so every path handed to it here is already encoded
+//! ([`Location::encoded_path`]).
 
 use async_trait::async_trait;
 use futures::TryStreamExt;
@@ -88,7 +92,7 @@ impl Receiver for WebDavEndpoint {
         let resp = self
             .client()
             .await?
-            .get(self.loc.path())
+            .get(&self.loc.encoded_path())
             .await
             .map_err(dav_err)?;
         let reader = StreamReader::new(resp.bytes_stream().map_err(std::io::Error::other));
@@ -97,14 +101,14 @@ impl Receiver for WebDavEndpoint {
     }
 
     async fn list(&self) -> Result<Vec<Entry>> {
-        let path = self.loc.path();
+        let path = self.loc.encoded_path();
         let entities = self
             .client()
             .await?
-            .list(path, Depth::Number(1))
+            .list(&path, Depth::Number(1))
             .await
             .map_err(dav_err)?;
-        let self_name = href_name(path);
+        let self_name = href_name(&path);
         let mut out = Vec::new();
         for (i, ent) in entities.into_iter().enumerate() {
             match ent {
@@ -137,7 +141,7 @@ impl Receiver for WebDavEndpoint {
         let entities = match self
             .client()
             .await?
-            .list(self.loc.path(), Depth::Number(0))
+            .list(&self.loc.encoded_path(), Depth::Number(0))
             .await
         {
             Ok(e) => e,
@@ -153,7 +157,7 @@ impl Receiver for WebDavEndpoint {
 #[async_trait]
 impl Sender for WebDavEndpoint {
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()> {
-        let target = self.loc.target_path(meta.filename.as_deref())?;
+        let target = self.loc.encoded_target_path(meta.filename.as_deref())?;
         debug!(%target, "webdav PUT");
         let body = reqwest::Body::wrap_stream(ReaderStream::new(body));
         self.client()
@@ -168,8 +172,9 @@ impl Sender for WebDavEndpoint {
     }
 
     async fn rename(&self, from: &str, to: &str) -> Result<()> {
-        let from = self.loc.sibling(from)?.path().to_string();
-        let to = self.loc.sibling(to)?.path().to_string();
+        // Encoded, the destination is plain ASCII and fits in its header.
+        let from = self.loc.sibling(from)?.encoded_path();
+        let to = self.loc.sibling(to)?.encoded_path();
         debug!(%from, %to, "webdav MOVE");
         self.client().await?.mv(&from, &to).await.map_err(dav_err)
     }
@@ -179,7 +184,7 @@ impl Sender for WebDavEndpoint {
     }
 
     async fn remove(&self, name: &str) -> Result<()> {
-        let path = self.loc.sibling(name)?.path().to_string();
+        let path = self.loc.sibling(name)?.encoded_path();
         debug!(%path, "webdav DELETE");
         self.client().await?.delete(&path).await.map_err(dav_err)
     }
@@ -189,7 +194,7 @@ impl Sender for WebDavEndpoint {
     }
 
     async fn mkdir_all(&self) -> Result<()> {
-        let dir = self.loc.parent()?.path().to_string();
+        let dir = self.loc.parent()?.encoded_path();
         // MKCOL one collection at a time; one that exists is left alone.
         let client = self.client().await?;
         let mut path = String::new();

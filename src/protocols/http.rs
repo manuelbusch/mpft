@@ -64,7 +64,8 @@ impl HttpEndpoint {
     /// The URL to talk to (with pass-through query parameters).
     fn url(&self, filename: Option<&str>) -> Result<Url> {
         let mut url = base_url(&self.loc, &["http", "https"])?;
-        url.set_path(&self.loc.target_path(filename)?);
+        // Encoded segment by segment: `set_path` takes `%` as it is.
+        url.set_path(&self.loc.encoded_target_path(filename)?);
         let passthrough: Vec<(&str, &str)> = self
             .loc
             .options()
@@ -262,6 +263,33 @@ mod tests {
         // rejected as a pair, so a caller does not end up sending two.
         let h = headers("https://h/x?header=Accept:text/plain");
         assert_eq!(h["accept"], "text/plain");
+    }
+
+    /// The request path is the one the URL named, byte for byte: nothing
+    /// decoded twice, no `%2F` turned into a separator, and names that
+    /// need encoding encoded.
+    #[test]
+    fn the_request_path_keeps_its_encoding() {
+        let url = |u: &str, name: Option<&str>| {
+            HttpEndpoint::new(Location::parse(u).unwrap())
+                .unwrap()
+                .url(name)
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(url("https://h/a%2520b", None), "https://h/a%2520b");
+        assert_eq!(
+            url("https://h/api/projects/group%2Fproject/raw", None),
+            "https://h/api/projects/group%2Fproject/raw"
+        );
+        assert_eq!(
+            url("http://h/in/", Some("M\u{e4}rz #1?100%.pdf")),
+            "http://h/in/M%C3%A4rz%20%231%3F100%25.pdf"
+        );
+        assert_eq!(
+            url("https://h/x?format=json", None),
+            "https://h/x?format=json"
+        );
     }
 
     #[test]

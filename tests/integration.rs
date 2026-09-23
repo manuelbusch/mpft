@@ -730,6 +730,75 @@ async fn s3_keys_keep_their_special_characters() {
     file.sender().unwrap().remove(&name).await.expect("delete");
 }
 
+/// File names that a URL would read as syntax or decode on the way in (a
+/// space, `#`, `?`, `%`, an umlaut) reach HTTP and WebDAV servers as the
+/// same name: two names that differ only after a `#` or a `?` stay two
+/// files, and an atomic upload renames its part file into place.
+#[tokio::test]
+async fn http_and_webdav_names_keep_their_special_characters() {
+    let bases: Vec<String> = ["MPT_IT_HTTP", "MPT_IT_WEBDAV"]
+        .iter()
+        .filter_map(|k| env(k))
+        .collect();
+    if bases.is_empty() {
+        eprintln!("skipping: MPT_IT_HTTP and MPT_IT_WEBDAV not set");
+        return;
+    }
+    mpt::init_crypto();
+    let pid = std::process::id();
+    let names = [
+        format!("M\u{e4}rz {pid} #1.bin"),
+        format!("M\u{e4}rz {pid} #2.bin"),
+        format!("q{pid}?a=1 100%.bin"),
+        format!("q{pid}?a=2 100%.bin"),
+    ];
+    let dir = tempfile::tempdir().unwrap();
+    for base in &bases {
+        let dst = mpt::open(base).unwrap();
+        for name in &names {
+            let path = dir.path().join(name.replace('?', "_"));
+            std::fs::write(&path, name.as_bytes()).unwrap();
+            let src = mpt::open(path.to_str().unwrap()).unwrap();
+            let target =
+                mpt::protocols::open(Location::parse(base).unwrap().join(name).unwrap()).unwrap();
+            // WsgiDAV decodes a MOVE's Destination before it parses it, so
+            // a `?` there cuts the name short; see docs/DEVELOPMENT.md.
+            let opts = mpt::CopyOptions {
+                atomic: !name.contains('?'),
+                ..Default::default()
+            };
+            let report = mpt::copy_many(src.as_ref(), &[target.as_ref()], &opts)
+                .await
+                .unwrap_or_else(|e| panic!("{base}: {name}: {e}"));
+            assert!(report.all_ok(), "{base}: {name}: {:?}", report.targets);
+        }
+        for name in &names {
+            let file =
+                mpt::protocols::open(Location::parse(base).unwrap().join(name).unwrap()).unwrap();
+            let mut stream = file.receiver().unwrap().receive().await.expect("download");
+            let mut got = Vec::new();
+            tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut got)
+                .await
+                .unwrap();
+            assert_eq!(
+                got,
+                name.as_bytes(),
+                "{base}: {name} came back as another file"
+            );
+        }
+        if base.starts_with("webdav") {
+            let listing = dst.receiver().unwrap().list().await.expect("list");
+            for name in &names {
+                assert!(
+                    listing.iter().any(|e| &e.name == name),
+                    "{base}: {name} is missing from the listing"
+                );
+                dst.sender().unwrap().remove(name).await.expect("delete");
+            }
+        }
+    }
+}
+
 /// With the `s3-aws-auth` feature, credentials come from the AWS chain — here
 /// from a profile file, the same path `aws sso login` fills in.
 #[cfg(feature = "s3-aws-auth")]

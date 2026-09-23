@@ -394,12 +394,6 @@ impl Config {
             Some((n, p)) => (n, p),
             None => (head, ""),
         };
-        // The path is percent-decoded like the path of any URL, and before
-        // it is checked: `%2e%2e` is `..` to every HTTP server.
-        let path = percent_encoding::percent_decode_str(path)
-            .decode_utf8()
-            .map_err(|e| Error::Config(format!("mpt://{name}/{path}: {e}")))?
-            .into_owned();
         let profile = self.profiles.get(name).ok_or_else(|| {
             let known: Vec<&str> = self.profiles.keys().map(String::as_str).collect();
             Error::Config(match known.is_empty() {
@@ -415,9 +409,11 @@ impl Config {
         }
         let mut loc = Location::parse(&profile.url)
             .map_err(|e| Error::Config(format!("profile '{name}': {e}")))?;
+        // The path is percent-decoded like the path of any URL, and before
+        // it is checked: `%2e%2e` is `..` to every HTTP server.
         if !path.is_empty() {
             loc = loc
-                .join(&path)
+                .join_url_path(path)
                 .map_err(|e| Error::Config(format!("mpt://{name}/{path}: {e}")))?;
         }
         if let Some(pw) = self.resolved.profile_passwords.get(name)
@@ -1304,6 +1300,14 @@ mod tests {
         let loc = cfg.resolve("Mpt://prod/in/?timeout=5#x").unwrap().unwrap();
         assert_eq!(loc.opt("timeout"), Some("5"));
         assert_eq!(profile_name("MPT://prod#x"), Some("prod"));
+
+        // Over HTTP an encoded `/` stays a character of its segment.
+        let cfg = Config::parse("[profiles.gl]\nurl = \"https://gl.example/api/\"\n").unwrap();
+        let loc = cfg
+            .resolve("mpt://gl/group%2Fproject/raw")
+            .unwrap()
+            .unwrap();
+        assert_eq!(loc.encoded_path(), "/api/group%2Fproject/raw");
         assert!(is_profile_ref("mPt://prod/"));
         assert!(!is_profile_ref("sftp://prod/"));
     }

@@ -29,6 +29,15 @@ Plain HTTP cannot rename, so a PUT goes straight to the final name. There is no
 `.mpt-part` and no `--resume`; an interrupted upload leaves whatever the server
 kept.
 
+## The request path
+
+The path goes to the server as the URL spells it. A file name that `mpt`
+appends, from a directory target or a listing, is percent-encoded segment by
+segment, so a space, `#`, `?`, `%` or `ä` in a name reaches the server as part
+of that name, in a `MOVE`'s `Destination` header as well. An encoded `/`
+(`%2F`) stays encoded, which is what APIs such as GitLab's expect of
+`projects/group%2Fproject`.
+
 ## Sending
 
 GET is used for reading. For writing, the method is `PUT` unless you say

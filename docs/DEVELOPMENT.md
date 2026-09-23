@@ -85,6 +85,12 @@ switches its suite on, and an unset one skips it with a message:
 Implicit FTPS (`tls=implicit`) is implemented but not covered by these
 servers.
 
+WsgiDAV percent-decodes a MOVE's `Destination` header before it parses it as
+a URL, so an encoded `?` in the destination ends the path there and the file
+is renamed to the part before it. `mpt` sends the header encoded, as RFC 4918
+asks; the test with such names therefore uploads them without the atomic
+rename on WebDAV.
+
 The Python FTP server duplicates its greeting on roughly 1.5 % of concurrent
 connections, which desynchronises that one control channel. It is a defect of
 that server, not of FTP or of `mpt`, and it is why the generated test URLs

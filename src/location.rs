@@ -227,6 +227,15 @@ impl Scheme {
         matches!(self, Scheme::Mailto | Scheme::Smtp)
     }
 
+    /// Whether the path is sent in a URL, and so has to keep track of its
+    /// encoding (see [`Location::encoded_path`]).
+    fn has_wire_path(self) -> bool {
+        matches!(
+            self,
+            Scheme::Http | Scheme::Https | Scheme::WebDav | Scheme::WebDavs
+        )
+    }
+
     /// Whether the scheme needs a host component.
     fn needs_host(self) -> bool {
         !matches!(self, Scheme::File | Scheme::Mailto)
@@ -251,6 +260,11 @@ pub struct Location {
     /// Percent-decoded path. For `file` this is the local path; for `s3` it is
     /// `bucket/key`; for mail schemes it is the comma-separated recipient list.
     path: String,
+    /// For `http(s)` and `webdav(s)`: the path as it goes on the wire,
+    /// every segment percent-encoded, kept in step with `path`. It is what
+    /// remembers that `%2F` was a character of a segment rather than a
+    /// separator, which the decoded `path` cannot tell.
+    wire_path: Option<String>,
     options: Vec<(String, String)>,
     /// True when the original path ended in `/` (target is a directory).
     dir_hint: bool,
@@ -307,6 +321,14 @@ impl Location {
             )));
         }
 
+        let wire_path = scheme.has_wire_path().then(|| {
+            let raw = if url.path().is_empty() {
+                "/"
+            } else {
+                url.path()
+            };
+            normalize_wire_path(raw)
+        });
         let (path, dir_hint) = match scheme {
             Scheme::Mailto => {
                 // RFC 6068: mailto:addr1,addr2?subject=...; opaque path.
@@ -353,6 +375,7 @@ impl Location {
             host,
             port,
             path,
+            wire_path,
             options,
             dir_hint,
             brokers: Brokers::default(),
@@ -378,6 +401,7 @@ impl Location {
             host: None,
             port: None,
             path: path.to_string(),
+            wire_path: None,
             options: Vec::new(),
             dir_hint: path.ends_with('/') || (cfg!(windows) && path.ends_with('\\')),
             password_from_url: false,
@@ -432,6 +456,30 @@ impl Location {
     }
     pub fn path(&self) -> &str {
         &self.path
+    }
+
+    /// The path as it goes into an HTTP or WebDAV request: every segment
+    /// percent-encoded (`%`, `#`, `?`, space, non-ASCII, …), so the server
+    /// sees the name that [`Location::path`] holds. A `%2F` of the original
+    /// URL is still `%2F` here, one segment and not two.
+    pub fn encoded_path(&self) -> String {
+        match &self.wire_path {
+            Some(w) => w.clone(),
+            None => encode_path(&self.path),
+        }
+    }
+
+    /// [`Location::target_path`], encoded like [`Location::encoded_path`].
+    pub fn encoded_target_path(&self, filename: Option<&str>) -> Result<String> {
+        match (self.is_dir_target(), filename) {
+            (true, Some(name)) => {
+                let name = safe_name(name)?;
+                let dir = self.encoded_path();
+                let sep = if dir.ends_with('/') { "" } else { "/" };
+                Ok(format!("{dir}{sep}{}", encode_segment(&name)))
+            }
+            _ => Ok(self.encoded_path()),
+        }
     }
     pub fn options(&self) -> &[(String, String)] {
         &self.options
@@ -558,19 +606,72 @@ impl Location {
         }
         let mut loc = self.clone();
         for part in rel.split('/').filter(|p| !p.is_empty()) {
-            let name = safe_name(part)?;
-            loc.path = if loc.path.ends_with('/') {
-                format!("{}{}", loc.path, name)
-            } else {
-                format!("{}/{}", loc.path, name)
-            };
+            loc.push_segment(&safe_name(part)?);
         }
-        // Nothing appended leaves a directory a directory.
-        loc.dir_hint = rel.ends_with('/') || (rel.is_empty() && self.dir_hint);
-        if loc.dir_hint && !loc.path.ends_with('/') {
-            loc.path.push('/');
-        }
+        loc.finish_join(rel.ends_with('/'), rel.is_empty() && self.dir_hint);
         Ok(loc)
+    }
+
+    /// Like [`Location::join`], for a relative path written the way a URL
+    /// path is: percent-encoded. Each segment is decoded before it is
+    /// checked, so `%2e%2e` is refused like `..`. On HTTP and WebDAV a
+    /// segment that decodes to something with a `/` in it stays one
+    /// segment (`group%2Fproject`); elsewhere the `/` separates.
+    pub fn join_url_path(&self, rel: &str) -> Result<Location> {
+        if self.scheme.is_mail() {
+            return self.join(rel);
+        }
+        let mut loc = self.clone();
+        for raw in rel.split('/').filter(|p| !p.is_empty()) {
+            let seg = percent_decode_str(raw)
+                .decode_utf8()
+                .map_err(|e| Error::InvalidUrl(format!("'{raw}': {e}")))?;
+            // Every piece has to be a plain name, whether or not the
+            // protocol treats the `/` as a separator: a server that decodes
+            // `%2F` must not find a `..` either.
+            for piece in seg.split('/') {
+                check_segment(piece)?;
+            }
+            if self.wire_path.is_some() {
+                loc.push_segment(&seg);
+            } else {
+                for piece in seg.split('/') {
+                    loc.push_segment(piece);
+                }
+            }
+        }
+        loc.finish_join(rel.ends_with('/'), rel.is_empty() && self.dir_hint);
+        Ok(loc)
+    }
+
+    /// Append one segment, checked by the caller, to both forms of the path.
+    fn push_segment(&mut self, name: &str) {
+        if !self.path.ends_with('/') {
+            self.path.push('/');
+        }
+        self.path.push_str(name);
+        if let Some(w) = &mut self.wire_path {
+            if !w.ends_with('/') {
+                w.push('/');
+            }
+            w.push_str(&encode_segment(name));
+        }
+    }
+
+    /// Mark the result of a join as a directory or not. Nothing appended
+    /// leaves a directory a directory.
+    fn finish_join(&mut self, trailing_slash: bool, was_dir: bool) {
+        self.dir_hint = trailing_slash || was_dir;
+        if self.dir_hint {
+            if !self.path.ends_with('/') {
+                self.path.push('/');
+            }
+            if let Some(w) = &mut self.wire_path
+                && !w.ends_with('/')
+            {
+                w.push('/');
+            }
+        }
     }
 
     /// The directory this location is in: the location itself for a
@@ -584,7 +685,16 @@ impl Location {
             });
         }
         let mut loc = self.clone();
-        if !self.is_dir_target() {
+        if !self.is_dir_target()
+            && let Some(w) = &self.wire_path
+        {
+            // The encoded form knows where the segments end.
+            let w = w.trim_end_matches('/');
+            let dir = &w[..w.rfind('/').map_or(0, |i| i + 1)];
+            let dir = if dir.is_empty() { "/" } else { dir };
+            loc.path = percent_decode(dir);
+            loc.wire_path = Some(dir.to_string());
+        } else if !self.is_dir_target() {
             let p = trim_end_separators(&self.path);
             loc.path = match last_separator(p) {
                 Some(idx) => p[..=idx].to_string(),
@@ -613,6 +723,12 @@ impl Location {
         }
         let name = safe_name(name)?;
         let mut loc = self.clone();
+        if self.wire_path.is_some() {
+            let mut dir = self.parent()?;
+            dir.push_segment(&name);
+            dir.dir_hint = false;
+            return Ok(dir);
+        }
         loc.path = if self.is_dir_target() {
             self.path_joined(&name)?
         } else {
@@ -742,7 +858,10 @@ impl Location {
                 if self.scheme == Scheme::Smtp {
                     out.push('/');
                 }
-                out.push_str(&enc(&self.path, PATH_SET).to_string());
+                match &self.wire_path {
+                    Some(w) => out.push_str(w),
+                    None => out.push_str(&enc(&self.path, PATH_SET).to_string()),
+                }
             }
         }
         if !self.options.is_empty() {
@@ -792,6 +911,55 @@ const PATH_SET: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
     .add(b'`')
     .add(b'{')
     .add(b'}');
+
+/// What [`Location::encoded_path`] encodes in a segment: everything a URL
+/// path would read as syntax or decode on the way in. Non-ASCII is always
+/// encoded.
+const SEGMENT_SET: &percent_encoding::AsciiSet = &PATH_SET
+    .add(b'/')
+    .add(b'[')
+    .add(b'\\')
+    .add(b']')
+    .add(b'^')
+    .add(b'|');
+
+fn encode_segment(seg: &str) -> String {
+    percent_encoding::utf8_percent_encode(seg, SEGMENT_SET).to_string()
+}
+
+/// A decoded path, encoded segment by segment.
+fn encode_path(path: &str) -> String {
+    path.split('/')
+        .map(encode_segment)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// A path as a URL had it, with every segment decoded and encoded again:
+/// the same name, in one spelling, with `%2F` kept inside its segment.
+fn normalize_wire_path(raw: &str) -> String {
+    raw.split('/')
+        .map(|seg| encode_segment(&percent_decode(seg)))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// A segment of a path that came from outside, taken as it is: no `.`,
+/// `..`, empty name or control characters. Unlike [`safe_name`] it rewrites
+/// nothing.
+fn check_segment(seg: &str) -> Result<()> {
+    let bad = |why: &str| Error::InvalidUrl(format!("unsafe file name '{seg}': {why}"));
+    if seg.is_empty() {
+        return Err(bad("empty"));
+    }
+    if seg == "." || seg == ".." {
+        return Err(bad("refers to a directory"));
+    }
+    if seg.chars().any(|c| c.is_control()) {
+        return Err(bad("contains control characters"));
+    }
+    Ok(())
+}
 
 /// What [`Location::unmasked`] encodes in an option's key and value.
 const QUERY_SET: &percent_encoding::AsciiSet = &PATH_SET.add(b'&').add(b'=').add(b'+');
@@ -1359,6 +1527,62 @@ mod tests {
         let loc = Location::parse("sftp://u:secret@h/x").unwrap();
         assert!(loc.unmasked().contains("secret"));
         assert!(!loc.to_string().contains("secret"));
+    }
+
+    /// HTTP and WebDAV get their path encoded segment by segment, and a
+    /// `%2F` stays inside its segment through every path operation.
+    #[test]
+    fn the_encoded_path_keeps_segments_apart() {
+        let l = Location::parse("https://h/a%2520b").unwrap();
+        assert_eq!(l.path(), "/a%20b");
+        assert_eq!(l.encoded_path(), "/a%2520b");
+
+        let l = Location::parse("https://h/api/group%2Fproject/raw").unwrap();
+        assert_eq!(l.path(), "/api/group/project/raw");
+        assert_eq!(l.encoded_path(), "/api/group%2Fproject/raw");
+        assert_eq!(l.parent().unwrap().encoded_path(), "/api/group%2Fproject/");
+        assert_eq!(
+            l.sibling("raw.sha256").unwrap().encoded_path(),
+            "/api/group%2Fproject/raw.sha256"
+        );
+        let last = Location::parse("webdav://h/d/a%2Fb").unwrap();
+        assert_eq!(last.parent().unwrap().encoded_path(), "/d/");
+        assert_eq!(last.parent().unwrap().path(), "/d/");
+        assert_eq!(
+            Location::parse(&l.unmasked()).unwrap().encoded_path(),
+            l.encoded_path()
+        );
+
+        let dir = Location::parse("webdavs://h/in/").unwrap();
+        let f = dir.join("M\u{e4}rz #1?100%.pdf").unwrap();
+        assert_eq!(f.path(), "/in/M\u{e4}rz #1?100%.pdf");
+        assert_eq!(f.encoded_path(), "/in/M%C3%A4rz%20%231%3F100%25.pdf");
+        assert_eq!(
+            dir.encoded_target_path(Some("a b.txt")).unwrap(),
+            "/in/a%20b.txt"
+        );
+        assert_eq!(
+            dir.join("sub/").unwrap().encoded_path(),
+            "/in/sub/",
+            "a directory stays one"
+        );
+
+        // A URL-encoded relative path: one segment on HTTP, two elsewhere,
+        // and no `..` in any form.
+        let joined = dir.join_url_path("group%2Fproject/x%20y").unwrap();
+        assert_eq!(joined.encoded_path(), "/in/group%2Fproject/x%20y");
+        let sftp = Location::parse("sftp://h/in/").unwrap();
+        assert_eq!(sftp.join_url_path("a%2Fb/c").unwrap().path(), "/in/a/b/c");
+        for bad in ["%2e%2e/x", "a/%2E%2E", "..%2Fx", "a%2F..%2Fb"] {
+            assert!(dir.join_url_path(bad).is_err(), "{bad}");
+            assert!(sftp.join_url_path(bad).is_err(), "{bad}");
+        }
+
+        // Schemes without a request path encode what they have.
+        assert_eq!(
+            Location::parse("sftp://h/a%20b").unwrap().encoded_path(),
+            "/a%20b"
+        );
     }
 
     /// A broker is asked at every login, told which attempt it is, and
