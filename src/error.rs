@@ -69,25 +69,42 @@ impl From<std::io::Error> for Error {
 }
 
 impl Error {
-    /// Whether retrying makes sense: connection problems, not bad credentials
-    /// or a rejection by the server.
+    /// Whether retrying makes sense: connection problems and temporary
+    /// refusals, not bad credentials, a missing file or a rejection by the
+    /// server that another attempt would meet again.
     pub fn is_transient(&self) -> bool {
+        use std::io::ErrorKind as K;
         match self {
             Error::Transport { .. } => true,
-            Error::Io(e) => matches!(
+            // What the file system or the peer says for good; everything else
+            // (a reset, a timeout, a stream that broke off) may heal.
+            Error::Io(e) => !matches!(
                 e.kind(),
-                std::io::ErrorKind::ConnectionRefused
-                    | std::io::ErrorKind::ConnectionReset
-                    | std::io::ErrorKind::ConnectionAborted
-                    | std::io::ErrorKind::BrokenPipe
-                    | std::io::ErrorKind::NotConnected
-                    | std::io::ErrorKind::TimedOut
-                    | std::io::ErrorKind::Interrupted
-                    | std::io::ErrorKind::UnexpectedEof
-                    | std::io::ErrorKind::HostUnreachable
-                    | std::io::ErrorKind::NetworkUnreachable
-                    | std::io::ErrorKind::NetworkDown
+                K::NotFound
+                    | K::PermissionDenied
+                    | K::AlreadyExists
+                    | K::InvalidInput
+                    | K::InvalidData
+                    | K::Unsupported
+                    | K::OutOfMemory
+                    | K::StorageFull
+                    | K::QuotaExceeded
+                    | K::FileTooLarge
+                    | K::ReadOnlyFilesystem
+                    | K::NotADirectory
+                    | K::IsADirectory
+                    | K::DirectoryNotEmpty
+                    | K::InvalidFilename
             ),
+            // The server's own word: FTP's 4xx replies are temporary by
+            // definition, and so are HTTP's 5xx, 408 and 429. A reply that
+            // did not come at all is a connection problem.
+            Error::Remote(msg) => {
+                let code = |prefix: &str| msg.strip_prefix(prefix).and_then(|r| r.get(..3));
+                matches!(code("ftp: "), Some(c) if c.starts_with('4'))
+                    || msg.starts_with("ftp: no reply")
+                    || matches!(code("http "), Some(c) if c.starts_with('5') || c == "408" || c == "429")
+            }
             _ => false,
         }
     }
@@ -167,3 +184,46 @@ impl Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_what_another_attempt_can_cure_is_transient() {
+        let io = |k| Error::Io(std::io::Error::from(k));
+        let remote = |m: &str| Error::Remote(m.into());
+        for e in [
+            io(std::io::ErrorKind::ConnectionReset),
+            io(std::io::ErrorKind::TimedOut),
+            io(std::io::ErrorKind::UnexpectedEof),
+            io(std::io::ErrorKind::Other),
+            remote("ftp: 421 Service not available"),
+            remote("ftp: 426 Connection closed; transfer aborted"),
+            remote("ftp: no reply to STOR within 30s"),
+            remote("http 503 Service Unavailable"),
+            remote("http 429 Too Many Requests"),
+            Error::transport("sftp", std::io::Error::other("channel closed")),
+        ] {
+            assert!(e.is_transient(), "{e}");
+        }
+        for e in [
+            Error::Auth("denied".into()),
+            Error::invalid_option("x", "bad"),
+            Error::Cancelled,
+            Error::ChecksumMismatch {
+                algo: "SHA-256",
+                expected: "a".into(),
+                actual: "b".into(),
+            },
+            io(std::io::ErrorKind::NotFound),
+            io(std::io::ErrorKind::PermissionDenied),
+            io(std::io::ErrorKind::NotADirectory),
+            remote("ftp: 550 No such file"),
+            remote("http 404 Not Found"),
+            remote("scp: permission denied"),
+        ] {
+            assert!(!e.is_transient(), "{e}");
+        }
+    }
+}

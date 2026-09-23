@@ -477,7 +477,7 @@ pub async fn copy_many(
                         match r {
                             Ok(()) => break Ok(()),
                             Err(Error::Cancelled) => break Err(Error::Cancelled),
-                            Err(e) if attempts <= opts.retries => {
+                            Err(e) if attempts <= opts.retries && e.is_transient() => {
                                 warn!(target = %job.dst.location(), attempt = attempts, "send failed, retrying: {e}");
                                 let pause = tokio::time::sleep(Duration::from_secs(attempts as u64));
                                 if cancellable(opts.cancel.as_ref(), async { pause.await; Ok(()) }).await.is_err() {
@@ -1509,6 +1509,31 @@ mod tests {
                 .iter()
                 .all(|t| matches!(t.result, Err(Error::Cancelled)))
         );
+    }
+
+    #[tokio::test]
+    async fn only_transient_failures_are_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("src.bin");
+        std::fs::write(&src_path, b"payload").unwrap();
+        let src = crate::open(src_path.to_str().unwrap()).unwrap();
+        let opts = CopyOptions {
+            cache: CacheMode::Memory { limit: 1 << 20 },
+            retries: 1,
+            ..Default::default()
+        };
+
+        let refused = FailingSink::new(|| Error::Auth("denied".into()));
+        let report = copy_many(src.as_ref(), &[&refused], &opts).await.unwrap();
+        assert!(matches!(report.targets[0].result, Err(Error::Auth(_))));
+        assert_eq!(report.targets[0].attempts, 1);
+        assert_eq!(refused.sends.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+        let dropped = FailingSink::new(reset);
+        let report = copy_many(src.as_ref(), &[&dropped], &opts).await.unwrap();
+        assert!(report.targets[0].result.is_err());
+        assert_eq!(report.targets[0].attempts, 2);
+        assert_eq!(dropped.sends.load(std::sync::atomic::Ordering::Relaxed), 2);
     }
 
     #[tokio::test]

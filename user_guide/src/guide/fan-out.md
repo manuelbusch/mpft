@@ -77,6 +77,12 @@ up the others. Leave it off for anything large.
 the payload can be replayed from the cache. Each target is retried on its own,
 with the backoff described under [Time limits](copying.md#time-limits).
 
+Only a failure that another attempt can cure is retried: a connection that
+dropped, reset or went quiet, and a server that says the refusal is temporary
+(an FTP `4xx` reply, an HTTP `5xx`, `408` or `429`). Refused credentials, a
+bad option, a missing file, a denied permission or a checksum mismatch fail the
+target on the first attempt.
+
 One caveat: [a retried mail target may deliver
 twice](../protocols/mail.md#in-a-fan-out), because SMTP cannot say whether a
 message that failed halfway was accepted.
