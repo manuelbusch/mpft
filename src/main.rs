@@ -31,10 +31,11 @@ struct Cli {
     #[arg(long, global = true, value_name = "WHEN")]
     color: Option<ColorChoice>,
 
-    /// Password for the source and target if not given in the URL. A password
-    /// in the URL or in argv is visible to every other process; prefer
-    /// MPT_PASSWORD, --password-file or --password-stdin.
-    #[arg(long, env = "MPT_PASSWORD", global = true, hide_env_values = true)]
+    /// Password for sftp, scp, ftp(s), http(s) and webdav(s) endpoints whose
+    /// URL has none. A password in the URL or in argv is visible to every
+    /// other process; prefer MPT_PASSWORD, --password-file or
+    /// --password-stdin.
+    #[arg(long, global = true)]
     password: Option<String>,
 
     /// Read the password from this file (first line, no trailing newline)
@@ -830,10 +831,12 @@ impl LocateRules {
         if self.retries > 0 && loc.opt("connect_retries").is_none() {
             loc.set_option("connect_retries", self.retries.to_string());
         }
-        // A password in the URL stays; one from a profile gives way to the flag.
+        // A password in the URL stays; one from a profile gives way to the
+        // flag. The flag is for the schemes MPT_PASSWORD is for: not the key
+        // of an S3 bucket, not a relay, not a mail server.
         if let Some(pw) = &self.password
             && !loc.password_in_url()
-            && loc.scheme() != Scheme::File
+            && loc.scheme().takes_default_password()
         {
             use secrecy::ExposeSecret;
             loc.set_password(pw.expose_secret());

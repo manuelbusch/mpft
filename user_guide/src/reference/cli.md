@@ -102,7 +102,7 @@ subcommand.
 | Flag | Meaning |
 |---|---|
 | `--config <PATH>` | configuration file; an error if it does not exist |
-| `--password <PW>` | password for endpoints that need one. Visible in `ps`; prefer the two below |
+| `--password <PW>` | password for the [endpoints `MPT_PASSWORD` is for](environment.md#credentials) whose URL has none. Visible in `ps`; prefer the two below |
 | `--password-file <PATH>` | read the password from the first line of a file |
 | `--password-stdin` | read the password from the first line of standard input |
 | `--refuse-plaintext-auth` | refuse rather than warn when credentials would travel unencrypted |

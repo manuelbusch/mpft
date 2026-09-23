@@ -24,8 +24,9 @@ MPT_PASSWORD=… mpt cp report.pdf ftps://…
 `--password-file` reads the first line, ignoring the newline an editor leaves
 behind, and complains if others can read the file. `--password-stdin` reads the
 first line of standard input, which suits a secret manager's output. All three
-apply to `sftp`, `scp`, `ftp`, `ftps`, `http` and `webdav`; SMTP has
-`MPT_SMTP_PASSWORD` of its own.
+apply to `sftp`, `scp`, `ftp`, `ftps`, `http(s)` and `webdav(s)`, and to no
+other scheme: an S3 secret key, a relay's login and an SMTP server's password
+come from elsewhere, SMTP's from `MPT_SMTP_PASSWORD`.
 
 There is also `--password <PW>`, which is the same as `MPT_PASSWORD` but
 is in the argument list and is therefore visible in `ps` like a password

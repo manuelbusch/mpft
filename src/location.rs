@@ -227,6 +227,35 @@ impl Scheme {
         matches!(self, Scheme::Mailto | Scheme::Smtp)
     }
 
+    /// Whether `MPT_PASSWORD`, `--password`, `--password-file` and
+    /// `--password-stdin` supply this scheme's password: the schemes that log
+    /// in with a user name and a password. Not `s3` (whose "password" is a
+    /// secret access key), not `ssh` (the relay), not mail (which has
+    /// `MPT_SMTP_PASSWORD` of its own).
+    pub fn takes_default_password(self) -> bool {
+        matches!(
+            self,
+            Scheme::Sftp
+                | Scheme::Scp
+                | Scheme::Ftp
+                | Scheme::Ftps
+                | Scheme::Http
+                | Scheme::Https
+                | Scheme::WebDav
+                | Scheme::WebDavs
+        )
+    }
+
+    /// The environment variable a password for this scheme is taken from
+    /// when the URL has none.
+    pub fn password_variable(self) -> Option<&'static str> {
+        match self {
+            Scheme::Mailto | Scheme::Smtp => Some("MPT_SMTP_PASSWORD"),
+            s if s.takes_default_password() => Some("MPT_PASSWORD"),
+            _ => None,
+        }
+    }
+
     /// Whether the path is sent in a URL, and so has to keep track of its
     /// encoding (see [`Location::encoded_path`]).
     fn has_wire_path(self) -> bool {
@@ -412,15 +441,14 @@ impl Location {
         }
     }
 
-    /// Fill in a password from the environment if the URL had none.
+    /// Fill in a password from the environment if the URL had none (see
+    /// [`Scheme::password_variable`]).
     pub fn apply_env(&mut self) {
         if self.password.is_some() {
             return;
         }
-        let var = match self.scheme {
-            Scheme::File => return,
-            Scheme::Mailto | Scheme::Smtp => "MPT_SMTP_PASSWORD",
-            _ => "MPT_PASSWORD",
+        let Some(var) = self.scheme.password_variable() else {
+            return;
         };
         if let Ok(v) = std::env::var(var)
             && !v.is_empty()
@@ -1678,6 +1706,27 @@ mod tests {
         assert!(dir.path_joined("..").is_err());
         assert!(dir.sibling("../../etc/shadow").unwrap().path() == "/data/shadow");
         assert!(dir.sibling("").is_err());
+    }
+
+    #[test]
+    fn each_scheme_has_its_password_variable() {
+        for s in [
+            "sftp", "scp", "ftp", "ftps", "http", "https", "webdav", "webdavs",
+        ] {
+            let scheme = Scheme::parse(s).unwrap();
+            assert_eq!(scheme.password_variable(), Some("MPT_PASSWORD"), "{s}");
+            assert!(scheme.takes_default_password(), "{s}");
+        }
+        for s in ["smtp", "mailto"] {
+            let scheme = Scheme::parse(s).unwrap();
+            assert_eq!(scheme.password_variable(), Some("MPT_SMTP_PASSWORD"), "{s}");
+            assert!(!scheme.takes_default_password(), "{s}");
+        }
+        for s in ["s3", "ssh", "file"] {
+            let scheme = Scheme::parse(s).unwrap();
+            assert_eq!(scheme.password_variable(), None, "{s}");
+            assert!(!scheme.takes_default_password(), "{s}");
+        }
     }
 
     #[test]

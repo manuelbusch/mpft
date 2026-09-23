@@ -7,7 +7,7 @@ variable wins over the configuration file — except where noted.
 
 | Variable | Meaning |
 |---|---|
-| `MPT_PASSWORD` | password for `sftp`, `scp`, `ftp`, `ftps`, `http`, `webdav` when the URL has none |
+| `MPT_PASSWORD` | password for `sftp`, `scp`, `ftp`, `ftps`, `http(s)`, `webdav(s)` when the URL has none; never for `s3`, `ssh` or mail |
 | `MPT_SMTP_PASSWORD` | password for `mailto:` and `smtp://` |
 | `MPT_REFUSE_PLAINTEXT_AUTH` | `1` makes unencrypted credentials an error instead of a warning |
 
