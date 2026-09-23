@@ -266,8 +266,9 @@ pub async fn copy(src: &dyn Endpoint, dst: &dyn Endpoint) -> Result<CopyReport> 
 ///
 /// Direction errors (a source that cannot receive, a target that cannot send)
 /// are reported before any connection is made. A failing target does not stop
-/// the others; each target's outcome is in the returned report. `Err` is only
-/// returned when the source itself cannot be read.
+/// the others; each target's outcome is in the returned report, and so is a
+/// source that fails while it is streamed. `Err` is only returned when the
+/// source cannot be opened, or cannot be read into the memory cache.
 pub async fn copy_many(
     src: &dyn Endpoint,
     dsts: &[&dyn Endpoint],
@@ -523,7 +524,7 @@ pub async fn copy_many(
                     skipped: false,
                 }
             });
-            let targets = futures::future::join_all(running).await;
+            let mut targets = futures::future::join_all(running).await;
             if let Some(mut driver) = driver {
                 // After a cancel the driver may still wait for the source;
                 // nobody needs what it reads any more.
@@ -535,13 +536,19 @@ pub async fn copy_many(
                     }
                     r = &mut driver => r,
                 };
-                match joined {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => return Err(Error::Io(e)),
-                    Err(e) => {
-                        return Err(Error::Io(std::io::Error::other(format!(
-                            "tee driver panicked: {e}"
-                        ))));
+                // A source that failed has reached every target through
+                // its reader, so each report already says so, as it does
+                // with a single target. One that still reads as a success
+                // cannot have had the whole payload.
+                let failure = match joined {
+                    Ok(Ok(())) => None,
+                    Ok(Err(e)) => Some(e),
+                    Err(e) => Some(std::io::Error::other(format!("tee driver panicked: {e}"))),
+                };
+                if let Some(e) = failure {
+                    warn!("reading the source failed: {e}");
+                    for t in targets.iter_mut().filter(|t| t.result.is_ok()) {
+                        t.result = Err(Error::Io(std::io::Error::new(e.kind(), e.to_string())));
                     }
                 }
             }
@@ -1277,7 +1284,8 @@ mod tests {
             check: true,
             ..Default::default()
         };
-        for dsts in [vec![a.as_ref()]] {
+        let b = crate::open(&format!("{}/b/", dir.path().display())).unwrap();
+        for dsts in [vec![a.as_ref()], vec![a.as_ref(), b.as_ref()]] {
             let report = copy_many(&src, &dsts, &opts).await.unwrap();
             // The source's own error stands, not a mismatch against a
             // digest over half the file.

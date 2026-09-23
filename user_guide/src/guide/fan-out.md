@@ -104,6 +104,12 @@ every failed target failed the same way; [Exit
 codes](../reference/exit-codes.md#several-failures) has the
 rule.
 
+A source that fails while it is read fails every target that was still
+receiving, and each of them reports it on its own line, as a single target
+would. Without `--cache` that is every target still running; with it the
+source is read in full before any target starts, so a failure there ends the
+copy before anything is sent.
+
 Nothing is rolled back. The targets that succeeded keep the file; re-running
 the command with [`--skip-existing`](reliability.md#skipping-with---skip-existing)
 will leave them alone and retry only the ones that are missing it.
