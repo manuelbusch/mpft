@@ -97,6 +97,10 @@ that writes directly (see [A file appears only when it is
 whole](../guide/reliability.md#a-file-appears-only-when-it-is-whole)) keeps
 what it received, and reports the mismatch all the same.
 
+A copy that fails before the source has been read to the end has nothing to
+compare. It is not judged at all: the failure keeps its own message and [exit
+code](../reference/exit-codes.md), rather than turning into a mismatch.
+
 A missing checksum file is a failure too, since a check that silently did not
 happen would be worse than no check:
 

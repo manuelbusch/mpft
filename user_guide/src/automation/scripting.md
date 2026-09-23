@@ -115,7 +115,7 @@ $ mpt --json cp --check out/report.pdf back/ 2>/dev/null
 | `targets[].skipped` | it already had the file (`--skip-existing`) |
 | `targets[].sidecar`, `.signature` | the extra files written beside it — the [checksum file](../appendix/glossary.md) and the signature — or `null` |
 | `digests` | algorithm → hex, empty unless a checksum was computed |
-| `check` | `algo`, `ok`, `expected`, `actual`, `signer`; `null` without `--check` |
+| `check` | `algo`, `ok`, `expected`, `actual`, `signer`; `null` without `--check`, and when the source was not read to the end |
 | `source_removed`, `remove_error` | `--delete-source`: whether the source went, and why not |
 
 `ok` is the field to branch on. It is not simply "no error": a copy whose

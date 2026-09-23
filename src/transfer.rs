@@ -541,29 +541,37 @@ pub async fn copy_many(
         .filter_map(|h| h.get().map(|v| (h.algo(), v)))
         .collect();
 
-    let checked = expected.map(|(algo, exp, signer)| CheckReport {
-        algo,
-        expected: exp,
-        actual: digests
-            .iter()
-            .find(|(a, _)| *a == algo)
-            .map(|(_, v)| v.clone())
-            .unwrap_or_default(),
-        signer,
+    // The check is judged only on a digest over the whole source. One that
+    // was not read to the end has nothing to compare; the targets' own
+    // errors say why, and no verdict is given that would hide them.
+    let checked = expected.and_then(|(algo, exp, signer)| {
+        let actual = digests.iter().find(|(a, _)| *a == algo)?.1.clone();
+        Some(CheckReport {
+            algo,
+            expected: exp,
+            actual,
+            signer,
+        })
     });
-    if let Some(c) = &checked {
-        if c.ok() {
-            info!(algo = %c.algo, "checksum verified");
-        } else {
-            warn!(algo = %c.algo, expected = %c.expected, actual = %c.actual, "CHECKSUM MISMATCH");
+    match &checked {
+        Some(c) if c.ok() => info!(algo = %c.algo, "checksum verified"),
+        Some(c) => {
+            warn!(algo = %c.algo, expected = %c.expected, actual = %c.actual, "CHECKSUM MISMATCH")
         }
+        None if defer => warn!("source was not read to the end; the check was not judged"),
+        None => {}
     }
     if defer {
-        let mismatch = checked.as_ref().filter(|c| !c.ok());
         for (t, job) in targets.iter_mut().zip(&jobs) {
             let result = std::mem::replace(&mut t.result, Ok(()));
-            let result = match (result, mismatch) {
-                (Ok(()), Some(c)) => Err(c.error()),
+            let result = match (result, &checked) {
+                (Ok(()), Some(c)) if !c.ok() => Err(c.error()),
+                // Not expected to happen (a target that finished has read
+                // the source to the end), but never a pass without a check.
+                (Ok(()), None) => Err(Error::Remote(
+                    "check: the source was not read to the end, so the file cannot be verified"
+                        .into(),
+                )),
                 (result, _) => result,
             };
             t.result = finalize(job, result).await;
@@ -1221,6 +1229,40 @@ mod tests {
             left.len() < 4096 + 1,
             "the leftover file holds at most what was transferred"
         );
+    }
+
+    #[tokio::test]
+    async fn a_source_that_breaks_off_is_not_judged_by_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("src.bin");
+        std::fs::write(
+            dir.path().join("src.bin.sha256"),
+            format!("{}  src.bin\n", "0".repeat(64)),
+        )
+        .unwrap();
+        let src = FailingSource {
+            loc: crate::Location::parse(src_path.to_str().unwrap()).unwrap(),
+            good: 4096,
+        };
+        let a = crate::open(&format!("{}/a/", dir.path().display())).unwrap();
+        let opts = CopyOptions {
+            check: true,
+            ..Default::default()
+        };
+        for dsts in [vec![a.as_ref()]] {
+            let report = copy_many(&src, &dsts, &opts).await.unwrap();
+            // The source's own error stands, not a mismatch against a
+            // digest over half the file.
+            assert!(report.checked.is_none());
+            for t in &report.targets {
+                assert!(
+                    matches!(&t.result, Err(e) if !matches!(e, Error::ChecksumMismatch { .. })),
+                    "{:?}",
+                    t.result
+                );
+            }
+            assert!(!dir.path().join("a/src.bin").exists());
+        }
     }
 
     /// A source that keeps trickling bytes, so a transfer can be interrupted.
