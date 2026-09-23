@@ -148,6 +148,13 @@ mpt cp -r --skip-existing --delete-source sftp://srv/outbox/ /data/inbox/
 
 The directories stay; only the files are removed.
 
+A target skipped as already there counts as having the file, and that rests
+on its size. Where the target keeps a checksum file beside it (one that
+`--hash` left there), the source is read once more and compared with it; if
+they disagree the source stays and the copy fails. Without a checksum file the
+size is all there is, and a warning in the log says so. Send with
+`--hash` when the same files are later drained with `--delete-source`.
+
 ## Dry run
 
 `--dry-run` expands everything — patterns, trees, profile names — and prints

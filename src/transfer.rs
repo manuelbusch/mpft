@@ -340,6 +340,9 @@ pub async fn copy_many(
     // reports are put back in place at the end.
     let all_dsts = dsts;
     let mut skipped = vec![false; all_dsts.len()];
+    // For `delete_source`: what each skipped target's checksum file says,
+    // since a matching size alone is thin ground for deleting the source.
+    let mut held: Vec<(String, Option<(HashAlgo, String)>)> = Vec::new();
     if opts.skip_existing && size.is_some() {
         for (i, (dst, sender)) in all_dsts.iter().zip(&senders).enumerate() {
             if dst.location().scheme().is_mail() {
@@ -353,6 +356,12 @@ pub async fn copy_many(
                 info!(target = i, size = ?size, "already there, skipped");
                 debug!(target = %dst.location(), "already there, skipped");
                 skipped[i] = true;
+                if opts.delete_source {
+                    held.push((
+                        dst.location().to_string(),
+                        target_checksum(*dst, &name).await,
+                    ));
+                }
             }
         }
     }
@@ -389,7 +398,7 @@ pub async fn copy_many(
             source_removed: None,
         };
         if opts.delete_source {
-            report.source_removed = Some(remove_source(src).await);
+            report.source_removed = Some(remove_source(src, &held, &[]).await);
         }
         return Ok(report);
     }
@@ -658,13 +667,45 @@ pub async fn copy_many(
     };
     // The source goes only when everything that was to hold it does.
     if opts.delete_source && report.all_ok() && report.checked.as_ref().is_none_or(|c| c.ok()) {
-        report.source_removed = Some(remove_source(src).await);
+        report.source_removed = Some(remove_source(src, &held, &report.digests).await);
     }
     Ok(report)
 }
 
-/// Delete the source file, once every target has it.
-async fn remove_source(src: &dyn Endpoint) -> Result<()> {
+/// Delete the source file, once every target has it. `held` are the targets
+/// that were skipped as already having it, with the checksum file each keeps
+/// beside it; one that disagrees with the source keeps the source. `digests`
+/// are what this copy computed over the source, if anything.
+async fn remove_source(
+    src: &dyn Endpoint,
+    held: &[(String, Option<(HashAlgo, String)>)],
+    digests: &[(HashAlgo, String)],
+) -> Result<()> {
+    let mut known = digests.to_vec();
+    for (target, sum) in held {
+        let Some((algo, theirs)) = sum else {
+            warn!(
+                "a skipped target has no checksum file; deleting the source on the strength of its size alone"
+            );
+            debug!(%target, "no checksum file beside the skipped target");
+            continue;
+        };
+        let ours = match known.iter().find(|(a, _)| a == algo) {
+            Some((_, hex)) => hex.clone(),
+            None => {
+                let hex = digest_of(src, *algo).await?;
+                known.push((*algo, hex.clone()));
+                hex
+            }
+        };
+        if !ours.eq_ignore_ascii_case(theirs) {
+            return Err(Error::Remote(format!(
+                "not deleted: {target} holds a file of the source's size, \
+                 but its checksum file does not match the source"
+            )));
+        }
+        debug!(%target, algo = %algo, "the skipped target's checksum matches the source");
+    }
     let name = src
         .location()
         .filename()
@@ -672,6 +713,29 @@ async fn remove_source(src: &dyn Endpoint) -> Result<()> {
     info!("deleting the source");
     debug!(source = %src.location(), "deleting the source");
     src.sender()?.remove(name).await
+}
+
+/// The checksum file a target keeps beside `name`, if it has one.
+async fn target_checksum(dst: &dyn Endpoint, name: &str) -> Option<(HashAlgo, String)> {
+    for algo in HashAlgo::ALL {
+        let Ok(text) = read_sibling(dst, &algo.sidecar_name(name), 8192).await else {
+            continue;
+        };
+        if let Some((hex, _)) = parse_sidecar(&String::from_utf8_lossy(&text)) {
+            return Some((algo, hex));
+        }
+    }
+    None
+}
+
+/// Read the source once more, for its digest in `algo`.
+async fn digest_of(src: &dyn Endpoint, algo: HashAlgo) -> Result<String> {
+    let body = src.receiver()?.receive().await?;
+    let (mut body, handles) = hashing(body, &[algo]);
+    tokio::io::copy(&mut body, &mut tokio::io::sink()).await?;
+    handles[0]
+        .get()
+        .ok_or_else(|| Error::Io(std::io::Error::other("the source was not read to the end")))
 }
 
 /// Run `fut`, but give up as soon as `cancel` fires. The future is dropped,
@@ -1160,6 +1224,45 @@ mod tests {
             .await
             .unwrap();
         assert!(report.targets[0].skipped);
+        assert!(matches!(report.source_removed, Some(Ok(()))));
+        assert!(!src_path.exists());
+    }
+
+    #[tokio::test]
+    async fn a_skipped_target_with_a_different_checksum_keeps_the_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("src.bin");
+        let out = dir.path().join("out");
+        std::fs::create_dir(&out).unwrap();
+        let src = crate::open(src_path.to_str().unwrap()).unwrap();
+        let dst = crate::open(&format!("{}/", out.display())).unwrap();
+        let opts = CopyOptions {
+            delete_source: true,
+            skip_existing: true,
+            ..Default::default()
+        };
+        let sidecar = |data: &[u8]| {
+            let hex = crate::hash::digest_bytes(HashAlgo::Sha256, data);
+            std::fs::write(out.join("src.bin.sha256"), format!("{hex}  src.bin\n")).unwrap();
+        };
+
+        // Same size, other content, and the target's checksum file says so.
+        std::fs::write(&src_path, b"payload").unwrap();
+        std::fs::write(out.join("src.bin"), b"PAYLOAD").unwrap();
+        sidecar(b"PAYLOAD");
+        let report = copy_many(src.as_ref(), &[dst.as_ref()], &opts)
+            .await
+            .unwrap();
+        assert!(report.targets[0].skipped);
+        let err = report.source_removed.unwrap().unwrap_err().to_string();
+        assert!(err.contains("does not match the source"), "{err}");
+        assert!(src_path.exists());
+
+        // The checksum file agrees with the source: it goes.
+        sidecar(b"payload");
+        let report = copy_many(src.as_ref(), &[dst.as_ref()], &opts)
+            .await
+            .unwrap();
         assert!(matches!(report.source_removed, Some(Ok(()))));
         assert!(!src_path.exists());
     }
