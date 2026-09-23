@@ -86,14 +86,21 @@ continue from a part file, and it tells an interrupted transfer to **keep** its
 part file instead of cleaning up. Without `--resume` on the first run there is
 nothing to continue from, so put it on both.
 
-Three things to know:
+Four things to know:
 
 - **The source is still read from the beginning.** A checksum has to cover the
   whole file, and the source is usually the cheap side. Only the missing bytes
   go over the network.
 - **A part file that is not shorter than the payload is not a prefix of it.**
   It may be a leftover from something else entirely, so it is written again
-  from the top rather than trusted.
+  from the top rather than trusted. The same holds for any part file when the
+  source cannot say how large it is.
+- **What is already in the part file is trusted, not compared.** Only its
+  length is checked; its bytes are not read back and matched against the
+  source. A part file left by a different version of the file continues into a
+  file that matches neither, which `--hash` does not notice either, since the
+  digest is taken over the source. Use `--check` on the way back, or delete the
+  part file, when that can happen.
 - **In a fan-out each target resumes from its own offset.** The single source
   stream is read once and each target skips the bytes it already has.
 

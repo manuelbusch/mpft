@@ -725,8 +725,14 @@ fn part_plan(
 /// there, as long as the target can append and the payload is longer.
 ///
 /// A part file that is at least as large as the source is not resumable —
-/// it may be a leftover of something else — so it is written again.
+/// it may be a leftover of something else — so it is written again. So is
+/// any part file when the source's size is unknown, since then nothing
+/// says it is shorter. Its content is not compared with the source's.
 async fn resume_offset(plan: &PartPlan, size: Option<u64>) -> u64 {
+    let Some(total) = size else {
+        info!(part = %plan.part, "the source's size is unknown, so nothing says the partial file is a prefix; sending the whole payload");
+        return 0;
+    };
     let Ok(sender) = plan.ep.sender() else {
         return 0;
     };
@@ -742,8 +748,9 @@ async fn resume_offset(plan: &PartPlan, size: Option<u64>) -> u64 {
             return 0;
         }
     };
-    match size {
-        Some(total) if existing >= total => {
+    match existing {
+        0 => 0,
+        _ if existing >= total => {
             warn!(
                 part = %plan.part,
                 existing, total,
@@ -751,7 +758,6 @@ async fn resume_offset(plan: &PartPlan, size: Option<u64>) -> u64 {
             );
             0
         }
-        _ if existing == 0 => 0,
         _ => {
             info!(part = %plan.part, offset = existing, "resuming");
             existing
@@ -1533,6 +1539,56 @@ mod tests {
             .unwrap();
         assert_eq!(report.targets[0].bytes, 30_000, "written from the top");
         assert_eq!(std::fs::read(out.join("data.bin")).unwrap(), payload);
+    }
+
+    /// A source that does not say how large it is.
+    struct UnsizedSource {
+        loc: crate::Location,
+        data: Vec<u8>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::Receiver for UnsizedSource {
+        async fn receive(&self) -> Result<crate::ByteStream> {
+            Ok(Box::pin(std::io::Cursor::new(self.data.clone())))
+        }
+        async fn list(&self) -> Result<Vec<crate::Entry>> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl Endpoint for UnsizedSource {
+        fn location(&self) -> &crate::Location {
+            &self.loc
+        }
+        fn as_receiver(&self) -> Option<&dyn crate::Receiver> {
+            Some(self)
+        }
+        fn as_sender(&self) -> Option<&dyn crate::Sender> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn without_a_known_size_nothing_is_resumed() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        std::fs::create_dir(&out).unwrap();
+        // Longer than the payload, which nothing could tell without a size.
+        std::fs::write(out.join("data.bin.mpt-part"), vec![9u8; 8_000]).unwrap();
+        let src = UnsizedSource {
+            loc: crate::Location::parse("/nowhere/data.bin").unwrap(),
+            data: vec![7u8; 5_000],
+        };
+        let dst = crate::open(&format!("{}/", out.display())).unwrap();
+        let opts = CopyOptions {
+            resume: true,
+            ..Default::default()
+        };
+        let report = copy_many(&src, &[dst.as_ref()], &opts).await.unwrap();
+        assert!(report.all_ok(), "{:?}", report.targets);
+        assert_eq!(report.targets[0].bytes, 5_000, "written from the top");
+        assert_eq!(std::fs::read(out.join("data.bin")).unwrap(), src.data);
     }
 
     #[tokio::test]
