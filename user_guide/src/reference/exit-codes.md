@@ -19,7 +19,7 @@ wrong", and none of them will come right on a retry.
 |---|---|
 | checksum mismatch; signature missing, invalid, untrusted or too old | 3 |
 | authentication rejected: wrong password, no accepted key, host key not trusted | 4 |
-| unusable configuration, unknown profile, unsupported scheme or operation, bad URL or option | 2 |
+| unusable configuration or trust file (`allowed_signers`, keyring), unknown profile, unsupported scheme or operation, bad URL or option | 2 |
 | cancelled | 130 |
 | everything else: I/O, remote errors, timeouts, transport failures | 1 |
 

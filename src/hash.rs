@@ -240,8 +240,12 @@ pub fn parse_signed_at(text: &str) -> Option<SystemTime> {
         .find_map(|l| l.trim().strip_prefix(SIGNED_AT.trim_end()))?;
     match crate::sign::parse_time(line) {
         Ok(t) => Some(t),
-        Err(e) => {
-            tracing::warn!("ignoring an unreadable '{}' line: {e}", SIGNED_AT.trim());
+        Err(_) => {
+            tracing::warn!(
+                "ignoring an unreadable '{}' line: '{}' is not an RFC 3339 timestamp",
+                SIGNED_AT.trim(),
+                line.trim()
+            );
             None
         }
     }

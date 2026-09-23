@@ -145,7 +145,7 @@ pub trait Verifier: Send + Sync {
 fn parse_ssh_time(raw: &str) -> Result<SystemTime> {
     let v = raw.trim().trim_end_matches(['Z', 'z']);
     let bad = || {
-        Error::InvalidUrl(format!(
+        Error::Config(format!(
             "'{raw}' is not an allowed_signers timestamp (YYYYMMDD[HHMM[SS]])"
         ))
     };
@@ -211,7 +211,7 @@ pub fn format_time(t: SystemTime) -> String {
 /// same with a numeric offset or fractional seconds, as other tools write it.
 pub fn parse_time(raw: &str) -> Result<SystemTime> {
     let v = raw.trim();
-    let bad = || Error::InvalidUrl(format!("'{raw}' is not an RFC 3339 timestamp"));
+    let bad = || Error::Config(format!("'{raw}' is not an RFC 3339 timestamp"));
     // Every slice below is by byte offset; a timestamp is ASCII throughout,
     // and anything else is refused before a slice could split a character.
     if v.len() < 19 || !v.is_ascii() {
@@ -449,18 +449,18 @@ pub mod ssh {
                     .position(|t| is_key_type(t))
                     .map(|i| i + 1)
                 else {
-                    return Err(Error::InvalidUrl(format!(
+                    return Err(Error::Config(format!(
                         "allowed_signers line {n}: no key found"
                     )));
                 };
                 if tokens.len() < idx + 2 {
-                    return Err(Error::InvalidUrl(format!(
+                    return Err(Error::Config(format!(
                         "allowed_signers line {n}: truncated key"
                     )));
                 }
                 let key_text = tokens[idx..].join(" ");
                 let key = PublicKey::from_openssh(&key_text)
-                    .map_err(|e| Error::InvalidUrl(format!("allowed_signers line {n}: {e}")))?;
+                    .map_err(|e| Error::Config(format!("allowed_signers line {n}: {e}")))?;
 
                 let mut entry = SignerEntry {
                     principals,
@@ -507,7 +507,7 @@ pub mod ssh {
                 entries.push(entry);
             }
             if entries.is_empty() {
-                return Err(Error::InvalidUrl(if skipped > 0 {
+                return Err(Error::Config(if skipped > 0 {
                     format!(
                         "allowed_signers: only cert-authority entries ({skipped}), no usable keys"
                     )
@@ -626,7 +626,7 @@ pub mod ssh {
 
     pub(super) fn load_verifier(path: &std::path::Path) -> Result<Arc<dyn Verifier>> {
         let text = std::fs::read_to_string(path)
-            .map_err(|e| Error::Auth(format!("cannot read {}: {e}", path.display())))?;
+            .map_err(|e| Error::Config(format!("cannot read {}: {e}", path.display())))?;
         Ok(Arc::new(AllowedSigners::parse(&text)?))
     }
 
@@ -816,12 +816,12 @@ pub mod pgp {
     impl Keyring {
         pub fn parse(bytes: &[u8]) -> Result<Self> {
             let (iter, _) = SignedPublicKey::from_armor_many(std::io::Cursor::new(bytes))
-                .map_err(|e| Error::InvalidUrl(format!("keyring: {e}")))?;
+                .map_err(|e| Error::Config(format!("keyring: {e}")))?;
             let parsed = iter
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| Error::InvalidUrl(format!("keyring: {e}")))?;
+                .map_err(|e| Error::Config(format!("keyring: {e}")))?;
             if parsed.is_empty() {
-                return Err(Error::InvalidUrl("keyring: no public keys".into()));
+                return Err(Error::Config("keyring: no public keys".into()));
             }
             // Only keys whose own self-signatures check out, and which have not
             // been revoked, are trusted.
@@ -844,7 +844,7 @@ pub mod pgp {
                 keys.push(key);
             }
             if keys.is_empty() {
-                return Err(Error::InvalidUrl(format!(
+                return Err(Error::Config(format!(
                     "keyring: no usable public keys ({dropped} revoked or unverifiable)"
                 )));
             }
@@ -1027,7 +1027,7 @@ pub mod pgp {
 
     pub(super) fn load_verifier(path: &std::path::Path) -> Result<Arc<dyn Verifier>> {
         let bytes = std::fs::read(path)
-            .map_err(|e| Error::Auth(format!("cannot read {}: {e}", path.display())))?;
+            .map_err(|e| Error::Config(format!("cannot read {}: {e}", path.display())))?;
         Ok(Arc::new(Keyring::parse(&bytes)?))
     }
 
@@ -1234,6 +1234,38 @@ mod tests {
         ] {
             assert!(parse_time(bad).is_err(), "{bad:?} should be rejected");
         }
+    }
+
+    /// A trust file that cannot be read or parsed is a configuration
+    /// problem (exit 2), not refused credentials or a bad URL.
+    #[test]
+    fn unusable_trust_files_are_configuration_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        let garbage = dir.path().join("garbage");
+        std::fs::write(&garbage, "alice not-a-key\n").unwrap();
+        let mut specs = vec![
+            VerifySpec::SshAllowedSigners(missing.clone()),
+            VerifySpec::PgpKeyring(missing),
+        ];
+        if cfg!(feature = "sign-ssh") {
+            specs.push(VerifySpec::SshAllowedSigners(garbage.clone()));
+        }
+        if cfg!(feature = "sign-pgp") {
+            specs.push(VerifySpec::PgpKeyring(garbage));
+        }
+        for spec in specs {
+            let Err(e) = load_verifier(&spec) else {
+                panic!("{spec:?} should not load");
+            };
+            if matches!(e, Error::UnsupportedScheme(_)) {
+                continue;
+            }
+            assert!(matches!(e, Error::Config(_)), "{spec:?}: {e}");
+            assert_eq!(e.exit_code(), 2);
+        }
+        assert!(matches!(parse_ssh_time("2024"), Err(Error::Config(_))));
+        assert!(matches!(parse_time("yesterday"), Err(Error::Config(_))));
     }
 
     #[test]
