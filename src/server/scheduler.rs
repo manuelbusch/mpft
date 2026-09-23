@@ -16,7 +16,7 @@ use super::AppState;
 use super::model::{ApiError, JobId, JobOptions, Submission, TransferState};
 use super::store::{Prepared, transfer_error};
 use crate::batch::{self, Job, JobReport, PrepareOptions};
-use crate::config::PROFILE_PREFIX;
+use crate::config::is_profile_ref;
 use crate::{Error, Location, Result};
 
 /// Start the job's task.
@@ -168,7 +168,7 @@ async fn prepare(
         let url = submission
             .urls()
             .into_iter()
-            .find(|u| u.starts_with(PROFILE_PREFIX))
+            .find(|u| is_profile_ref(u))
             .unwrap_or("");
         return Err(fail(ApiError::client_safe(&e, url), &refs));
     }
@@ -249,9 +249,7 @@ fn shown(loc: &Location, refs: &[(String, Location)]) -> String {
             && base.host() == loc.host()
             && base.port_or_default() == loc.port_or_default()
     };
-    let mpt_refs = refs
-        .iter()
-        .filter(|(url, _)| url.starts_with(PROFILE_PREFIX));
+    let mpt_refs = refs.iter().filter(|(url, _)| is_profile_ref(url));
     // The reference itself, unexpanded.
     for (url, base) in mpt_refs.clone() {
         if same_endpoint(base) && base.path() == loc.path() {
@@ -289,7 +287,7 @@ fn shown(loc: &Location, refs: &[(String, Location)]) -> String {
 pub(super) fn redact(mut error: ApiError, refs: &[(String, Location)]) -> ApiError {
     let mut pairs: Vec<(String, &String)> = refs
         .iter()
-        .filter(|(url, _)| url.starts_with(PROFILE_PREFIX))
+        .filter(|(url, _)| is_profile_ref(url))
         .map(|(url, loc)| (loc.to_string(), url))
         .collect();
     pairs.sort_by_key(|(text, _)| std::cmp::Reverse(text.len()));

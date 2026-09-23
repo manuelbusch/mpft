@@ -864,7 +864,10 @@ fn trim_end_separators(path: &str) -> &str {
 }
 
 fn looks_like_url(s: &str) -> bool {
-    if s.starts_with("mailto:") {
+    // A scheme is case-insensitive, `MAILTO:` included.
+    if s.get(..7)
+        .is_some_and(|h| h.eq_ignore_ascii_case("mailto:"))
+    {
         return true;
     }
     if let Some(idx) = s.find("://") {
@@ -1144,6 +1147,10 @@ mod tests {
                 .starts_with("mailto:a@x.de,b@y.de?subject=Report KW36")
         );
         assert!(Location::parse("mailto:?subject=x").is_err());
+        // The scheme's case does not matter, here as anywhere else.
+        let l = Location::parse("MAILTO:a@x.de").unwrap();
+        assert_eq!(l.scheme(), Scheme::Mailto);
+        assert_eq!(l.recipients(), vec!["a@x.de"]);
     }
 
     #[test]

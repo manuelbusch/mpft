@@ -381,9 +381,11 @@ impl Config {
     /// The path is appended to the profile's own path, and options of the
     /// reference replace those of the profile.
     pub fn resolve(&self, url: &str) -> Result<Option<Location>> {
-        let Some(rest) = url.trim().strip_prefix(PROFILE_PREFIX) else {
+        let Some(rest) = strip_profile_prefix(url) else {
             return Ok(None);
         };
+        // A fragment is not part of the address, as in any other URL.
+        let rest = rest.split_once('#').map_or(rest, |(r, _)| r);
         let (head, query) = match rest.split_once('?') {
             Some((h, q)) => (h, Some(q)),
             None => (rest, None),
@@ -392,6 +394,12 @@ impl Config {
             Some((n, p)) => (n, p),
             None => (head, ""),
         };
+        // The path is percent-decoded like the path of any URL, and before
+        // it is checked: `%2e%2e` is `..` to every HTTP server.
+        let path = percent_encoding::percent_decode_str(path)
+            .decode_utf8()
+            .map_err(|e| Error::Config(format!("mpt://{name}/{path}: {e}")))?
+            .into_owned();
         let profile = self.profiles.get(name).ok_or_else(|| {
             let known: Vec<&str> = self.profiles.keys().map(String::as_str).collect();
             Error::Config(match known.is_empty() {
@@ -399,7 +407,7 @@ impl Config {
                 false => format!("no profile '{name}' (known: {})", known.join(", ")),
             })
         })?;
-        if profile.url.trim().starts_with(PROFILE_PREFIX) {
+        if is_profile_ref(&profile.url) {
             return Err(Error::Config(format!(
                 "profile '{name}' points at another profile ({}); profiles do not chain",
                 profile.url
@@ -409,7 +417,7 @@ impl Config {
             .map_err(|e| Error::Config(format!("profile '{name}': {e}")))?;
         if !path.is_empty() {
             loc = loc
-                .join(path)
+                .join(&path)
                 .map_err(|e| Error::Config(format!("mpt://{name}/{path}: {e}")))?;
         }
         if let Some(pw) = self.resolved.profile_passwords.get(name)
@@ -939,11 +947,24 @@ pub fn profile_of(url: &str) -> Option<&'static Profile> {
 
 /// The profile name a `mpt://` URL names, without looking it up.
 pub fn profile_name(url: &str) -> Option<&str> {
-    url.trim()
-        .strip_prefix(PROFILE_PREFIX)?
-        .split(['/', '?'])
+    strip_profile_prefix(url)?
+        .split(['/', '?', '#'])
         .next()
         .filter(|n| !n.is_empty())
+}
+
+/// Whether `url` addresses a profile. The prefix is matched without regard
+/// to case, as a URL scheme is.
+pub fn is_profile_ref(url: &str) -> bool {
+    strip_profile_prefix(url).is_some()
+}
+
+/// What follows `mpt://`, if `url` starts with it in any case.
+fn strip_profile_prefix(url: &str) -> Option<&str> {
+    let url = url.trim();
+    let head = url.get(..PROFILE_PREFIX.len())?;
+    head.eq_ignore_ascii_case(PROFILE_PREFIX)
+        .then(|| &url[PROFILE_PREFIX.len()..])
 }
 
 impl Resolved {
@@ -1255,10 +1276,36 @@ mod tests {
         // Nothing may climb out of the profile's directory.
         let err = cfg.resolve("mpt://prod/../../etc/passwd").unwrap_err();
         assert!(err.to_string().contains("unsafe"), "{err}");
+        // Nor in its percent-encoded form, which HTTP servers decode.
+        for bad in [
+            "mpt://prod/%2e%2e/%2e%2e/etc/passwd",
+            "mpt://prod/%2E%2E/x",
+            "mpt://prod/a/..%2F..%2Fetc",
+        ] {
+            let err = cfg.resolve(bad).unwrap_err();
+            assert!(err.to_string().contains("unsafe"), "{bad}: {err}");
+        }
         // Mail has no path to append to.
         assert!(cfg.resolve("mpt://boss/x").is_err());
         // A plain URL is not a profile reference.
         assert!(cfg.resolve("sftp://h/x").unwrap().is_none());
+    }
+
+    /// A reference is read like a URL: its path is percent-decoded, a
+    /// fragment is not part of it, and the prefix may be in any case.
+    #[test]
+    fn a_reference_is_read_like_a_url() {
+        let cfg = with_profiles();
+        let loc = cfg.resolve("mpt://prod/a%20b/c.pdf").unwrap().unwrap();
+        assert_eq!(loc.path(), "/data/a b/c.pdf");
+        let loc = cfg.resolve("MPT://prod/x.pdf#part").unwrap().unwrap();
+        assert_eq!(loc.path(), "/data/x.pdf");
+        assert_eq!(loc.profile(), Some("prod"));
+        let loc = cfg.resolve("Mpt://prod/in/?timeout=5#x").unwrap().unwrap();
+        assert_eq!(loc.opt("timeout"), Some("5"));
+        assert_eq!(profile_name("MPT://prod#x"), Some("prod"));
+        assert!(is_profile_ref("mPt://prod/"));
+        assert!(!is_profile_ref("sftp://prod/"));
     }
 
     #[test]

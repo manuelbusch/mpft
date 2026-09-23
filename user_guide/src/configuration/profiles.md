@@ -88,7 +88,12 @@ The path of the reference is appended to the profile's own path:
 The [trailing-slash rule](../getting-started/addressing.md#the-trailing-slash-decides-where-a-file-lands)
 applies to the result, as always.
 
-A reference cannot climb out of the profile's path:
+A reference is read like any other URL: its path is percent-decoded
+(`mpt://prod/a%20b.pdf` names `a b.pdf`), a `#fragment` is not part of it,
+and the prefix may be written in any case (`MPT://prod/`).
+
+A reference cannot climb out of the profile's path, whether the `..` is
+written out or percent-encoded as `%2e%2e`:
 
 ```
 $ mpt ls "mpt://prod/../etc/"
