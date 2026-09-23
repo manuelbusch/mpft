@@ -1286,6 +1286,12 @@ fn print_report(
     if report.targets.len() == 1 {
         let t = &report.targets[0];
         if let Err(e) = &t.result {
+            // A mismatch shows the digests and the verdict, as in a fan-out.
+            if matches!(e, mpt::Error::ChecksumMismatch { .. })
+                && let Some(failure) = print_checksums(report, opts, prefix)
+            {
+                return Some(failure);
+            }
             let what = format!("copy {} -> {}: {e}", report.source, t.target);
             let code = if cancelled { INTERRUPTED } else { code_of(e) };
             return Some((code, what));

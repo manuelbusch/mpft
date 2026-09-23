@@ -83,15 +83,19 @@ A mismatch shows both digests:
 
 ```
 $ mpt cp --check out/report.pdf ./
-out/report.pdf -> ./: 11 bytes in 4.29ms
 blake3  a08daaa9b2cf700b857ace55a2c1cc1775eaaaac17fba456be9cebacd102965a
 CHECK FAILED (BLAKE3): expected 4ee59acf208cdb32d826d48ea23246352f6c47babdb7f0d237744536ef34c0eb,
                        got a08daaa9b2cf700b857ace55a2c1cc1775eaaaac17fba456be9cebacd102965a
 error: BLAKE3 checksum mismatch: expected 4ee59acf…, got a08daaa9…
 ```
 
-The exit code is **3**, which a script can act on without reading the message,
-and the transferred file is left in place so you can look at it.
+The exit code is **3**, which a script can act on without reading the message.
+The verdict is in before the part file is renamed, so a file that does not
+match never appears under its final name: its part file is removed, even with
+`--resume`, and no checksum or signature file is written beside it. A target
+that writes directly (see [A file appears only when it is
+whole](../guide/reliability.md#a-file-appears-only-when-it-is-whole)) keeps
+what it received, and reports the mismatch all the same.
 
 A missing checksum file is a failure too, since a check that silently did not
 happen would be worse than no check:

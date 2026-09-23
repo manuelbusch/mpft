@@ -423,7 +423,7 @@ pub async fn copy_many(
             plan.resume_from = resume_offset(plan, size).await;
         }
     }
-    let jobs: Vec<Job> = dsts
+    let mut jobs: Vec<Job> = dsts
         .iter()
         .zip(&senders)
         .zip(&plans)
@@ -447,13 +447,15 @@ pub async fn copy_many(
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    // With `check` a part file is renamed into place only once the verdict
+    // is in, so a file that does not match never carries the final name.
+    let defer = expected.is_some();
 
     let targets = match opts.cache {
         CacheMode::Memory { limit } => {
             let cache = MemoryCache::from_stream(body, limit).await?;
             meta.size = Some(cache.len());
             // The exact size is only known once everything is buffered.
-            let mut jobs = jobs;
             for job in &mut jobs {
                 job.meta.size = Some(cache.len());
             }
@@ -481,7 +483,7 @@ pub async fn copy_many(
                             Err(e) => break Err(e),
                         }
                     };
-                    let result = finalize(job, result).await;
+                    let result = if defer { result } else { finalize(job, result).await };
                     TargetReport { target: job.dst.location().to_string(), bytes, elapsed: t.elapsed(), attempts, result, sidecar: None, signature: None, skipped: false }
                 }
             });
@@ -501,7 +503,11 @@ pub async fn copy_many(
                 let reader = crate::stream::Skip::new(reader, job.skip());
                 let (reader, count) = Counted::new(reader);
                 let result = cancellable(opts.cancel.as_ref(), job.send(Box::pin(reader))).await;
-                let result = finalize(job, result).await;
+                let result = if defer {
+                    result
+                } else {
+                    finalize(job, result).await
+                };
                 TargetReport {
                     target: job.dst.location().to_string(),
                     bytes: count.load(std::sync::atomic::Ordering::Relaxed),
@@ -535,6 +541,35 @@ pub async fn copy_many(
         .filter_map(|h| h.get().map(|v| (h.algo(), v)))
         .collect();
 
+    let checked = expected.map(|(algo, exp, signer)| CheckReport {
+        algo,
+        expected: exp,
+        actual: digests
+            .iter()
+            .find(|(a, _)| *a == algo)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default(),
+        signer,
+    });
+    if let Some(c) = &checked {
+        if c.ok() {
+            info!(algo = %c.algo, "checksum verified");
+        } else {
+            warn!(algo = %c.algo, expected = %c.expected, actual = %c.actual, "CHECKSUM MISMATCH");
+        }
+    }
+    if defer {
+        let mismatch = checked.as_ref().filter(|c| !c.ok());
+        for (t, job) in targets.iter_mut().zip(&jobs) {
+            let result = std::mem::replace(&mut t.result, Ok(()));
+            let result = match (result, mismatch) {
+                (Ok(()), Some(c)) => Err(c.error()),
+                (result, _) => result,
+            };
+            t.result = finalize(job, result).await;
+        }
+    }
+
     // Checksum sidecar next to every target that received the file.
     if let Some(algo) = opts.hash {
         match digests.iter().find(|(a, _)| *a == algo) {
@@ -557,24 +592,6 @@ pub async fn copy_many(
                 }
             }
             None => warn!("source was not read to the end; no checksum files written"),
-        }
-    }
-
-    let checked = expected.map(|(algo, exp, signer)| CheckReport {
-        algo,
-        expected: exp,
-        actual: digests
-            .iter()
-            .find(|(a, _)| *a == algo)
-            .map(|(_, v)| v.clone())
-            .unwrap_or_default(),
-        signer,
-    });
-    if let Some(c) = &checked {
-        if c.ok() {
-            info!(algo = %c.algo, "checksum verified");
-        } else {
-            warn!(algo = %c.algo, expected = %c.expected, actual = %c.actual, "CHECKSUM MISMATCH");
         }
     }
 
@@ -756,8 +773,9 @@ async fn finalize(job: &Job<'_>, result: Result<()>) -> Result<()> {
             }
         },
         // A transfer that is meant to be resumable keeps what arrived; every
-        // other failure takes its leftovers with it.
-        Err(e) if job.keep_partial => {
+        // other failure takes its leftovers with it, and so does content
+        // that is known to be wrong.
+        Err(e) if job.keep_partial && !matches!(e, Error::ChecksumMismatch { .. }) => {
             info!(
                 part = %plan.part,
                 "keeping the partial file; --resume continues from it"
@@ -1372,10 +1390,31 @@ mod tests {
             format!("{}  in.bin\n", "0".repeat(64)),
         )
         .unwrap();
-        let report = copy_many(src.as_ref(), &[dst.as_ref()], &opts)
+        std::fs::remove_file(dir.path().join("out/in.bin")).unwrap();
+        let opts_hash = CopyOptions {
+            check: true,
+            hash: Some(HashAlgo::Sha256),
+            resume: true,
+            ..Default::default()
+        };
+        let report = copy_many(src.as_ref(), &[dst.as_ref()], &opts_hash)
             .await
             .unwrap();
         assert!(!report.checked.unwrap().ok());
+        // Nothing that does not match is left under the final name, nor as a
+        // part file to resume from, and no checksum file vouches for it.
+        assert!(
+            matches!(
+                report.targets[0].result,
+                Err(Error::ChecksumMismatch { .. })
+            ),
+            "{:?}",
+            report.targets[0].result
+        );
+        assert!(report.targets[0].sidecar.is_none());
+        assert!(!dir.path().join("out/in.bin").exists());
+        assert!(!dir.path().join("out/in.bin.mpt-part").exists());
+        assert!(!dir.path().join("out/in.bin.sha256").exists());
 
         // No checksum file at all → explicit error.
         std::fs::remove_file(dir.path().join("in.bin.sha256")).unwrap();
