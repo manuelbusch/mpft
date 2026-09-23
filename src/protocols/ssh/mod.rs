@@ -576,9 +576,6 @@ impl client::Handler for ClientHandler {
 /// Bring a user-supplied fingerprint into `SHA256:<base64>` form.
 fn normalize_fingerprint(raw: &str) -> Result<String> {
     let v = raw.trim();
-    // Query strings are form-decoded, so a literal '+' of the base64 arrives
-    // as a space; spaces are never valid in a fingerprint, so map them back.
-    let v = &v.replace(' ', "+");
     let body = v.strip_prefix("SHA256:").unwrap_or(v);
     let bad = || {
         Error::invalid_option(

@@ -107,8 +107,9 @@ Two details inside a URL:
   directory. A `~` in a *local path* (`~/reports/x.pdf`) is the shell's job as
   usual, so write that one unquoted.
 - **Special characters are percent-encoded.** A subject with a space is
-  `subject=Report%20KW36`; a `+` in a host-key fingerprint may be written as
-  `%2B` or left as it is.
+  `subject=Report%20KW36`. A `+` is a plus sign, not a space as in an HTML
+  form, so a `+` in a host-key fingerprint, a token or a passphrase may be
+  written as `%2B` or left as it is.
 
 ## Credentials in a URL, and why not to
 

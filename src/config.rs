@@ -425,12 +425,7 @@ impl Config {
         loc.set_profile(name);
         override_options(&mut loc, profile.options()?);
         if let Some(q) = query {
-            override_options(
-                &mut loc,
-                url::form_urlencoded::parse(q.as_bytes())
-                    .map(|(k, v)| (k.into_owned(), v.into_owned()))
-                    .collect(),
-            );
+            override_options(&mut loc, crate::location::parse_query(q));
         }
         debug!(%name, %loc, "profile resolved");
         Ok(Some(loc))

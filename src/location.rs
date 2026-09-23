@@ -362,10 +362,7 @@ impl Location {
             }
         };
 
-        let options = url
-            .query_pairs()
-            .map(|(k, v)| (k.into_owned(), v.into_owned()))
-            .collect();
+        let options = url.query().map(parse_query).unwrap_or_default();
 
         Ok(Location {
             scheme,
@@ -1071,6 +1068,20 @@ pub fn safe_name(name: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
+/// The options of a query string: `&`-separated `key=value` pairs, both
+/// sides percent-decoded. Not form-decoded: a `+` is a `+` (a base64 host
+/// key, a token, a passphrase), and a space is written `%20`.
+pub(crate) fn parse_query(query: &str) -> Vec<(String, String)> {
+    query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| {
+            let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+            (percent_decode(k), percent_decode(v))
+        })
+        .collect()
+}
+
 fn percent_decode(s: &str) -> String {
     percent_decode_str(s).decode_utf8_lossy().into_owned()
 }
@@ -1345,6 +1356,23 @@ mod tests {
         assert_eq!(l.opt_bool("missing").unwrap(), None);
         let bad = Location::parse("ftps://u@h/p?insecure=maybe").unwrap();
         assert!(bad.opt_bool("insecure").is_err());
+    }
+
+    /// Option values are percent-decoded, not form-decoded: a `+` stays a
+    /// `+`, as a token, a passphrase or a base64 host key needs it to.
+    #[test]
+    fn a_plus_in_an_option_is_a_plus() {
+        let l = Location::parse(
+            "https://h/p?token=a+b%2Bc&header=X-Sig:1+1&subject=a%20b&flag&=v&x=1=2",
+        )
+        .unwrap();
+        assert_eq!(l.opt("token"), Some("a+b+c"));
+        assert_eq!(l.opt("header"), Some("X-Sig:1+1"));
+        assert_eq!(l.opt("subject"), Some("a b"));
+        assert_eq!(l.opt("flag"), Some(""));
+        assert_eq!(l.opt("x"), Some("1=2"));
+        let again = Location::parse(&l.unmasked()).unwrap();
+        assert_eq!(again.options(), l.options());
     }
 
     #[test]
