@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use tokio::fs;
+use tokio::io::AsyncSeekExt;
 
 use crate::{ByteStream, Endpoint, Entry, Location, Receiver, Result, SendMeta, Sender, stream};
 
@@ -114,7 +115,7 @@ impl Sender for FileEndpoint {
     async fn append(&self, body: ByteStream, meta: &SendMeta, offset: u64) -> Result<()> {
         let target = self.target(meta).await?;
         let mut f = fs::OpenOptions::new()
-            .append(true)
+            .write(true)
             .open(&target)
             .await
             .map_err(|e| {
@@ -123,6 +124,17 @@ impl Sender for FileEndpoint {
                     format!("{}: {e}", target.display()),
                 ))
             })?;
+        // Write at `offset`, not at the end: a retry after a failed attempt
+        // finds that attempt's bytes behind `offset` and must replace them.
+        let len = f.metadata().await?.len();
+        if len < offset {
+            return Err(crate::Error::Remote(format!(
+                "{}: holds {len} bytes, cannot resume at {offset}",
+                target.display()
+            )));
+        }
+        f.set_len(offset).await?;
+        f.seek(std::io::SeekFrom::Start(offset)).await?;
         tracing::debug!(?target, offset, "resuming a local file");
         stream::pipe(body, &mut f).await?;
         f.sync_all().await?;
@@ -157,6 +169,68 @@ impl Sender for FileEndpoint {
 
 #[cfg(test)]
 mod tests {
+    use crate::Sender;
+
+    /// Yields `left` bytes of `byte`, then fails, like a dropped connection.
+    struct Broken {
+        left: usize,
+        byte: u8,
+    }
+
+    impl tokio::io::AsyncRead for Broken {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if self.left == 0 {
+                return std::task::Poll::Ready(Err(std::io::Error::other("connection lost")));
+            }
+            let n = self.left.min(buf.remaining());
+            buf.put_slice(&vec![self.byte; n]);
+            self.left -= n;
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_retried_append_writes_at_the_offset() {
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("f.mpt-part");
+        std::fs::write(&part, b"0123456789").unwrap();
+        let ep = super::FileEndpoint::new(crate::Location::parse(part.to_str().unwrap()).unwrap());
+        let meta = crate::SendMeta::default();
+
+        // The first attempt dies after a few bytes of the rest ...
+        let first = ep
+            .append(
+                Box::pin(Broken {
+                    left: 3,
+                    byte: b'x',
+                }),
+                &meta,
+                10,
+            )
+            .await;
+        assert!(first.is_err());
+        // ... and the retry sends the whole rest again from the same offset.
+        ep.append(
+            Box::pin(std::io::Cursor::new(b"abcdef".to_vec())),
+            &meta,
+            10,
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(&part).unwrap(), b"0123456789abcdef");
+
+        // A file shorter than the offset cannot be continued.
+        let err = ep
+            .append(Box::pin(std::io::Cursor::new(b"z".to_vec())), &meta, 100)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("cannot resume"), "{err}");
+    }
+
     #[tokio::test]
     async fn roundtrip_and_dir_target() {
         let dir = tempfile::tempdir().unwrap();

@@ -914,6 +914,42 @@ async fn ftp_resumes_a_partial_upload() {
     resume_roundtrip(&base, &format!("resume_ftp_{}.bin", std::process::id())).await;
 }
 
+/// A retry after a failed attempt sends the rest again from the same offset;
+/// it must replace what the failed attempt wrote, not add to it.
+#[tokio::test]
+async fn sftp_repeated_append_writes_at_the_offset() {
+    let Some(base) = env("MPT_IT_SFTP") else {
+        eprintln!("skipping: MPT_IT_SFTP not set");
+        return;
+    };
+    mpt::init_crypto();
+    let name = format!("reappend_sftp_{}.bin", std::process::id());
+    let dst = mpt::open(&dir_url(&base, &format!("/{name}"))).unwrap();
+    let sender = dst.sender().unwrap();
+    let meta = SendMeta::from_filename(&name).unwrap();
+    sender
+        .send(
+            Box::pin(std::io::Cursor::new(b"0123456789".to_vec())),
+            &meta,
+        )
+        .await
+        .expect("placing the partial file");
+    // What a failed first attempt left behind the offset.
+    sender
+        .append(Box::pin(std::io::Cursor::new(b"xyz".to_vec())), &meta, 10)
+        .await
+        .expect("first append");
+    sender
+        .append(
+            Box::pin(std::io::Cursor::new(b"abcdef".to_vec())),
+            &meta,
+            10,
+        )
+        .await
+        .expect("second append");
+    assert_eq!(fetch(&base, &name).await, b"0123456789abcdef");
+}
+
 /// Download `<base>/<name>` and return the bytes.
 async fn fetch(base: &str, name: &str) -> Vec<u8> {
     let file = mpt::open(&dir_url(base, &format!("/{name}"))).unwrap();

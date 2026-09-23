@@ -156,8 +156,11 @@ pub trait Sender: Send + Sync {
         Ok(None)
     }
 
-    /// Write `body` to the end of the endpoint's file, which already holds
-    /// `offset` bytes. The caller has skipped that many bytes of the payload.
+    /// Write `body` into the endpoint's file from `offset` on, replacing
+    /// whatever lies behind it (a failed earlier attempt). The file holds at
+    /// least `offset` bytes, and the caller has skipped that many of the payload.
+    /// A target that can only add at the end (FTP's `APPE`) checks the final
+    /// size instead, so a repeated append fails rather than corrupts.
     async fn append(&self, body: ByteStream, meta: &SendMeta, offset: u64) -> Result<()> {
         let _ = (body, meta, offset);
         Err(crate::Error::UnsupportedOperation {

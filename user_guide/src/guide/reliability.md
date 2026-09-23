@@ -98,9 +98,12 @@ Three things to know:
   stream is read once and each target skips the bytes it already has.
 
 Resuming needs the `append` column of the [capability
-matrix](../protocols/overview.md#what-each-one-can-do): local, `sftp://`,
-`ftp://` and `ftps://` append to the part file (`APPE` for FTP). The rest have
-no append, so the whole payload is sent again.
+matrix](../protocols/overview.md#what-each-one-can-do). Local and `sftp://`
+targets write the rest at the offset where the part file ended, so a retry
+after a failed attempt replaces what that attempt left instead of adding to
+it. `ftp://` and `ftps://` append with `APPE` and then compare the size the
+server reports with what it should hold; a mismatch fails the target. The rest
+have no append, so the whole payload is sent again.
 
 `--resume` needs atomic finishing, so it cannot be combined with `--no-atomic`.
 

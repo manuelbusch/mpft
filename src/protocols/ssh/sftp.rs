@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use russh::client::Handle;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tracing::debug;
 
 use super::{ClientHandler, SshConfig, ssh_err};
@@ -163,16 +163,46 @@ impl Sender for SftpEndpoint {
         let (handle, sftp) = self.session().await?;
         let target = strip_home(&self.loc.target_path(meta.filename.as_deref())?);
         debug!(%target, offset, "resuming an sftp upload");
-        let file = sftp
-            .open_with_flags(target.clone(), OpenFlags::WRITE | OpenFlags::APPEND)
+        // Write at `offset` rather than with the APPEND flag: a retry after a
+        // failed attempt finds that attempt's bytes behind `offset` and must
+        // replace them, not add to them.
+        let there = sftp
+            .metadata(target.clone())
+            .await
+            .map_err(sftp_err)?
+            .size
+            .unwrap_or(0);
+        if there < offset {
+            return Err(Error::Remote(format!(
+                "sftp: {target} holds {there} bytes, cannot resume at {offset}"
+            )));
+        }
+        let mut file = sftp
+            .open_with_flags(target.clone(), OpenFlags::WRITE)
             .await
             .map_err(sftp_err)?;
+        let cut = russh_sftp::protocol::FileAttributes {
+            size: Some(offset),
+            ..Default::default()
+        };
+        file.set_metadata(cut).await.map_err(sftp_err)?;
+        file.seek(std::io::SeekFrom::Start(offset)).await?;
         let mut file = stream::Idle::maybe(file, self.cfg.idle);
         let result = stream::pipe(body, &mut file).await;
         file.shutdown().await?;
-        result?;
+        let written = result?;
+        // As with FTP's APPE: only the size the server reports proves that
+        // the rest arrived.
+        let remote = sftp.metadata(target.clone()).await.map_err(sftp_err)?.size;
         let _ = sftp.close().await;
         super::disconnect(&handle).await;
+        if remote != Some(offset + written) {
+            return Err(Error::Remote(format!(
+                "sftp: resume incomplete: server holds {} of {} bytes for {target}",
+                remote.map_or_else(|| "an unknown number".into(), |n| n.to_string()),
+                offset + written
+            )));
+        }
         Ok(())
     }
 
