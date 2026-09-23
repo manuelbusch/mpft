@@ -1987,7 +1987,7 @@ async fn server_config(
     args: &ServeArgs,
     cfg: &mpt::Config,
 ) -> anyhow::Result<mpt::server::ServerConfig> {
-    use mpt::credentials::{Secret, SecretRef};
+    use mpt::credentials::{Secret, SecretRef, Source};
     let s = &cfg.server;
     let mut out = mpt::server::ServerConfig::default();
     if let Some(bind) = args.bind.as_deref().or(s.bind.as_deref()) {
@@ -1996,7 +1996,7 @@ async fn server_config(
             .with_context(|| format!("bind address '{bind}' (expected host:port)"))?;
     }
     let token = match &args.token_env {
-        Some(var) => Some(Secret::Reference(SecretRef::Env(var.clone()))),
+        Some(var) => Some(Secret::Reference(SecretRef::from(Source::Env(var.clone())))),
         None => s.token.clone(),
     };
     if let Some(t) = token {

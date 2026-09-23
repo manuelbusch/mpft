@@ -1138,30 +1138,48 @@ fn strip_profile_prefix(url: &str) -> Option<&str> {
 }
 
 impl Resolved {
-    /// How many secrets are in hand; enough to tell whether a resolution
-    /// pass found anything new.
-    fn count(&self) -> usize {
-        [
-            &self.ssh_passphrase,
-            &self.signing_passphrase,
-            &self.mail_password,
-            &self.http_token,
-            &self.s3_access_key_id,
-            &self.s3_secret_access_key,
-        ]
-        .iter()
-        .filter(|s| s.is_some())
-        .count()
-            + self.profile_passwords.len()
-            + self.profile_options.values().map(Vec::len).sum::<usize>()
+    /// Whether both hold the same secrets: what tells whether a resolution
+    /// pass found anything new, or anything fetched anew because its time
+    /// to live was over.
+    fn same_as(&self, other: &Resolved) -> bool {
+        use secrecy::ExposeSecret;
+        fn one(a: &Option<SecretString>, b: &Option<SecretString>) -> bool {
+            a.as_ref().map(|s| s.expose_secret()) == b.as_ref().map(|s| s.expose_secret())
+        }
+        fn map<V>(
+            a: &BTreeMap<String, V>,
+            b: &BTreeMap<String, V>,
+            same: impl Fn(&V, &V) -> bool,
+        ) -> bool {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .all(|((ka, va), (kb, vb))| ka == kb && same(va, vb))
+        }
+        one(&self.ssh_passphrase, &other.ssh_passphrase)
+            && one(&self.signing_passphrase, &other.signing_passphrase)
+            && one(&self.mail_password, &other.mail_password)
+            && one(&self.http_token, &other.http_token)
+            && one(&self.s3_access_key_id, &other.s3_access_key_id)
+            && one(&self.s3_secret_access_key, &other.s3_secret_access_key)
+            && map(&self.profile_passwords, &other.profile_passwords, |a, b| {
+                a.expose_secret() == b.expose_secret()
+            })
+            && map(&self.profile_options, &other.profile_options, |a, b| {
+                a.len() == b.len()
+                    && a.iter().zip(b).all(|((ka, va), (kb, vb))| {
+                        ka == kb && va.expose_secret() == vb.expose_secret()
+                    })
+            })
     }
 }
 
 /// Fetch the secrets that `urls` need on top of what the installed
 /// configuration already has, and publish the result. For endpoints that
-/// turn up after the start (a job list read as it arrives); references
-/// already fetched come from the process-wide cache, so this is cheap when
-/// there is nothing new.
+/// turn up after the start (a job list read as it arrives, a submission to
+/// the server); references already fetched come from the process-wide
+/// cache while their time to live lasts, so this is cheap when there is
+/// nothing new, and a value that expired is fetched and published anew.
 ///
 /// One resolution at a time: two that ran side by side (two submissions to
 /// the server) would each start from the same configuration, and the one
@@ -1172,7 +1190,7 @@ pub async fn resolve_more(urls: &[&str], signing: bool) -> Result<()> {
     let current = global();
     let mut cfg = Config::clone(&current);
     cfg.resolve_secrets(urls, signing).await?;
-    if cfg.resolved.count() > current.resolved.count() {
+    if !cfg.resolved.same_as(&current.resolved) {
         tracing::debug!("new credentials fetched, configuration republished");
         install(cfg);
     }

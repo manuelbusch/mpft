@@ -47,7 +47,7 @@ message.
 |---|---|---|
 | on the command line (`--password`, `user:pw@host`) | the argument list: `ps`, shell history | the process, and beyond it — which is why `mpt` warns |
 | `--password-stdin`, `--password-file`, `MPT_PASSWORD` | the process only | the run |
-| a [credential reference](../configuration/credentials.md) | not in the file: an environment variable, a file, a command's output, the OS key store, Vault | fetched when the endpoint is used, once per run |
+| a [credential reference](../configuration/credentials.md) | not in the file: an environment variable, a file, a command's output, the OS key store, Vault | fetched when the endpoint is used; a command's answer is kept ten minutes by default |
 | in memory | a type that redacts itself in debug output and overwrites its memory when dropped | until no endpoint needs it |
 | in a log line or an error | masked as `***` | — |
 | sent to a relay, `header` mode | the target URL in the header, over SSH to a host whose key was checked | the transfer |

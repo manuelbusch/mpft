@@ -15,9 +15,15 @@
 //!
 //! `cmd` runs what the file says, which is why the file's permissions are
 //! checked and why `./mpt.toml` may not carry credentials at all.
+//!
+//! What `cmd`, `keyring` and `vault` return is kept for a while, ten minutes
+//! unless the reference says otherwise (`{ cmd = "…", ttl = "1h" }`), so that
+//! endpoints sharing a reference do not fetch it again each, and so that a
+//! short-lived access token is fetched anew in a process that runs longer.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
@@ -36,10 +42,70 @@ pub enum Secret {
     Reference(SecretRef),
 }
 
-/// Where to get a secret from.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "lowercase")]
-pub enum SecretRef {
+/// Where to get a secret from, and how long a fetched value may be used.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(try_from = "RawRef")]
+pub struct SecretRef {
+    pub source: Source,
+    /// How long a value from `cmd`, `keyring` or `vault` is used before it
+    /// is fetched again; zero fetches it every time. `None` is the default,
+    /// [`DEFAULT_TTL`].
+    pub ttl: Option<Duration>,
+}
+
+/// How long a fetched secret is kept unless its reference says otherwise.
+pub const DEFAULT_TTL: Duration = Duration::from_secs(600);
+
+/// A reference as it is written: one provider key, and `ttl`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRef {
+    env: Option<String>,
+    file: Option<String>,
+    cmd: Option<String>,
+    keyring: Option<String>,
+    vault: Option<String>,
+    ttl: Option<String>,
+}
+
+impl TryFrom<RawRef> for SecretRef {
+    type Error = String;
+    fn try_from(raw: RawRef) -> std::result::Result<SecretRef, String> {
+        let mut sources: Vec<Source> = [
+            raw.env.map(Source::Env),
+            raw.file.map(Source::File),
+            raw.cmd.map(Source::Cmd),
+            raw.keyring.map(Source::Keyring),
+            raw.vault.map(Source::Vault),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if sources.len() != 1 {
+            return Err(
+                "a credential reference names exactly one of env, file, cmd, keyring, vault".into(),
+            );
+        }
+        let ttl = raw
+            .ttl
+            .map(|v| crate::config::parse_duration(&v).map_err(|e| format!("ttl: {e}")))
+            .transpose()?;
+        Ok(SecretRef {
+            source: sources.remove(0),
+            ttl,
+        })
+    }
+}
+
+impl From<Source> for SecretRef {
+    fn from(source: Source) -> SecretRef {
+        SecretRef { source, ttl: None }
+    }
+}
+
+/// The provider of a secret.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Source {
     /// Environment variable, for CI, containers and systemd `LoadCredential`.
     Env(String),
     /// First line of a file. The file's permissions are checked.
@@ -80,55 +146,69 @@ impl Secret {
 
 impl SecretRef {
     async fn resolve(&self, what: &str) -> Result<SecretString> {
-        if let Some(hit) = cached(self) {
+        let ttl = self.ttl.unwrap_or(DEFAULT_TTL);
+        if let Some(hit) = cached(&self.source, ttl) {
             debug!(%what, "secret already fetched");
             return Ok(hit);
         }
         // Every provider reports plainly what went wrong; what it was needed
         // for is added here, once.
         let fail = |e: String| Error::Auth(format!("{what}: {e}"));
-        let value = match self {
-            SecretRef::Env(name) => from_env(name),
-            SecretRef::File(path) => from_file(path),
-            SecretRef::Cmd(cmd) => from_cmd(cmd).await,
-            SecretRef::Keyring(entry) => from_keyring(entry).await,
-            SecretRef::Vault(path) => from_vault(path).await,
+        let value = match &self.source {
+            Source::Env(name) => from_env(name),
+            Source::File(path) => from_file(path),
+            Source::Cmd(cmd) => from_cmd(cmd).await,
+            Source::Keyring(entry) => from_keyring(entry).await,
+            Source::Vault(path) => from_vault(path).await,
         }
         .map_err(fail)?;
         if value.expose_secret().is_empty() {
             return Err(Error::Auth(format!("{what}: {} is empty", self.origin())));
         }
         debug!(%what, origin = %self.origin(), "secret fetched");
-        if !matches!(self, SecretRef::Env(_) | SecretRef::File(_)) {
-            remember(self, &value);
+        // An environment variable and a file cost nothing to read again.
+        if !matches!(self.source, Source::Env(_) | Source::File(_)) && !ttl.is_zero() {
+            remember(&self.source, &value);
         }
         Ok(value)
     }
 
     /// Where the secret comes from, for messages. Never the secret itself.
     pub fn origin(&self) -> String {
-        match self {
-            SecretRef::Env(v) => format!("${v}"),
-            SecretRef::File(v) => v.clone(),
-            SecretRef::Cmd(v) => format!("`{v}`"),
-            SecretRef::Keyring(v) => format!("keyring {v}"),
-            SecretRef::Vault(v) => format!("vault {v}"),
+        match &self.source {
+            Source::Env(v) => format!("${v}"),
+            Source::File(v) => v.clone(),
+            Source::Cmd(v) => format!("`{v}`"),
+            Source::Keyring(v) => format!("keyring {v}"),
+            Source::Vault(v) => format!("vault {v}"),
         }
     }
 }
 
-fn cache() -> &'static Mutex<HashMap<SecretRef, SecretString>> {
-    static CACHE: OnceLock<Mutex<HashMap<SecretRef, SecretString>>> = OnceLock::new();
+/// Fetched secrets, with the moment each one was fetched.
+type Cache = HashMap<Source, (SecretString, Instant)>;
+
+fn cache() -> &'static Mutex<Cache> {
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn cached(r: &SecretRef) -> Option<SecretString> {
-    cache().lock().ok()?.get(r).cloned()
+/// The value fetched for `source`, if it was fetched less than `ttl` ago.
+fn cached(source: &Source, ttl: Duration) -> Option<SecretString> {
+    let mut c = cache().lock().ok()?;
+    match c.get(source) {
+        Some((v, at)) if at.elapsed() < ttl => Some(v.clone()),
+        Some(_) => {
+            c.remove(source);
+            None
+        }
+        None => None,
+    }
 }
 
-fn remember(r: &SecretRef, v: &SecretString) {
+fn remember(source: &Source, v: &SecretString) {
     if let Ok(mut c) = cache().lock() {
-        c.insert(r.clone(), v.clone());
+        c.insert(source.clone(), (v.clone(), Instant::now()));
     }
 }
 
@@ -280,7 +360,7 @@ pub fn keyring_delete(entry: &str) -> Result<()> {
 /// Read a secret back from the OS key store.
 #[cfg(feature = "keyring")]
 pub async fn keyring_get(entry: &str) -> Result<SecretString> {
-    SecretRef::Keyring(entry.to_string())
+    SecretRef::from(Source::Keyring(entry.to_string()))
         .resolve(&format!("keyring {entry}"))
         .await
 }
@@ -349,12 +429,26 @@ mod tests {
     fn references_and_literals() {
         assert!(matches!(
             parse("password = { env = \"PW\" }"),
-            Secret::Reference(SecretRef::Env(v)) if v == "PW"
+            Secret::Reference(SecretRef { source: Source::Env(v), ttl: None }) if v == "PW"
         ));
         assert!(matches!(
             parse("password = { cmd = \"op read x\" }"),
-            Secret::Reference(SecretRef::Cmd(_))
+            Secret::Reference(SecretRef {
+                source: Source::Cmd(_),
+                ..
+            })
         ));
+        assert!(matches!(
+            parse("password = { cmd = \"op read x\", ttl = \"1h\" }"),
+            Secret::Reference(SecretRef { ttl: Some(t), .. }) if t.as_secs() == 3600
+        ));
+        for bad in [
+            "password = { cmd = \"a\", env = \"B\" }",
+            "password = { ttl = \"1h\" }",
+            "password = { cmd = \"a\", ttl = \"soon\" }",
+        ] {
+            assert!(toml::from_str::<Holder>(bad).is_err(), "{bad}");
+        }
         assert!(parse("password = \"hunter2\"").is_literal());
         let err = toml::from_str::<Holder>("password = { keychain = \"x\" }").unwrap_err();
         assert!(err.to_string().contains("keychain"), "{err}");
@@ -373,7 +467,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("pw");
         std::fs::write(&path, "from-file\nsecond line\n").unwrap();
-        let s = Secret::Reference(SecretRef::File(path.display().to_string()))
+        let s = Secret::Reference(SecretRef::from(Source::File(path.display().to_string())))
             .resolve("test")
             .await
             .unwrap();
@@ -408,6 +502,36 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("empty"), "{err}");
+    }
+
+    /// A command's answer is kept for its reference's time to live, and
+    /// fetched again after it; `ttl = "0"` fetches it every time.
+    #[tokio::test]
+    async fn a_fetched_secret_expires() {
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("n");
+        let cmd = format!("echo x >> '{0}'; wc -l < '{0}'", counter.display());
+        let fetch = |ttl: Option<Duration>| {
+            let r = SecretRef {
+                source: Source::Cmd(cmd.clone()),
+                ttl,
+            };
+            async move {
+                r.resolve("test")
+                    .await
+                    .unwrap()
+                    .expose_secret()
+                    .trim()
+                    .to_string()
+            }
+        };
+        let long = Some(Duration::from_secs(60));
+        assert_eq!(fetch(long).await, "1");
+        assert_eq!(fetch(long).await, "1", "kept");
+        // A shorter time to live finds the same value too old.
+        assert_eq!(fetch(Some(Duration::from_nanos(1))).await, "2");
+        assert_eq!(fetch(Some(Duration::ZERO)).await, "3");
+        assert_eq!(fetch(Some(Duration::ZERO)).await, "4", "never kept");
     }
 
     #[test]

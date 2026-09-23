@@ -93,7 +93,8 @@ token = { cmd = "az account get-access-token --resource https://graph.microsoft.
 ```
 
 The token is sent as `Authorization: Bearer …`, the header is marked sensitive
-so it stays out of logs, and it is fetched once per run. Anything that prints a
+so it stays out of logs, and it is fetched when needed and [kept for ten
+minutes](../configuration/credentials.md#when-references-are-resolved). Anything that prints a
 token on standard output works the same way, such as
 `gcloud auth print-access-token` or a script wrapped around a
 client-credentials flow. See [Credentials and

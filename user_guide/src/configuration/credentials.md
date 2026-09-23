@@ -102,6 +102,21 @@ invocation for the one profile a command touches, not ten.
 name the same reference, so a fan-out to three targets behind one credential
 does not query it three times.
 
+**A value from `cmd`, `keyring` or `vault` is kept for ten minutes.** A
+process that runs longer — `mpt serve`, `mpt batch --follow`, a long job list —
+fetches it again when an endpoint needs it after that, so a short-lived access
+token (`az account get-access-token`, `gcloud auth print-access-token`) is
+renewed rather than sent after it expired. `ttl` on the reference sets the
+time, with the same units as other durations; `"0"` fetches the value every
+time it is needed:
+
+```toml
+[http]
+token = { cmd = "gcloud auth print-access-token", ttl = "45m" }
+```
+
+`env` and `file` are read again every time; they cost nothing.
+
 Errors name what the secret was for, which matters when several are in play:
 
 ```
