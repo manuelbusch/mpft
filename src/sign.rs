@@ -205,7 +205,9 @@ pub fn format_time(t: SystemTime) -> String {
 pub fn parse_time(raw: &str) -> Result<SystemTime> {
     let v = raw.trim();
     let bad = || Error::InvalidUrl(format!("'{raw}' is not an RFC 3339 timestamp"));
-    if v.len() < 19 || !v.is_char_boundary(19) {
+    // Every slice below is by byte offset; a timestamp is ASCII throughout,
+    // and anything else is refused before a slice could split a character.
+    if v.len() < 19 || !v.is_ascii() {
         return Err(bad());
     }
     let (date, time) = v.split_at(10);
@@ -216,7 +218,12 @@ pub fn parse_time(raw: &str) -> Result<SystemTime> {
     ) {
         return Err(bad());
     }
-    let num = |s: &str| s.parse::<i64>().map_err(|_| bad());
+    let num = |s: &str| {
+        if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(bad());
+        }
+        s.parse::<i64>().map_err(|_| bad())
+    };
     let (y, m, d) = match (date.get(0..4), date.get(5..7), date.get(8..10)) {
         (Some(y), Some(m), Some(d)) if date.as_bytes()[4] == b'-' && date.as_bytes()[7] == b'-' => {
             (num(y)?, num(m)?, num(d)?)
@@ -235,7 +242,7 @@ pub fn parse_time(raw: &str) -> Result<SystemTime> {
     }
     let offset = match rest.as_bytes() {
         [] | [b'Z'] | [b'z'] => 0,
-        [sign @ (b'+' | b'-'), ..] if rest.len() >= 6 => {
+        [sign @ (b'+' | b'-'), _, _, b':', _, _] => {
             let h = num(&rest[1..3])?;
             let m = num(&rest[4..6])?;
             let secs = h * 3600 + m * 60;
@@ -1175,6 +1182,33 @@ mod tests {
             spec.passphrase.as_ref().map(|p| p.expose_secret()),
             Some("letmein")
         );
+    }
+
+    #[test]
+    fn rfc3339_timestamps() {
+        let t = parse_time("2023-11-14T22:13:20Z").unwrap();
+        assert_eq!(format_time(t), "2023-11-14T22:13:20Z");
+        assert_eq!(parse_time("2023-11-14 22:13:20.123456z").unwrap(), t);
+        assert_eq!(parse_time("2023-11-14T23:13:20+01:00").unwrap(), t);
+        assert_eq!(parse_time("2023-11-14T21:13:20-01:00").unwrap(), t);
+        for bad in [
+            "",
+            "yesterday",
+            "2023-11-14",
+            "2023-13-14T22:13:20Z",
+            "2023-11-14T22:13:20+1",
+            "2023-11-14T22:13:20+01:00junk",
+            "2023-11-14T-1:13:20Z",
+            "2023-11-14T+1:13:20Z",
+            // Non-ASCII where a byte offset would split a character; these
+            // once panicked instead of being refused.
+            "2023-11-1\u{e9}12345678",
+            "2023-11-14T22:13:20+\u{e9}:00",
+            "2023-11-14T22:1\u{e9}0Z",
+            "\u{e9}023-11-14T22:13:20Z",
+        ] {
+            assert!(parse_time(bad).is_err(), "{bad:?} should be rejected");
+        }
     }
 
     #[test]

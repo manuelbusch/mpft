@@ -14,4 +14,7 @@ fuzz_target!(|data: &[u8]| {
         assert_eq!(hex, hex.to_ascii_lowercase());
         assert!(!name.starts_with('*'), "{name:?}");
     }
+    // The signing time is read before the signature is checked, so its
+    // parser sees untrusted text as well.
+    let _ = mpt::hash::parse_signed_at(text);
 });
