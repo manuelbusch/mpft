@@ -79,6 +79,7 @@ The same syntax works for every secret in the file:
 | Key | What it is |
 |---|---|
 | `[profiles.<name>] password` | password for that endpoint |
+| `[profiles.<name>]` any other key, such as `passphrase`, `token` or `header` | the value of that URL option; a `header` reference yields the whole `Name: Value` |
 | `[ssh] passphrase` | passphrase of the SSH key |
 | `[signing] passphrase` | passphrase of the signing key |
 | `[mail] password` | SMTP password, or the OAuth2 token with `auth = "xoauth2"` |

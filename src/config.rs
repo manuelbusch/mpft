@@ -30,7 +30,7 @@ use secrecy::SecretString;
 use serde::Deserialize;
 use tracing::debug;
 
-use crate::credentials::Secret;
+use crate::credentials::{Secret, SecretRef};
 use crate::{Error, Location, Result};
 
 /// The whole configuration file.
@@ -297,6 +297,9 @@ pub struct Resolved {
     pub s3_secret_access_key: Option<SecretString>,
     /// Passwords of the profiles that were asked for, by profile name.
     pub profile_passwords: BTreeMap<String, SecretString>,
+    /// Options of those profiles that are credential references
+    /// (`passphrase = { env = … }`), by profile name, in the file's order.
+    pub profile_options: BTreeMap<String, Vec<(String, SecretString)>>,
 }
 
 /// `[profiles.<name>]` — a named target.
@@ -324,22 +327,62 @@ pub struct Profile {
     options: BTreeMap<String, toml::Value>,
 }
 
+/// A free-form entry of a profile: a value written out, or a credential
+/// reference to fetch it from (`passphrase = { env = "KEY_PW" }`).
+#[derive(Debug, Clone)]
+pub enum OptionValue {
+    Plain(String),
+    Secret(SecretRef),
+}
+
 impl Profile {
     /// The free-form entries as URL options, in the file's order. A value may
-    /// be a list, which repeats the option (`hostkey`, `header`).
+    /// be a list, which repeats the option (`hostkey`, `header`). A
+    /// credential reference is left out: its value is only known once it
+    /// has been fetched (see [`Config::resolve`]).
     pub fn options(&self) -> Result<Vec<(String, String)>> {
+        Ok(self
+            .option_values()?
+            .into_iter()
+            .filter_map(|(k, v)| match v {
+                OptionValue::Plain(v) => Some((k, v)),
+                OptionValue::Secret(_) => None,
+            })
+            .collect())
+    }
+
+    /// Every free-form entry, credential references included.
+    pub fn option_values(&self) -> Result<Vec<(String, OptionValue)>> {
         let mut out = Vec::new();
         for (k, v) in &self.options {
             match v {
                 toml::Value::Array(items) => {
                     for item in items {
-                        out.push((k.clone(), scalar(k, item)?));
+                        out.push((k.clone(), option_value(k, item)?));
                     }
                 }
-                other => out.push((k.clone(), scalar(k, other)?)),
+                other => out.push((k.clone(), option_value(k, other)?)),
             }
         }
         Ok(out)
+    }
+
+    /// Whether the profile carries a credential: a password, an option that
+    /// is a credential reference, or a secret option written out
+    /// (`passphrase`, `token`, `header = "Authorization:…"`).
+    fn holds_credentials(&self) -> bool {
+        self.password.is_some()
+            || self.option_values().is_ok_and(|opts| {
+                opts.iter().any(|(k, v)| match v {
+                    OptionValue::Secret(_) => true,
+                    OptionValue::Plain(v) => {
+                        crate::location::is_secret_option(k)
+                            || (k == "header"
+                                && v.split_once(':')
+                                    .is_some_and(|(n, _)| crate::location::is_secret_option(n)))
+                    }
+                })
+            })
     }
 }
 
@@ -355,20 +398,32 @@ fn override_options(loc: &mut Location, pairs: Vec<(String, String)>) {
     }
 }
 
-/// A profile option must be something that can stand in a URL.
-fn scalar(key: &str, v: &toml::Value) -> Result<String> {
-    Ok(match v {
+/// A profile option must be something that can stand in a URL, or a
+/// credential reference that produces one.
+fn option_value(key: &str, v: &toml::Value) -> Result<OptionValue> {
+    Ok(OptionValue::Plain(match v {
         toml::Value::String(s) => s.clone(),
         toml::Value::Integer(i) => i.to_string(),
         toml::Value::Float(f) => f.to_string(),
         toml::Value::Boolean(b) => b.to_string(),
+        toml::Value::Table(_) => {
+            return SecretRef::deserialize(v.clone())
+                .map(OptionValue::Secret)
+                .map_err(|e| {
+                    Error::Config(format!(
+                        "profile option '{key}' is a table, but not a credential reference \
+                         ({{ env = … }}, {{ file = … }}, {{ cmd = … }}, …): {e}"
+                    ))
+                });
+        }
         other => {
             return Err(Error::Config(format!(
-                "profile option '{key}' must be a string, number or boolean, not {}",
+                "profile option '{key}' must be a string, number, boolean or credential \
+                 reference, not {}",
                 other.type_str()
             )));
         }
-    })
+    }))
 }
 
 /// The prefix that addresses a profile instead of a protocol.
@@ -423,12 +478,38 @@ impl Config {
             loc.set_password(pw.expose_secret());
         }
         loc.set_profile(name);
-        override_options(&mut loc, profile.options()?);
+        override_options(&mut loc, self.profile_options(name, profile)?);
         if let Some(q) = query {
             override_options(&mut loc, crate::location::parse_query(q));
         }
         debug!(%name, %loc, "profile resolved");
         Ok(Some(loc))
+    }
+
+    /// A profile's options with its credential references filled in from
+    /// what [`Config::resolve_secrets`] fetched. One that has not been
+    /// fetched is left out, as a profile password is.
+    fn profile_options(&self, name: &str, profile: &Profile) -> Result<Vec<(String, String)>> {
+        use secrecy::ExposeSecret;
+        let mut fetched = self
+            .resolved
+            .profile_options
+            .get(name)
+            .map(|v| v.iter())
+            .into_iter()
+            .flatten();
+        let mut out = Vec::new();
+        for (k, v) in profile.option_values()? {
+            match v {
+                OptionValue::Plain(v) => out.push((k, v)),
+                OptionValue::Secret(_) => {
+                    if let Some((_, value)) = fetched.next() {
+                        out.push((k, value.expose_secret().to_string()));
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Read the configuration, following the search order of the module docs.
@@ -683,6 +764,11 @@ impl Config {
                 parse_duration(v).map_err(|e| format!("[server] {what}: {e}"))?;
             }
         }
+        for (name, profile) in &cfg.profiles {
+            profile
+                .option_values()
+                .map_err(|e| format!("[profiles.{name}]: {e}"))?;
+        }
         if let Some(v) = &cfg.server.max_body {
             parse_size(v).map_err(|e| format!("[server] max_body: {e}"))?;
         }
@@ -868,13 +954,27 @@ impl Config {
                 .any(|p| p.sign.is_some());
 
         for name in names {
-            let Some(secret) = self.profiles.get(&name).and_then(|p| p.password.clone()) else {
+            let Some(profile) = self.profiles.get(&name).cloned() else {
                 continue;
             };
-            let pw = secret
-                .resolve(&format!("password of profile '{name}'"))
-                .await?;
-            self.resolved.profile_passwords.insert(name, pw);
+            if let Some(secret) = &profile.password {
+                let pw = secret
+                    .resolve(&format!("password of profile '{name}'"))
+                    .await?;
+                self.resolved.profile_passwords.insert(name.clone(), pw);
+            }
+            let mut options = Vec::new();
+            for (key, value) in profile.option_values()? {
+                if let OptionValue::Secret(r) = value {
+                    let v = Secret::Reference(r)
+                        .resolve(&format!("{key} of profile '{name}'"))
+                        .await?;
+                    options.push((key, v));
+                }
+            }
+            if !options.is_empty() {
+                self.resolved.profile_options.insert(name, options);
+            }
         }
         if uses(&[crate::Scheme::Sftp, crate::Scheme::Scp, crate::Scheme::Ssh])
             && let Some(s) = &self.ssh.passphrase
@@ -920,7 +1020,7 @@ impl Config {
             || self.mail.password.is_some()
             || self.s3.access_key_id.is_some()
             || self.s3.secret_access_key.is_some()
-            || self.profiles.values().any(|p| p.password.is_some())
+            || self.profiles.values().any(Profile::holds_credentials)
     }
 
     /// A file with credentials that others can read is a file that gives them
@@ -1053,6 +1153,7 @@ impl Resolved {
         .filter(|s| s.is_some())
         .count()
             + self.profile_passwords.len()
+            + self.profile_options.values().map(Vec::len).sum::<usize>()
     }
 }
 
@@ -1469,6 +1570,61 @@ mod tests {
         let names: Vec<&String> = cfg.resolved.profile_passwords.keys().collect();
         assert_eq!(names, ["race_a", "race_b"]);
         install(Config::default());
+    }
+
+    /// `passphrase`, `token` and `header` may come from a provider like a
+    /// password, and count as credentials of the file either way.
+    #[tokio::test]
+    async fn secret_profile_options_come_from_their_providers() {
+        // SAFETY: single-threaded test, the variables are only read here.
+        unsafe {
+            std::env::set_var("MPT_TEST_OPT_PASSPHRASE", "pass+phrase");
+            std::env::set_var("MPT_TEST_OPT_HEADER", "Authorization: Bearer abc");
+        }
+        let mut cfg = Config::parse(
+            r#"
+            [profiles.api]
+            url = "https://api.example.com/in/"
+            token = { cmd = "printf 't0k'" }
+            header = [{ env = "MPT_TEST_OPT_HEADER" }, "Accept:text/plain"]
+
+            [profiles.box]
+            url = "sftp://h/in/"
+            passphrase = { env = "MPT_TEST_OPT_PASSPHRASE" }
+            "#,
+        )
+        .unwrap();
+        assert!(cfg.holds_credentials());
+        // Not fetched yet: left out rather than sent as a table.
+        let loc = cfg.resolve("mpt://box/x").unwrap().unwrap();
+        assert_eq!(loc.opt("passphrase"), None);
+
+        cfg.resolve_secrets(&["mpt://api/x", "mpt://box/x"], false)
+            .await
+            .unwrap();
+        let loc = cfg.resolve("mpt://box/x").unwrap().unwrap();
+        assert_eq!(loc.opt("passphrase"), Some("pass+phrase"));
+        assert!(!loc.to_string().contains("pass+phrase"), "{loc}");
+        let loc = cfg.resolve("mpt://api/x").unwrap().unwrap();
+        assert_eq!(loc.opt("token"), Some("t0k"));
+        assert_eq!(
+            loc.opts("header").collect::<Vec<_>>(),
+            ["Authorization: Bearer abc", "Accept:text/plain"]
+        );
+
+        // A literal secret option is a credential too; a plain profile is not.
+        let literal = Config::parse("[profiles.p]\nurl = \"sftp://h/\"\npassphrase = \"x\"\n");
+        assert!(literal.unwrap().holds_credentials());
+        let header = Config::parse(
+            "[profiles.p]\nurl = \"https://h/\"\nheader = \"Authorization: Bearer x\"\n",
+        );
+        assert!(header.unwrap().holds_credentials());
+        let plain = Config::parse("[profiles.p]\nurl = \"sftp://h/\"\nkey = \"/k\"\n");
+        assert!(!plain.unwrap().holds_credentials());
+        // A table that is not a reference is refused when the file is read.
+        let err = Config::parse("[profiles.p]\nurl = \"sftp://h/\"\ntoken = { envv = \"X\" }\n")
+            .unwrap_err();
+        assert!(err.contains("token"), "{err}");
     }
 
     #[test]

@@ -49,7 +49,11 @@ subject = "Report"
   `endpoint`, `path_style` and `subject` above are not a fixed list; they are
   appended to the profile's URL. A profile can therefore carry any option its
   scheme understands, and a typo shows up as an option the protocol ignores
-  rather than as a configuration error.
+  rather than as a configuration error. An option that holds a secret
+  (`passphrase`, `token`, an `Authorization` `header`) takes a [credential
+  reference](credentials.md#where-a-reference-may-be-used) like `password`
+  does, and makes the file one that [must not be readable by
+  others](file.md#permissions).
 
 A key that takes several values may be written as a list:
 
