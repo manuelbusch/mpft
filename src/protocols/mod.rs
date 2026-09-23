@@ -46,6 +46,49 @@ where
     }
 }
 
+/// Rename and delete on one open connection, for [`replace_aside`].
+#[allow(dead_code)]
+#[async_trait::async_trait]
+pub(crate) trait Renamer: Send {
+    async fn rename(&mut self, from: &str, to: &str) -> Result<()>;
+    async fn remove(&mut self, path: &str) -> Result<()>;
+}
+
+/// Suffix under which [`replace_aside`] keeps the file it replaces until the
+/// new one is in place.
+pub const OLD_SUFFIX: &str = ".mpt-old";
+
+/// Rename `from` to `to` on a server whose rename may refuse an existing
+/// target, without a moment in which neither file is there for good: the
+/// old target is moved aside, the new one renamed into place, and only then
+/// is the old one deleted. If the second rename fails, the old one is put
+/// back.
+#[allow(dead_code)]
+pub(crate) async fn replace_aside(r: &mut dyn Renamer, from: &str, to: &str) -> Result<()> {
+    let first = match r.rename(from, to).await {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    let old = format!("{to}{OLD_SUFFIX}");
+    if r.rename(to, &old).await.is_err() {
+        // Nothing there to move aside, or it cannot be moved: the first
+        // error is the one that says what is wrong.
+        return Err(first);
+    }
+    if let Err(e) = r.rename(from, to).await {
+        if let Err(back) = r.rename(&old, to).await {
+            tracing::warn!("could not put the previous file back: {back}");
+            tracing::debug!(%old, %to, "the previous file is still aside");
+        }
+        return Err(e);
+    }
+    if let Err(e) = r.remove(&old).await {
+        tracing::warn!("could not remove the previous file: {e}");
+        tracing::debug!(%old, "the previous file is still aside");
+    }
+    Ok(())
+}
+
 /// Build the endpoint for a parsed location. Credentials from the environment
 /// are applied here (see [`Location::apply_env`]).
 pub fn open(mut loc: Location) -> Result<Box<dyn Endpoint>> {
@@ -91,6 +134,56 @@ pub fn open(mut loc: Location) -> Result<Box<dyn Endpoint>> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// A server whose rename refuses an existing target, and which can be
+    /// told to refuse one rename more.
+    #[derive(Default)]
+    struct Server {
+        files: std::collections::HashMap<String, &'static str>,
+        refuse: Option<(String, String)>,
+    }
+
+    #[async_trait::async_trait]
+    impl Renamer for Server {
+        async fn rename(&mut self, from: &str, to: &str) -> Result<()> {
+            let refused = self.refuse.as_ref() == Some(&(from.to_string(), to.to_string()));
+            if refused || self.files.contains_key(to) || !self.files.contains_key(from) {
+                return Err(Error::Remote(format!("ftp: 550 cannot rename {from}")));
+            }
+            let v = self.files.remove(from).unwrap();
+            self.files.insert(to.into(), v);
+            Ok(())
+        }
+        async fn remove(&mut self, path: &str) -> Result<()> {
+            self.files
+                .remove(path)
+                .map(|_| ())
+                .ok_or_else(|| Error::Remote("gone".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn replacing_a_file_never_loses_both() {
+        let mut s = Server::default();
+        s.files.insert("f.mpt-part".into(), "new");
+        replace_aside(&mut s, "f.mpt-part", "f").await.unwrap();
+        assert_eq!(s.files.len(), 1);
+        assert_eq!(s.files["f"], "new");
+
+        // An existing target is replaced, and its old version is gone after.
+        s.files.insert("f.mpt-part".into(), "newer");
+        replace_aside(&mut s, "f.mpt-part", "f").await.unwrap();
+        assert_eq!(s.files.len(), 1);
+        assert_eq!(s.files["f"], "newer");
+
+        // The rename into place fails: the old file is back where it was.
+        s.files.insert("f.mpt-part".into(), "newest");
+        s.refuse = Some(("f.mpt-part".into(), "f".into()));
+        assert!(replace_aside(&mut s, "f.mpt-part", "f").await.is_err());
+        assert_eq!(s.files["f"], "newer");
+        assert_eq!(s.files["f.mpt-part"], "newest");
+        assert!(!s.files.contains_key("f.mpt-old"));
+    }
 
     #[tokio::test(start_paused = true)]
     async fn connect_retries_only_help_transient_failures() {

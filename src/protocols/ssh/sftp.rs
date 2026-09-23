@@ -2,8 +2,8 @@
 
 use async_trait::async_trait;
 use russh::client::Handle;
-use russh_sftp::client::SftpSession;
-use russh_sftp::protocol::OpenFlags;
+use russh_sftp::client::{RawSftpSession, SftpSession};
+use russh_sftp::protocol::{OpenFlags, Packet, StatusCode};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tracing::debug;
 
@@ -50,6 +50,39 @@ fn strip_home(p: &str) -> String {
 
 fn sftp_err(e: russh_sftp::client::error::Error) -> Error {
     Error::transport("sftp", e)
+}
+
+/// The OpenSSH extension that renames the way rename(2) does.
+const POSIX_RENAME: &str = "posix-rename@openssh.com";
+
+async fn posix_rename(raw: &RawSftpSession, from: &str, to: &str) -> Result<()> {
+    // Two SSH strings: a 32-bit big-endian length, then the bytes.
+    let mut data = Vec::with_capacity(8 + from.len() + to.len());
+    for s in [from, to] {
+        data.extend_from_slice(&(s.len() as u32).to_be_bytes());
+        data.extend_from_slice(s.as_bytes());
+    }
+    match raw.extended(POSIX_RENAME, data).await.map_err(sftp_err)? {
+        Packet::Status(s) if s.status_code == StatusCode::Ok => Ok(()),
+        Packet::Status(s) => Err(sftp_err(s.into())),
+        _ => Err(Error::Remote(format!(
+            "sftp: unexpected reply to {POSIX_RENAME}"
+        ))),
+    }
+}
+
+/// Plain SFTP rename and remove on one session.
+struct SftpRenamer<'a>(&'a RawSftpSession);
+
+#[async_trait]
+impl crate::protocols::Renamer for SftpRenamer<'_> {
+    async fn rename(&mut self, from: &str, to: &str) -> Result<()> {
+        self.0.rename(from, to).await.map(|_| ()).map_err(sftp_err)
+    }
+
+    async fn remove(&mut self, path: &str) -> Result<()> {
+        self.0.remove(path).await.map(|_| ()).map_err(sftp_err)
+    }
 }
 
 impl Endpoint for SftpEndpoint {
@@ -207,13 +240,28 @@ impl Sender for SftpEndpoint {
     }
 
     async fn rename(&self, from: &str, to: &str) -> Result<()> {
-        let (handle, sftp) = self.session().await?;
         let from = strip_home(self.loc.sibling(from)?.path());
         let to = strip_home(self.loc.sibling(to)?.path());
-        // Plain SFTP rename refuses an existing target; replace it first.
-        let _ = sftp.remove_file(to.clone()).await;
-        let res = sftp.rename(from, to).await.map_err(sftp_err);
-        let _ = sftp.close().await;
+        // The session's own type does not say which extensions the server
+        // has; the raw one does.
+        let handle = self.cfg.connect().await?;
+        let channel = handle.channel_open_session().await.map_err(ssh_err)?;
+        channel
+            .request_subsystem(true, "sftp")
+            .await
+            .map_err(ssh_err)?;
+        let raw = RawSftpSession::new(channel.into_stream());
+        let res = match raw.init().await {
+            // OpenSSH's rename(2): replaces an existing target in one step.
+            Ok(v) if v.extensions.get(POSIX_RENAME).is_some_and(|v| v == "1") => {
+                posix_rename(&raw, &from, &to).await
+            }
+            // Plain SFTP rename refuses an existing target: move it aside
+            // rather than delete it, so a failed rename loses nothing.
+            Ok(_) => crate::protocols::replace_aside(&mut SftpRenamer(&raw), &from, &to).await,
+            Err(e) => Err(sftp_err(e)),
+        };
+        let _ = raw.close_session();
         super::disconnect(&handle).await;
         res
     }

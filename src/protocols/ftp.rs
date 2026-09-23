@@ -193,6 +193,23 @@ fn ftp_err(e: FtpError) -> Error {
     }
 }
 
+/// RNFR/RNTO and DELE on one control connection.
+struct FtpRenamer<'a> {
+    ep: &'a FtpEndpoint,
+    ftp: &'a mut Ftp,
+}
+
+#[async_trait]
+impl crate::protocols::Renamer for FtpRenamer<'_> {
+    async fn rename(&mut self, from: &str, to: &str) -> Result<()> {
+        self.ep.ctl("RNFR/RNTO", self.ftp.rename(from, to)).await
+    }
+
+    async fn remove(&mut self, path: &str) -> Result<()> {
+        self.ep.ctl("DELE", self.ftp.rm(path)).await
+    }
+}
+
 impl Endpoint for FtpEndpoint {
     fn location(&self) -> &Location {
         &self.loc
@@ -472,11 +489,17 @@ impl Sender for FtpEndpoint {
         let from = self.loc.sibling(from)?.path().to_string();
         let to = self.loc.sibling(to)?.path().to_string();
         let mut ftp = self.connect().await?;
-        // RNTO fails on most servers when the target exists; clear it first.
-        let _ = self.ctl("DELE", ftp.rm(to.as_str())).await;
-        let res = self
-            .ctl("RNFR/RNTO", ftp.rename(from.as_str(), to.as_str()))
-            .await;
+        // RNTO fails on most servers when the target exists. The old file is
+        // moved aside rather than deleted, so a failed rename loses nothing.
+        let res = crate::protocols::replace_aside(
+            &mut FtpRenamer {
+                ep: self,
+                ftp: &mut ftp,
+            },
+            &from,
+            &to,
+        )
+        .await;
         let _ = tokio::time::timeout(self.timeout, ftp.quit()).await;
         res
     }

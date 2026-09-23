@@ -32,13 +32,19 @@ matrix](../protocols/overview.md#what-each-one-can-do); what they use to do it:
 | Protocol | Mechanism |
 |---|---|
 | local | `rename(2)` |
-| `sftp://` | SFTP `RENAME`, replacing an existing target |
+| `sftp://` | `posix-rename@openssh.com`, which replaces an existing target in one step; plain SFTP `RENAME` where the server lacks it |
 | `scp://` | `mv -f` over the same SSH connection |
 | `ftp://`, `ftps://` | `RNFR` / `RNTO` |
 | `webdav://` | `MOVE` |
 | `http://` | none: HTTP cannot rename, so the PUT goes straight to the target |
 | `s3://` | none needed: an object appears only when its upload completes |
 | mail | none needed: atomic by its nature |
+
+Plain SFTP `RENAME` and most FTP servers refuse to rename onto an existing
+file. There the file being replaced is first renamed to `<name>.mpt-old`, the
+new one is renamed into place, and only then is `<name>.mpt-old` deleted. If
+the second rename fails, the old file is renamed back, so a failed finish never
+leaves the target without either version.
 
 `--no-atomic` writes straight to the final name. It exists for pickup processes
 that cannot cope with an extra file appearing next to the one they are waiting

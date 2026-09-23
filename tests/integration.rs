@@ -328,6 +328,29 @@ async fn atomic_finish_leaves_no_part_files() {
             "{base}: a partial file was left behind: {part}"
         );
     }
+
+    // A second run replaces the file, and leaves nothing of the first aside.
+    let newer = random_payload(150_000);
+    std::fs::write(&src_path, &newer).unwrap();
+    let report = mpt::copy_many(src.as_ref(), &refs, &mpt::CopyOptions::default())
+        .await
+        .expect("copy_many");
+    assert!(report.all_ok(), "{:?}", report.targets);
+    for base in &bases {
+        assert!(fetch(base, &name).await == newer, "{base}: not replaced");
+        let listing = mpt::open(base)
+            .unwrap()
+            .receiver()
+            .unwrap()
+            .list()
+            .await
+            .expect("list");
+        let old = format!("{name}.mpt-old");
+        assert!(
+            !listing.iter().any(|e| e.name == old),
+            "{base}: the replaced file was left behind: {old}"
+        );
+    }
 }
 
 /// `--hash`: the sidecar next to every real target must contain the digest of
