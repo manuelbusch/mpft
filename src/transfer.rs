@@ -408,11 +408,12 @@ pub async fn copy_many(
     }
 
     let body = receiver.receive().await?;
-    // With a progress display the read counter *is* its counter: one atomic,
-    // watched from outside while the copy runs.
-    let (body, read_count) = match &opts.progress {
-        Some(p) => (Counted::with_counter(body, p.counter()), p.counter()),
-        None => Counted::new(body),
+    // The report counts this copy alone. A progress display watches a counter
+    // of its own, which a batch shares between its jobs to show a total.
+    let (body, read_count) = Counted::new(body);
+    let body: crate::ByteStream = match &opts.progress {
+        Some(p) => Box::pin(Counted::with_counter(body, p.counter())),
+        None => Box::pin(body),
     };
     let (body, handles) = hashing(body, &algos);
     let body: crate::ByteStream = Box::pin(body);
@@ -1551,6 +1552,27 @@ mod tests {
         assert!(report.targets[0].result.is_err());
         assert_eq!(report.targets[0].attempts, 2);
         assert_eq!(dropped.sends.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn a_shared_progress_counter_does_not_leak_into_the_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        for (name, len) in [("a.bin", 3_000usize), ("b.bin", 5_000)] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, vec![1u8; len]).unwrap();
+            let src = crate::open(path.to_str().unwrap()).unwrap();
+            let dst = crate::open(&format!("{}/out/", dir.path().display())).unwrap();
+            let opts = CopyOptions {
+                progress: Some(Progress::with_counter(Arc::clone(&shared))),
+                ..Default::default()
+            };
+            let report = copy_many(src.as_ref(), &[dst.as_ref()], &opts)
+                .await
+                .unwrap();
+            assert_eq!(report.bytes_read, len as u64, "{name}");
+        }
+        assert_eq!(shared.load(std::sync::atomic::Ordering::Relaxed), 8_000);
     }
 
     #[tokio::test]
