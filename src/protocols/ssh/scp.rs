@@ -11,7 +11,7 @@
 //! ACK bytes: `\0` ok, `\x01` warning + text line, `\x02` fatal + text line.
 
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, ready};
 
 use async_trait::async_trait;
 use russh::ChannelStream;
@@ -226,12 +226,10 @@ impl Receiver for ScpEndpoint {
         };
         stream.write_all(b"\0").await?;
         debug!(size, "scp download");
-        Ok(stream::boxed(ScpReader {
-            stream,
-            remaining: size,
-            acked: false,
-            _handle: handle,
-        }))
+        Ok(stream::boxed(stream::Guarded::new(
+            ScpReader::new(stream, size),
+            handle,
+        )))
     }
 
     async fn list(&self) -> Result<Vec<Entry>> {
@@ -245,46 +243,123 @@ impl Receiver for ScpEndpoint {
 /// An SCP exec channel with an inactivity deadline.
 type ScpStream = stream::Idle<ChannelStream<Msg>>;
 
-/// Reads exactly the announced number of bytes, then sends the final ACK.
-struct ScpReader {
-    stream: ScpStream,
+/// Reads exactly the announced number of bytes, then the status byte the
+/// remote sends after them, then sends the final ACK. Only then does it
+/// report the end of the stream: a remote that fails after the data (a read
+/// error on its side) fails the download.
+struct ScpReader<S> {
+    stream: S,
     remaining: u64,
-    acked: bool,
-    _handle: Handle<ClientHandler>,
+    tail: Tail,
 }
 
-impl AsyncRead for ScpReader {
+/// Where [`ScpReader`] is after the data.
+enum Tail {
+    Data,
+    Status,
+    /// A warning (1) or fatal error (2), and its message so far.
+    Message(Vec<u8>),
+    Ack,
+    Flush,
+    Done,
+}
+
+impl<S> ScpReader<S> {
+    fn new(stream: S, size: u64) -> Self {
+        ScpReader {
+            stream,
+            remaining: size,
+            tail: Tail::Data,
+        }
+    }
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for ScpReader<S> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        if self.remaining == 0 {
-            if !self.acked {
-                // Best effort: confirm receipt so the remote scp exits cleanly.
-                self.acked = true;
-                let _ = Pin::new(&mut self.stream).poll_write(cx, b"\0");
-            }
-            return Poll::Ready(Ok(()));
-        }
-        let want = (buf.remaining() as u64).min(self.remaining) as usize;
-        let mut limited = buf.take(want);
-        match Pin::new(&mut self.stream).poll_read(cx, &mut limited) {
-            Poll::Ready(Ok(())) => {
-                let n = limited.filled().len();
-                // SAFETY: `limited` only exposes bytes it has initialised; `n` of them are filled.
-                unsafe { buf.assume_init(n) };
-                buf.advance(n);
-                if n == 0 {
-                    return Poll::Ready(Err(std::io::Error::new(
-                        std::io::ErrorKind::UnexpectedEof,
-                        format!("scp: stream ended with {} bytes missing", self.remaining),
-                    )));
+        let this = &mut *self;
+        loop {
+            match &mut this.tail {
+                Tail::Data if this.remaining > 0 => {
+                    let want = (buf.remaining() as u64).min(this.remaining) as usize;
+                    let mut limited = buf.take(want);
+                    ready!(Pin::new(&mut this.stream).poll_read(cx, &mut limited))?;
+                    let n = limited.filled().len();
+                    // SAFETY: `limited` only exposes bytes it has initialised; `n` of them are filled.
+                    unsafe { buf.assume_init(n) };
+                    buf.advance(n);
+                    if n == 0 {
+                        return Poll::Ready(Err(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            format!("scp: stream ended with {} bytes missing", this.remaining),
+                        )));
+                    }
+                    this.remaining -= n as u64;
+                    return Poll::Ready(Ok(()));
                 }
-                self.remaining -= n as u64;
-                Poll::Ready(Ok(()))
+                Tail::Data => this.tail = Tail::Status,
+                Tail::Status => {
+                    let mut b = [0u8; 1];
+                    let mut one = ReadBuf::new(&mut b);
+                    ready!(Pin::new(&mut this.stream).poll_read(cx, &mut one))?;
+                    this.tail = match one.filled() {
+                        [] => {
+                            return Poll::Ready(Err(std::io::Error::new(
+                                std::io::ErrorKind::UnexpectedEof,
+                                "scp: stream ended before the remote confirmed the file",
+                            )));
+                        }
+                        [0] => Tail::Ack,
+                        [1 | 2] => Tail::Message(Vec::new()),
+                        [other] => {
+                            return Poll::Ready(Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!("scp: unexpected status byte {other:#x} after the data"),
+                            )));
+                        }
+                        _ => unreachable!("a one-byte buffer"),
+                    };
+                }
+                Tail::Message(msg) => {
+                    let mut b = [0u8; 1];
+                    let mut one = ReadBuf::new(&mut b);
+                    ready!(Pin::new(&mut this.stream).poll_read(cx, &mut one))?;
+                    match one.filled() {
+                        [b'\n'] | [] => {}
+                        [c] if msg.len() < 4096 => {
+                            msg.push(*c);
+                            continue;
+                        }
+                        _ => {}
+                    }
+                    let msg = String::from_utf8_lossy(msg).trim().to_string();
+                    return Poll::Ready(Err(std::io::Error::other(format!(
+                        "scp: the remote failed after sending the data: {msg}"
+                    ))));
+                }
+                Tail::Ack => {
+                    // Confirm receipt so that the remote scp exits cleanly.
+                    // The file is complete either way, so a failure to say so
+                    // is not the download's.
+                    match ready!(Pin::new(&mut this.stream).poll_write(cx, b"\0")) {
+                        Ok(_) => this.tail = Tail::Flush,
+                        Err(e) => {
+                            debug!("scp: final ACK not sent: {e}");
+                            this.tail = Tail::Done;
+                        }
+                    }
+                }
+                Tail::Flush => {
+                    if let Err(e) = ready!(Pin::new(&mut this.stream).poll_flush(cx)) {
+                        debug!("scp: final ACK not sent: {e}");
+                    }
+                    this.tail = Tail::Done;
+                }
+                Tail::Done => return Poll::Ready(Ok(())),
             }
-            other => other,
         }
     }
 }
@@ -378,6 +453,42 @@ impl Sender for ScpEndpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What an `scp -f` sends after its header: `data`, then `tail`.
+    async fn download(data: &[u8], tail: &[u8]) -> (std::io::Result<Vec<u8>>, Vec<u8>) {
+        let (ours, mut theirs) = tokio::io::duplex(64);
+        let mut sent = data.to_vec();
+        sent.extend_from_slice(tail);
+        let remote = tokio::spawn(async move {
+            theirs.write_all(&sent).await.unwrap();
+            theirs.shutdown().await.unwrap();
+            let mut acks = Vec::new();
+            let _ = theirs.read_to_end(&mut acks).await;
+            acks
+        });
+        let mut reader = ScpReader::new(ours, data.len() as u64);
+        let mut got = Vec::new();
+        let res = reader.read_to_end(&mut got).await.map(|_| got);
+        drop(reader);
+        (res, remote.await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_download_ends_with_the_remote_status() {
+        let data: Vec<u8> = (0..1000u32).map(|i| i as u8).collect();
+        let (got, acks) = download(&data, b"\0").await;
+        assert_eq!(got.unwrap(), data);
+        assert_eq!(acks, b"\0", "the final ACK is sent");
+
+        // The remote fails after the data: the download fails with it.
+        let (got, acks) = download(&data, b"\x01scp: read error\n").await;
+        let err = got.unwrap_err().to_string();
+        assert!(err.contains("read error"), "{err}");
+        assert!(acks.is_empty(), "nothing to acknowledge");
+
+        // The stream ends without a status.
+        assert!(download(&data, b"").await.0.is_err());
+    }
 
     #[test]
     fn c_headers() {
