@@ -67,6 +67,14 @@ impl HashAlgo {
         }
     }
 
+    /// Length of the digest in hex digits.
+    pub fn hex_len(self) -> usize {
+        match self {
+            HashAlgo::Sha256 | HashAlgo::Blake3 => 64,
+            HashAlgo::Sha512 => 128,
+        }
+    }
+
     /// Name as used on the command line.
     pub fn name(self) -> &'static str {
         match self {
@@ -240,16 +248,25 @@ pub fn parse_signed_at(text: &str) -> Option<SystemTime> {
 }
 
 /// One `<hex>  <name>` line: digest and file name (the name may be prefixed
-/// with `*` for binary mode, as coreutils does, and may be empty).
-fn parse_entry(line: &str) -> Option<(String, String)> {
+/// with `*` for binary mode, as coreutils does, and may be empty). The digest
+/// must have the length `algo` gives.
+fn parse_entry(line: &str, algo: HashAlgo) -> std::result::Result<(String, String), String> {
     let mut it = line.split_whitespace();
-    let hex = it.next()?;
-    if hex.len() < 32 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
+    let hex = it.next().unwrap_or_default();
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("is not '<hex>  <name>'".into());
+    }
+    if hex.len() != algo.hex_len() {
+        return Err(format!(
+            "holds {} hex digits, where a {} digest has {}",
+            hex.len(),
+            algo.label(),
+            algo.hex_len()
+        ));
     }
     let name = it.collect::<Vec<_>>().join(" ");
     let name = name.trim_start_matches('*').to_string();
-    Some((hex.to_ascii_lowercase(), name))
+    Ok((hex.to_ascii_lowercase(), name))
 }
 
 /// The digest a checksum file gives for the file `name`, or why it gives
@@ -262,6 +279,7 @@ fn parse_entry(line: &str) -> Option<(String, String)> {
 /// or the signature would not say which file it vouches for.
 pub fn sidecar_digest(
     text: &str,
+    algo: HashAlgo,
     name: &str,
     allow_bare: bool,
 ) -> std::result::Result<String, String> {
@@ -271,8 +289,7 @@ pub fn sidecar_digest(
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let entry =
-            parse_entry(line).ok_or_else(|| format!("line {} is not '<hex>  <name>'", n + 1))?;
+        let entry = parse_entry(line, algo).map_err(|why| format!("line {} {why}", n + 1))?;
         entries.push(entry);
     }
     let mut found = entries
@@ -365,22 +382,32 @@ mod tests {
     fn sidecar_roundtrip_and_parse() {
         let c = sidecar_content(SHA256_ABC, "report.pdf");
         assert_eq!(c, format!("{SHA256_ABC}  report.pdf\n"));
-        assert_eq!(sidecar_digest(&c, "report.pdf", false).unwrap(), SHA256_ABC);
+        assert_eq!(
+            sidecar_digest(&c, HashAlgo::Sha256, "report.pdf", false).unwrap(),
+            SHA256_ABC
+        );
         // coreutils binary-mode marker, a leading "./" and a name with spaces
         let hex = sidecar_digest(
             &format!("{}  *my file.bin\n", SHA256_EMPTY.to_uppercase()),
+            HashAlgo::Sha256,
             "my file.bin",
             false,
         )
         .unwrap();
         assert_eq!(hex, SHA256_EMPTY);
         assert_eq!(
-            sidecar_digest(&format!("{SHA256_ABC}  ./x\n"), "x", false).unwrap(),
+            sidecar_digest(
+                &format!("{SHA256_ABC}  ./x\n"),
+                HashAlgo::Sha256,
+                "x",
+                false
+            )
+            .unwrap(),
             SHA256_ABC
         );
-        assert!(sidecar_digest("not a hash  x", "x", true).is_err());
-        assert!(sidecar_digest("", "x", true).is_err());
-        assert!(sidecar_digest("# only a comment\n", "x", true).is_err());
+        assert!(sidecar_digest("not a hash  x", HashAlgo::Sha256, "x", true).is_err());
+        assert!(sidecar_digest("", HashAlgo::Sha256, "x", true).is_err());
+        assert!(sidecar_digest("# only a comment\n", HashAlgo::Sha256, "x", true).is_err());
     }
 
     /// A checksum file is only good for the file it names, so a signed one
@@ -388,13 +415,14 @@ mod tests {
     #[test]
     fn the_entry_must_name_the_file() {
         let other = sidecar_content(SHA256_ABC, "other.bin");
-        let e = sidecar_digest(&other, "report.pdf", true).unwrap_err();
+        let e = sidecar_digest(&other, HashAlgo::Sha256, "report.pdf", true).unwrap_err();
         assert!(e.contains("no entry for 'report.pdf'"), "{e}");
         assert!(e.contains("'other.bin'"), "{e}");
         // A path to a file of the same name elsewhere is another file.
         assert!(
             sidecar_digest(
                 &format!("{SHA256_ABC}  dir/report.pdf\n"),
+                HashAlgo::Sha256,
                 "report.pdf",
                 true
             )
@@ -405,26 +433,38 @@ mod tests {
         let sums =
             format!("{SHA256_EMPTY}  a.bin\n{SHA256_ABC}  report.pdf\n{SHA256_EMPTY}  z.bin\n");
         assert_eq!(
-            sidecar_digest(&sums, "report.pdf", false).unwrap(),
+            sidecar_digest(&sums, HashAlgo::Sha256, "report.pdf", false).unwrap(),
             SHA256_ABC
         );
-        assert_eq!(sidecar_digest(&sums, "z.bin", false).unwrap(), SHA256_EMPTY);
+        assert_eq!(
+            sidecar_digest(&sums, HashAlgo::Sha256, "z.bin", false).unwrap(),
+            SHA256_EMPTY
+        );
         // One name with two different digests is not a checksum file to trust.
         let twice = format!("{SHA256_EMPTY}  x\n{SHA256_ABC}  x\n");
         assert!(
-            sidecar_digest(&twice, "x", true)
+            sidecar_digest(&twice, HashAlgo::Sha256, "x", true)
                 .unwrap_err()
                 .contains("twice")
         );
         // A malformed line spoils the file rather than being skipped.
-        let e = sidecar_digest(&format!("{SHA256_ABC}  x\ngarbage\n"), "x", true).unwrap_err();
+        let e = sidecar_digest(
+            &format!("{SHA256_ABC}  x\ngarbage\n"),
+            HashAlgo::Sha256,
+            "x",
+            true,
+        )
+        .unwrap_err();
         assert!(e.contains("line 2"), "{e}");
 
         // A bare digest is taken for the file it sits beside, but only when
         // no signature has to say which file it covers.
         let bare = format!("{SHA256_ABC}\n");
-        assert_eq!(sidecar_digest(&bare, "x", true).unwrap(), SHA256_ABC);
-        let e = sidecar_digest(&bare, "x", false).unwrap_err();
+        assert_eq!(
+            sidecar_digest(&bare, HashAlgo::Sha256, "x", true).unwrap(),
+            SHA256_ABC
+        );
+        let e = sidecar_digest(&bare, HashAlgo::Sha256, "x", false).unwrap_err();
         assert!(e.contains("names no file"), "{e}");
     }
 
@@ -437,14 +477,52 @@ mod tests {
             format!("{SHA256_ABC}  report.pdf\n# mpt-signed-at: 2023-11-14T22:13:20Z\n")
         );
         // The comment does not get in the way of the digest.
-        assert_eq!(sidecar_digest(&c, "report.pdf", false).unwrap(), SHA256_ABC);
+        assert_eq!(
+            sidecar_digest(&c, HashAlgo::Sha256, "report.pdf", false).unwrap(),
+            SHA256_ABC
+        );
         assert_eq!(parse_signed_at(&c), Some(t));
         // Without the comment, and with an unreadable one.
         assert_eq!(parse_signed_at(&sidecar_content(SHA256_ABC, "x")), None);
         assert_eq!(parse_signed_at("# mpt-signed-at: yesterday\n"), None);
         // A file that leads with comments still parses.
-        let hex = sidecar_digest(&format!("# a comment\n{SHA256_ABC}  x\n"), "x", false).unwrap();
+        let hex = sidecar_digest(
+            &format!("# a comment\n{SHA256_ABC}  x\n"),
+            HashAlgo::Sha256,
+            "x",
+            false,
+        )
+        .unwrap();
         assert_eq!(hex, SHA256_ABC);
+    }
+
+    /// A digest of the wrong length for the file's algorithm is a malformed
+    /// checksum file, not a digest that merely fails to match.
+    #[test]
+    fn the_digest_length_must_fit_the_algorithm() {
+        let line = |hex: &str| format!("{hex}  x\n");
+        let blake = digest_bytes(HashAlgo::Blake3, b"");
+        assert_eq!(
+            sidecar_digest(&line(SHA512_ABC), HashAlgo::Sha512, "x", false).unwrap(),
+            SHA512_ABC
+        );
+        assert_eq!(
+            sidecar_digest(&line(&blake), HashAlgo::Blake3, "x", false).unwrap(),
+            blake
+        );
+        for (hex, algo) in [
+            (&SHA256_ABC[..32], HashAlgo::Sha256),
+            (&SHA256_ABC[..40], HashAlgo::Sha256),
+            (SHA512_ABC, HashAlgo::Sha256),
+            (SHA256_ABC, HashAlgo::Sha512),
+            (SHA512_ABC, HashAlgo::Blake3),
+        ] {
+            let e = sidecar_digest(&line(hex), algo, "x", true).unwrap_err();
+            assert!(
+                e.contains(&format!("holds {} hex digits", hex.len())),
+                "{e}"
+            );
+        }
     }
 
     #[test]

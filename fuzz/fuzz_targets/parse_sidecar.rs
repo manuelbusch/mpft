@@ -8,9 +8,12 @@ fuzz_target!(|data: &[u8]| {
     let Ok(text) = std::str::from_utf8(data) else {
         return;
     };
-    for (name, bare) in [("report.pdf", false), ("x", true)] {
-        if let Ok(hex) = mpt::hash::sidecar_digest(text, name, bare) {
-            assert!(hex.len() >= 32, "{hex:?}");
+    for (algo, name, bare) in [
+        (mpt::hash::HashAlgo::Sha256, "report.pdf", false),
+        (mpt::hash::HashAlgo::Sha512, "x", true),
+    ] {
+        if let Ok(hex) = mpt::hash::sidecar_digest(text, algo, name, bare) {
+            assert_eq!(hex.len(), algo.hex_len(), "{hex:?}");
             assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()), "{hex:?}");
             assert_eq!(hex, hex.to_ascii_lowercase());
         }

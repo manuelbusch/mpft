@@ -89,6 +89,10 @@ error: remote error: check: out/report.pdf.sha256 is not a checksum file for rep
        it has no entry for 'report.pdf' (it lists 'other.bin')
 ```
 
+A line whose digest does not have the length of the file's algorithm, 64 hex
+digits for SHA-256 and BLAKE3 and 128 for SHA-512, makes the file malformed
+rather than a mismatch.
+
 A file that holds nothing but a digest, as some download sites publish, is
 taken for the file it sits beside. A [signed](signatures.md) checksum file
 must name the file, since otherwise the signature would not say which file it

@@ -721,7 +721,7 @@ async fn target_checksum(dst: &dyn Endpoint, name: &str) -> Option<(HashAlgo, St
         let Ok(text) = read_sibling(dst, &algo.sidecar_name(name), 8192).await else {
             continue;
         };
-        if let Ok(hex) = sidecar_digest(&String::from_utf8_lossy(&text), name, true) {
+        if let Ok(hex) = sidecar_digest(&String::from_utf8_lossy(&text), algo, name, true) {
             return Some((algo, hex));
         }
     }
@@ -1077,7 +1077,7 @@ async fn find_source_checksum(
         // but a digest is taken for the source it sits beside; signed, it must
         // say which file it vouches for, or a validly signed checksum file of
         // another file could be renamed to sit beside this one.
-        let hex = sidecar_digest(&text, &name, verifier.is_none()).map_err(|why| {
+        let hex = sidecar_digest(&text, algo, &name, verifier.is_none()).map_err(|why| {
             let msg = format!("check: {loc} is not a checksum file for {name}: {why}");
             if verifier.is_some() {
                 Error::Signature(msg)
