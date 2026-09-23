@@ -22,6 +22,11 @@ use crate::{Error, Result};
 /// The SSHSIG namespace used by `ssh-keygen -Y sign` for files.
 pub const SSH_NAMESPACE: &str = "file";
 
+/// How far a signing time may lie ahead of the verifier's clock before the
+/// signature is refused as made in the future. Covers clocks that disagree a
+/// little, not a signer who dates ahead to stay young for an age limit.
+pub const CLOCK_SKEW: Duration = Duration::from_secs(5 * 60);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignFormat {
     Ssh,
@@ -906,7 +911,16 @@ pub mod pgp {
                 .map_err(|e| Error::Signature(format!("invalid OpenPGP signature: {e}")))?;
             // The key must be valid at `at`, the moment of verification. The
             // signature's own creation time is the signer's say-so, so it
-            // cannot excuse a key that has expired since.
+            // cannot excuse a key that has expired since; one that lies ahead
+            // of the clock is refused, as gpg does.
+            if let Some(made) = sig.signature.created().map(SystemTime::from)
+                && made > at + CLOCK_SKEW
+            {
+                return Err(Error::Signature(format!(
+                    "OpenPGP signature claims to be made at {}, in the future",
+                    format_time(made)
+                )));
+            }
             let issuers: Vec<String> = sig
                 .signature
                 .issuer_fingerprint()
@@ -1337,11 +1351,11 @@ mod tests {
         assert!(e.to_string().contains("only created at"), "{e}");
     }
 
-    /// A key is judged at the moment of verification: before it existed,
-    /// nothing it signs is accepted.
+    /// A signature made later than the moment of verification, beyond the
+    /// allowance for clock skew, is refused.
     #[cfg(feature = "sign-pgp")]
     #[tokio::test]
-    async fn pgp_key_is_judged_at_the_moment_of_verification() {
+    async fn pgp_signature_from_the_future_is_rejected() {
         use ::pgp::composed::{ArmorOptions, KeyType, SecretKeyParamsBuilder, SignedPublicKey};
         let params = SecretKeyParamsBuilder::default()
             .key_type(KeyType::Ed25519Legacy)
@@ -1377,9 +1391,9 @@ mod tests {
         let verifier = load_verifier(&VerifySpec::PgpKeyring(pub_path)).unwrap();
         assert!(verifier.verify(msg, &sig).is_ok());
 
-        let long_ago = SystemTime::now() - Duration::from_secs(10 * 86_400);
-        let e = verifier.verify_at(msg, &sig, long_ago).unwrap_err();
-        assert!(e.to_string().contains("only created at"), "{e}");
+        let earlier = SystemTime::now() - CLOCK_SKEW - Duration::from_secs(60);
+        let e = verifier.verify_at(msg, &sig, earlier).unwrap_err();
+        assert!(e.to_string().contains("in the future"), "{e}");
     }
 
     #[cfg(feature = "sign-pgp")]

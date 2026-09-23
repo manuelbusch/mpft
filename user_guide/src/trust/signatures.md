@@ -191,6 +191,17 @@ error: signature: the checksum file was signed 9d ago (2026-09-01T18:05:31Z),
 With the policy set, a checksum file with no signing time is refused as well;
 otherwise removing the line would be enough to escape the rule.
 
+**A signing time in the future is refused**, with or without the policy: a
+file dated a year ahead would stay younger than any limit for a year. Five
+minutes ahead of the verifying machine's clock are allowed, for clocks that
+disagree a little. The same holds for the creation time inside an OpenPGP
+signature.
+
+```
+error: signature: the checksum file claims to be signed at 2027-09-10T18:05:31Z,
+       in the future
+```
+
 ## Practical notes
 
 - [**Mail targets**](../protocols/mail.md#the-message) get the signature as a

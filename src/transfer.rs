@@ -962,8 +962,18 @@ async fn write_sidecar(
 }
 
 /// Refuse a signature that is older than `policy.max_signature_age`, so an
-/// old checksum file cannot be replayed in place of the current one.
+/// old checksum file cannot be replayed in place of the current one, and one
+/// that claims to come from the future, which would never age at all.
 fn check_signature_age(signed_at: Option<SystemTime>, max: Option<Duration>) -> Result<()> {
+    let now = SystemTime::now();
+    if let Some(at) = signed_at
+        && at > now + crate::sign::CLOCK_SKEW
+    {
+        return Err(Error::Signature(format!(
+            "the checksum file claims to be signed at {}, in the future",
+            crate::sign::format_time(at)
+        )));
+    }
     let Some(max) = max else {
         return Ok(());
     };
@@ -975,8 +985,8 @@ fn check_signature_age(signed_at: Option<SystemTime>, max: Option<Duration>) -> 
             fmt_age(max)
         )));
     };
-    // A signature from the future is left to the verifier to judge.
-    let age = SystemTime::now().duration_since(at).unwrap_or_default();
+    // Ahead of the clock by less than CLOCK_SKEW counts as just made.
+    let age = now.duration_since(at).unwrap_or_default();
     if age > max {
         return Err(Error::Signature(format!(
             "the checksum file was signed {} ago ({}), longer than the {} the policy allows",
@@ -1832,8 +1842,17 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("mpt-signed-at"), "{err}");
-        // A clock that runs behind must not turn into a huge age.
-        assert!(check_signature_age(Some(SystemTime::now() + hour), Some(hour)).is_ok());
+        // A clock that runs a little behind must not turn into a huge age…
+        let minute = Duration::from_secs(60);
+        assert!(check_signature_age(Some(SystemTime::now() + minute), Some(hour)).is_ok());
+        // …but a signing time well ahead of the clock is refused, with or
+        // without a limit, since it would never age out of one.
+        for max in [None, Some(hour)] {
+            let err = check_signature_age(Some(SystemTime::now() + hour), max)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("in the future"), "{err}");
+        }
     }
 
     #[tokio::test]
@@ -2110,11 +2129,13 @@ mod tests {
         ));
     }
 
-    /// A key is judged as it stands at verification, not at the signing time
-    /// the checksum file claims: a retired key cannot sign something now and
-    /// backdate it into its validity window.
-    #[tokio::test]
-    async fn a_backdated_signing_time_does_not_revive_a_retired_key() {
+    /// Sign a checksum file for a fresh `data.bin` that claims `signed_at`,
+    /// with a key listed in `allowed_signers` under `options`, and copy it
+    /// with --check and that verifier. `None` without `ssh-keygen`.
+    async fn verify_signed_at(
+        options: &str,
+        signed_at: SystemTime,
+    ) -> Option<Result<FanoutReport>> {
         use crate::sign::{SignFormat, SignSpec, VerifySpec};
         let dir = tempfile::tempdir().unwrap();
         let key = dir.path().join("id_ed25519");
@@ -2126,7 +2147,7 @@ mod tests {
                 "-N",
                 "",
                 "-C",
-                "old@example.com",
+                "ci@example.com",
                 "-f",
             ])
             .arg(&key)
@@ -2135,15 +2156,11 @@ mod tests {
             .unwrap_or(false);
         if !ok {
             eprintln!("skipping: ssh-keygen not available");
-            return;
+            return None;
         }
         let pub_line = std::fs::read_to_string(dir.path().join("id_ed25519.pub")).unwrap();
         let signers = dir.path().join("allowed_signers");
-        std::fs::write(
-            &signers,
-            format!("old@example.com valid-before=\"20200101\" {pub_line}"),
-        )
-        .unwrap();
+        std::fs::write(&signers, format!("ci@example.com {options} {pub_line}")).unwrap();
         let signer = crate::sign::load_signer(&SignSpec {
             format: SignFormat::Ssh,
             key: Some(key),
@@ -2155,8 +2172,7 @@ mod tests {
         let data = vec![5u8; 1000];
         std::fs::write(dir.path().join("data.bin"), &data).unwrap();
         let hex = crate::hash::digest_bytes(HashAlgo::Sha256, &data);
-        let backdated = std::time::UNIX_EPOCH + Duration::from_secs(1_560_000_000); // 2019
-        let text = sidecar_content_at(&hex, "data.bin", Some(backdated));
+        let text = sidecar_content_at(&hex, "data.bin", Some(signed_at));
         std::fs::write(dir.path().join("data.bin.sha256"), &text).unwrap();
         let sig = signer.sign(text.as_bytes()).await.unwrap();
         std::fs::write(dir.path().join("data.bin.sha256.sig"), sig).unwrap();
@@ -2169,14 +2185,41 @@ mod tests {
             verify: Some(verifier),
             ..Default::default()
         };
-        let err = copy_many(src.as_ref(), &[dst.as_ref()], &opts)
-            .await
-            .unwrap_err();
+        Some(copy_many(src.as_ref(), &[dst.as_ref()], &opts).await)
+    }
+
+    /// A key is judged as it stands at verification, not at the signing time
+    /// the checksum file claims: a retired key cannot sign something now and
+    /// backdate it into its validity window.
+    #[tokio::test]
+    async fn a_backdated_signing_time_does_not_revive_a_retired_key() {
+        let backdated = std::time::UNIX_EPOCH + Duration::from_secs(1_560_000_000); // 2019
+        let Some(res) = verify_signed_at("valid-before=\"20200101\"", backdated).await else {
+            return;
+        };
+        let err = res.unwrap_err();
         assert!(matches!(err, Error::Signature(_)), "{err}");
         assert!(
             err.to_string().contains("key expired at 2020-01-01"),
             "{err}"
         );
+    }
+
+    /// A signing time ahead of the clock is refused, beyond a little skew:
+    /// otherwise it would never grow older than policy.max_signature_age.
+    #[tokio::test]
+    async fn a_signing_time_in_the_future_is_refused() {
+        let ahead = SystemTime::now() + Duration::from_secs(3600);
+        let Some(res) = verify_signed_at("", ahead).await else {
+            return;
+        };
+        let err = res.unwrap_err();
+        assert!(matches!(err, Error::Signature(_)), "{err}");
+        assert!(err.to_string().contains("in the future"), "{err}");
+
+        let skewed = SystemTime::now() + Duration::from_secs(60);
+        let report = verify_signed_at("", skewed).await.unwrap().unwrap();
+        assert!(report.checked.unwrap().ok());
     }
 
     #[cfg(feature = "sign-ssh")]

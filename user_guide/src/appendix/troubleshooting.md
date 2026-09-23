@@ -150,6 +150,11 @@ of verification; see [Trust files](../trust/signatures.md#trust-files).
 `[policy] max_signature_age`. Either the file really is old, or the limit is
 too tight for how often it is regenerated.
 
+**`signature: the checksum file claims to be signed at …, in the future`** [3]
+
+The signer's clock, or this machine's, is more than five minutes off; see
+[Signing time](../trust/signatures.md#signing-time).
+
 **`policy.require_signature is set, but no trusted keys are given`** [2]
 
 `--check` alone is not enough under that policy. Point `--verify-signers` or
