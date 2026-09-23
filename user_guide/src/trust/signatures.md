@@ -149,8 +149,8 @@ release@example.com valid-after=20260101,valid-before=20270101 ssh-ed25519 AAAAC
   more than the file says.
 
 For OpenPGP the keyring's self-signatures are verified when it is loaded.
-Revoked keys and subkeys are refused, and so are keys that had expired, or had
-not yet come into force, at the time the signature was made.
+Revoked keys and subkeys are refused, and so are keys that have expired, or
+have not yet come into force, at the moment of verification.
 
 ## Signing time
 
@@ -162,13 +162,17 @@ A signed checksum file carries a second line:
 ```
 
 It is a comment, so `sha256sum -c` and `b3sum -c` ignore it, and it is inside
-what the signature covers, so it cannot be changed unnoticed. Two things use
-it.
+what the signature covers, so it cannot be changed unnoticed by anyone but the
+signer.
 
-**A key is judged as it stood when it signed.** A key that expired or was
-revoked last week still verifies what it signed last year, which is how
-signatures are supposed to work and what a naive "is this key valid now?" check
-gets wrong.
+**It does not decide whether the key is valid.** Keys are judged at the moment
+of verification, as `ssh-keygen -Y verify` and `gpg --verify` judge them. The
+signing time is the signer's own claim: if it counted, a key that has been
+retired, or has fallen into the wrong hands, could sign something today and
+date it back into the time it was valid. A key whose `valid-before` has passed,
+or that has expired, verifies nothing any more, including what it signed while
+it was valid; re-sign what should stay verifiable with the key that replaces
+it.
 
 **An old signature can be refused as such.** An attacker who cannot forge a
 signature can still serve you a correctly signed *old* file in place of the

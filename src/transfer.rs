@@ -933,7 +933,7 @@ async fn write_sidecar(
     let sidecar = algo.sidecar_name(&name);
     let loc = dst.location().sibling(&sidecar)?;
     // A signed checksum file records when it was signed, so a verifier can
-    // judge the signer's validity at that moment and refuse an old one.
+    // refuse an old one.
     let content = sidecar_content_at(hex, &name, signer.map(|_| SystemTime::now()));
     let ep = crate::protocols::open(loc.clone())?;
     let sidecar_meta = SendMeta::from_filename(&sidecar)?.with_size(content.len() as u64);
@@ -1054,15 +1054,12 @@ async fn find_source_checksum(
                     v.format().label()
                 ))
             })?;
-            // Judge the signer as it stood when it signed, not as it stands
-            // now: a key that has expired since then still signed validly.
+            // The signer is judged as it stands now; the signing time the
+            // file records is the signer's own claim, so it only serves the
+            // age limit, and is read once the signature has vouched for it.
+            let who = v.verify(text.as_bytes(), &sig)?;
             let signed_at = crate::hash::parse_signed_at(&text);
             check_signature_age(signed_at, crate::policy::policy().max_signature_age)?;
-            let who = v.verify_at(
-                text.as_bytes(),
-                &sig,
-                signed_at.unwrap_or_else(SystemTime::now),
-            )?;
             info!(%who, signed_at = ?signed_at.map(crate::sign::format_time), "checksum file signature verified");
             signer = Some(who);
         }
@@ -2111,6 +2108,75 @@ mod tests {
                 .unwrap_err(),
             Error::InvalidOption { .. }
         ));
+    }
+
+    /// A key is judged as it stands at verification, not at the signing time
+    /// the checksum file claims: a retired key cannot sign something now and
+    /// backdate it into its validity window.
+    #[tokio::test]
+    async fn a_backdated_signing_time_does_not_revive_a_retired_key() {
+        use crate::sign::{SignFormat, SignSpec, VerifySpec};
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("id_ed25519");
+        let ok = std::process::Command::new("ssh-keygen")
+            .args([
+                "-q",
+                "-t",
+                "ed25519",
+                "-N",
+                "",
+                "-C",
+                "old@example.com",
+                "-f",
+            ])
+            .arg(&key)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            eprintln!("skipping: ssh-keygen not available");
+            return;
+        }
+        let pub_line = std::fs::read_to_string(dir.path().join("id_ed25519.pub")).unwrap();
+        let signers = dir.path().join("allowed_signers");
+        std::fs::write(
+            &signers,
+            format!("old@example.com valid-before=\"20200101\" {pub_line}"),
+        )
+        .unwrap();
+        let signer = crate::sign::load_signer(&SignSpec {
+            format: SignFormat::Ssh,
+            key: Some(key),
+            passphrase: None,
+        })
+        .await
+        .unwrap();
+
+        let data = vec![5u8; 1000];
+        std::fs::write(dir.path().join("data.bin"), &data).unwrap();
+        let hex = crate::hash::digest_bytes(HashAlgo::Sha256, &data);
+        let backdated = std::time::UNIX_EPOCH + Duration::from_secs(1_560_000_000); // 2019
+        let text = sidecar_content_at(&hex, "data.bin", Some(backdated));
+        std::fs::write(dir.path().join("data.bin.sha256"), &text).unwrap();
+        let sig = signer.sign(text.as_bytes()).await.unwrap();
+        std::fs::write(dir.path().join("data.bin.sha256.sig"), sig).unwrap();
+
+        let verifier = crate::sign::load_verifier(&VerifySpec::SshAllowedSigners(signers)).unwrap();
+        let src = crate::open(dir.path().join("data.bin").to_str().unwrap()).unwrap();
+        let dst = crate::open(&format!("{}/back/", dir.path().display())).unwrap();
+        let opts = CopyOptions {
+            check: true,
+            verify: Some(verifier),
+            ..Default::default()
+        };
+        let err = copy_many(src.as_ref(), &[dst.as_ref()], &opts)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Signature(_)), "{err}");
+        assert!(
+            err.to_string().contains("key expired at 2020-01-01"),
+            "{err}"
+        );
     }
 
     #[cfg(feature = "sign-ssh")]

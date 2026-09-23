@@ -143,7 +143,7 @@ The checksum file does not match its signature — it was changed after signing.
 **`signature: rejected at 2026-09-10T18:05:31Z: release@example.com: key expired at 2020-01-01T00:00:00Z`** [3]
 
 An `allowed_signers` option (`valid-before`, `valid-after`) excludes the moment
-the file was signed.
+of verification; see [Trust files](../trust/signatures.md#trust-files).
 
 **`signature: the checksum file was signed 9d ago …, longer than the 7d the policy allows`** [3]
 

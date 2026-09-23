@@ -123,13 +123,15 @@ pub trait Verifier: Send + Sync {
     fn format(&self) -> SignFormat;
 
     /// Returns the identity of the trusted key that produced `signature`.
-    /// Validity windows are checked against the current time.
+    /// Validity windows and key expiry are checked against the current time,
+    /// as `ssh-keygen -Y verify` and `gpg --verify` do.
     fn verify(&self, message: &[u8], signature: &[u8]) -> Result<String> {
         self.verify_at(message, signature, SystemTime::now())
     }
 
-    /// Like [`Verifier::verify`], but checks key and signer validity against
-    /// `at` instead of now (the signing time recorded in the checksum file).
+    /// Like [`Verifier::verify`], as if verifying at `at`. Never pass a time
+    /// the signed material claims for itself: a key that has been retired
+    /// could then vouch for anything by backdating it.
     fn verify_at(&self, message: &[u8], signature: &[u8], at: SystemTime) -> Result<String>;
 }
 
@@ -902,14 +904,9 @@ pub mod pgp {
         fn verify_at(&self, message: &[u8], signature: &[u8], at: SystemTime) -> Result<String> {
             let (sig, _) = DetachedSignature::from_armor_single(std::io::Cursor::new(signature))
                 .map_err(|e| Error::Signature(format!("invalid OpenPGP signature: {e}")))?;
-            // The key must have been valid when the signature was made; a
-            // signature that claims a future date is judged at `at`.
-            let made = sig
-                .signature
-                .created()
-                .map(SystemTime::from)
-                .filter(|t| *t <= at)
-                .unwrap_or(at);
+            // The key must be valid at `at`, the moment of verification. The
+            // signature's own creation time is the signer's say-so, so it
+            // cannot excuse a key that has expired since.
             let issuers: Vec<String> = sig
                 .signature
                 .issuer_fingerprint()
@@ -939,7 +936,7 @@ pub mod pgp {
                         .any(|k| *k == key.primary_key.legacy_key_id().to_string());
                 if primary_matches {
                     let created = SystemTime::from(key.primary_key.created_at());
-                    match invalid_at(created, expiry_of(created, self_sigs()), made) {
+                    match invalid_at(created, expiry_of(created, self_sigs()), at) {
                         Some(reason) => {
                             why.push(format!("{}: {reason}", key.primary_key.fingerprint()))
                         }
@@ -967,7 +964,7 @@ pub mod pgp {
                     }
                     let created = SystemTime::from(sub.created_at());
                     if let Some(reason) =
-                        invalid_at(created, expiry_of(created, sub.signatures.iter()), made)
+                        invalid_at(created, expiry_of(created, sub.signatures.iter()), at)
                     {
                         why.push(format!("subkey {}: {reason}", sub.fingerprint()));
                         continue;
@@ -993,8 +990,8 @@ pub mod pgp {
                 )));
             }
             Err(Error::Signature(format!(
-                "OpenPGP signature by {who} rejected (signed {}): {}",
-                format_time(made),
+                "OpenPGP signature by {who} rejected at {}: {}",
+                format_time(at),
                 why.join("; ")
             )))
         }
@@ -1340,11 +1337,11 @@ mod tests {
         assert!(e.to_string().contains("only created at"), "{e}");
     }
 
-    /// A signature is judged against the moment it claims to have been made,
-    /// capped at the verification time; before the key existed it is refused.
+    /// A key is judged at the moment of verification: before it existed,
+    /// nothing it signs is accepted.
     #[cfg(feature = "sign-pgp")]
     #[tokio::test]
-    async fn pgp_signature_before_key_creation_is_rejected() {
+    async fn pgp_key_is_judged_at_the_moment_of_verification() {
         use ::pgp::composed::{ArmorOptions, KeyType, SecretKeyParamsBuilder, SignedPublicKey};
         let params = SecretKeyParamsBuilder::default()
             .key_type(KeyType::Ed25519Legacy)

@@ -213,8 +213,8 @@ pub fn sidecar_content(hex: &str, filename: &str) -> String {
 /// `b3sum -c` ignore comment lines, so the file keeps their format.
 pub const SIGNED_AT: &str = "# mpt-signed-at: ";
 
-/// Sidecar file with the signing time, so a verifier can judge the signer's
-/// validity at that moment and refuse a signature that is too old.
+/// Sidecar file with the signing time, so a verifier can refuse a signature
+/// that is too old (`policy.max_signature_age`).
 pub fn sidecar_content_at(hex: &str, filename: &str, signed_at: Option<SystemTime>) -> String {
     match signed_at {
         None => sidecar_content(hex, filename),

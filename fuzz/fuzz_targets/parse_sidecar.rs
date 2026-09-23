@@ -15,7 +15,7 @@ fuzz_target!(|data: &[u8]| {
             assert_eq!(hex, hex.to_ascii_lowercase());
         }
     }
-    // The signing time is read before the signature is checked, so its
-    // parser sees untrusted text as well.
+    // The signing time comes out of the same file, so its parser sees
+    // whatever the remote wrote as well.
     let _ = mpt::hash::parse_signed_at(text);
 });
