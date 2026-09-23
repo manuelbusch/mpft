@@ -149,10 +149,30 @@ release@example.com valid-after=20260101,valid-before=20270101 ssh-ed25519 AAAAC
   more than the file says.
 
 For OpenPGP the keyring's self-signatures are verified when it is loaded.
-Revoked keys and subkeys are refused, and so are keys that have expired, or
-have not yet come into force, at the moment of verification. A subkey counts
-only if its binding marks it as a signing key; a signature from an encryption
-or authentication subkey is refused.
+Keys that have expired, or have not yet come into force, at the moment of
+verification are refused. A subkey counts only if its binding marks it as a
+signing key; a signature from an encryption or authentication subkey is
+refused.
+
+A revoked OpenPGP key verifies nothing, whenever the signature was made and
+whatever reason the revocation gives. A primary key that carries a revocation
+is left out of the keyring when it is loaded, with a warning, and a revoked
+subkey is refused. Signatures made before the revocation are refused as well,
+so what should stay verifiable after a key has been retired needs signing
+again with its successor.
+
+### Every listed key vouches for every file
+
+A signature is accepted if it was made by any key in the trust file. The
+principal in an `allowed_signers` line and the user ID of an OpenPGP key only
+appear in the output, as who signed; nothing ties a file, a source or a
+directory to one of them. `ssh-keygen -Y verify -I <principal>` checks a
+principal, `mpt` does not.
+
+A trust file therefore says "any of these keys may sign anything verified
+against this file". Keep keys that may sign only some things out of it, and
+give sources with different signers their own trust file, with
+`--verify-signers` or `--verify-keyring` on the command line.
 
 ## Signing time
 
