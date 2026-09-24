@@ -26,8 +26,24 @@ The server answers `exec "mpt relay"` and the subsystem `mpt`, and nothing
 else: no shell, no pty, no port forwarding, no sftp. The one channel it opens
 back to the client is the agent channel, and only when the client forwards an
 agent and `--no-agent-forwarding` is not set. `authorized_keys` is in OpenSSH
-format and is re-read whenever it changes, so adding a client needs no
-restart.
+format and is re-read whenever its content changes, so adding a client needs
+no restart. A file that is removed or cannot be read lets nobody in until it
+is back.
+
+Of the per-key options, the relay honours these:
+
+| Option | Effect |
+|---|---|
+| `from="pattern-list"` | the key is taken only from a matching client address: `*` and `?` wildcards, `address/length` networks, `!` to exclude. Matched against the address, never a host name, as `sshd` does with `UseDNS no` |
+| `expiry-time="YYYYMMDD[HHMM[SS]]"` | the key is refused after that time, read as UTC |
+| `no-agent-forwarding`, `restrict` | the client's agent is refused for this key; `agent-forwarding` after `restrict` allows it again |
+| `no-pty`, `no-port-forwarding`, `no-X11-forwarding`, `no-user-rc` and their positive forms | taken as they are: the server offers none of these to anyone |
+
+A key with any other option — `command=`, `permitopen=`, `cert-authority`,
+`principals=`, … — is left out, with a warning in the log naming the line,
+because the relay would not keep the limit it sets. The line for an existing
+`sshd` below is such a line; it belongs in that account's file, not in the
+relay server's.
 
 | Flag | `[relay]` key | Default | Meaning |
 |---|---|---|---|

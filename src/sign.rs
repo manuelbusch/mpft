@@ -144,8 +144,8 @@ pub trait Verifier: Send + Sync {
 
 /// Parse an OpenSSH `allowed_signers` timestamp: `YYYYMMDD`, `YYYYMMDDHHMM`
 /// or `YYYYMMDDHHMMSS`, with an optional `Z`. Always read as UTC.
-#[cfg_attr(not(feature = "sign-ssh"), allow(dead_code))] // read by allowed_signers
-fn parse_ssh_time(raw: &str) -> Result<SystemTime> {
+#[cfg_attr(not(any(feature = "sign-ssh", feature = "relay")), allow(dead_code))] // read by allowed_signers and the relay's authorized_keys
+pub(crate) fn parse_ssh_time(raw: &str) -> Result<SystemTime> {
     let v = raw.trim().trim_end_matches(['Z', 'z']);
     let bad = || {
         Error::Config(format!(

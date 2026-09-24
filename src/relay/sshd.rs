@@ -5,11 +5,11 @@
 //! relay authenticates against the SSH targets with the client's keys.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
-use russh::keys::ssh_key::{self, AuthorizedKeys, LineEnding};
+use russh::keys::ssh_key::{self, LineEnding};
 use russh::keys::{Algorithm, HashAlg, PrivateKey, PublicKey};
 use russh::server::{Auth, ChannelOpenHandle, Handle, Handler, Msg, Session};
 use russh::{Channel, ChannelId};
@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use super::Relay;
+use super::authorized_keys::Keys;
 use crate::{Error, Result};
 
 /// What `mpt relay --listen` needs.
@@ -102,6 +103,7 @@ pub async fn serve(
             peer,
             channel: None,
             agent: false,
+            agent_allowed: false,
         };
         let ssh = Arc::clone(&ssh);
         tokio::spawn(async move {
@@ -155,6 +157,9 @@ struct Connection {
     channel: Option<Channel<Msg>>,
     /// The client forwarded its agent and this server took it.
     agent: bool,
+    /// The key the client logged in with may forward an agent (no
+    /// `no-agent-forwarding` or `restrict` in `authorized_keys`).
+    agent_allowed: bool,
 }
 
 /// The agent the client forwarded, reached by opening an agent channel
@@ -183,8 +188,9 @@ impl Handler for Connection {
         user: &str,
         key: &PublicKey,
     ) -> std::result::Result<Auth, Self::Error> {
-        if self.shared.keys.allows(key) {
+        if let Some(grant) = self.shared.keys.allows(key, self.peer.ip()) {
             info!(peer = %self.peer, user, fingerprint = %key.fingerprint(HashAlg::Sha256), "relay login");
+            self.agent_allowed = grant.agent_forwarding;
             Ok(Auth::Accept)
         } else {
             warn!(peer = %self.peer, user, fingerprint = %key.fingerprint(HashAlg::Sha256), "key not in authorized_keys");
@@ -251,13 +257,16 @@ impl Handler for Connection {
         // bool alone (it would answer a global request instead), so it is
         // sent here, and the bool is kept at `true` so nothing else goes
         // out.
-        if self.shared.agent_forwarding {
+        if !self.shared.agent_forwarding {
+            debug!(peer = %self.peer, "agent forwarding refused (switched off)");
+            session.channel_failure(channel)?;
+        } else if !self.agent_allowed {
+            debug!(peer = %self.peer, "agent forwarding refused (not for this key)");
+            session.channel_failure(channel)?;
+        } else {
             debug!(peer = %self.peer, "agent forwarding accepted");
             self.agent = true;
             session.channel_success(channel)?;
-        } else {
-            debug!(peer = %self.peer, "agent forwarding refused (switched off)");
-            session.channel_failure(channel)?;
         }
         Ok(true)
     }
@@ -350,50 +359,6 @@ async fn relay_on(
         shared.idle.notify_waiters();
     }
     code
-}
-
-/// The `authorized_keys` file, re-read whenever it changes.
-struct Keys {
-    path: PathBuf,
-    state: Mutex<(Option<SystemTime>, Vec<PublicKey>)>,
-}
-
-impl Keys {
-    fn new(path: &Path) -> Result<Keys> {
-        let keys = Keys {
-            path: path.to_path_buf(),
-            state: Mutex::new((None, Vec::new())),
-        };
-        keys.reload()?;
-        Ok(keys)
-    }
-
-    fn reload(&self) -> Result<()> {
-        let modified = std::fs::metadata(&self.path)
-            .and_then(|m| m.modified())
-            .map_err(|e| Error::Config(format!("authorized_keys {}: {e}", self.path.display())))?;
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.0 == Some(modified) {
-            return Ok(());
-        }
-        let entries = AuthorizedKeys::read_file(&self.path)
-            .map_err(|e| Error::Config(format!("authorized_keys {}: {e}", self.path.display())))?;
-        let keys: Vec<PublicKey> = entries
-            .into_iter()
-            .map(|e| e.public_key().clone())
-            .collect();
-        info!(keys = keys.len(), path = %self.path.display(), "authorized_keys read");
-        *state = (Some(modified), keys);
-        Ok(())
-    }
-
-    fn allows(&self, key: &PublicKey) -> bool {
-        if let Err(e) = self.reload() {
-            warn!("{e}");
-        }
-        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.1.iter().any(|k| k.key_data() == key.key_data())
-    }
 }
 
 /// The host key from `path`, or a new ed25519 key written there (mode
@@ -645,6 +610,43 @@ mod tests {
         }
         assert!(refused, "a shell command must be refused");
         disconnect(&handle).await;
+        f.stop().await;
+    }
+
+    /// `from=` in authorized_keys holds for the relay's own server: the
+    /// key is refused from anywhere else, and the file is read anew for
+    /// every login.
+    #[tokio::test]
+    async fn a_key_is_only_good_from_where_the_file_says() {
+        let f = Fixture::start(1).await;
+        let public = PrivateKey::read_openssh_file(f.dir.path().join("client_key"))
+            .unwrap()
+            .public_key()
+            .to_openssh()
+            .unwrap();
+        let out = f.dir.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let header = Header::stream("x.bin", 1, vec![format!("{}/", out.display())]);
+        let via = f.via("client_key");
+        let cancel = CancellationToken::new();
+        std::fs::write(
+            f.dir.path().join("authorized_keys"),
+            format!("from=\"10.0.0.0/8\" {public}\n"),
+        )
+        .unwrap();
+        let err = send(session(&via, &header, vec![1u8], &cancel), |_| {})
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Auth(_)), "{err}");
+        std::fs::write(
+            f.dir.path().join("authorized_keys"),
+            format!("from=\"10.0.0.0/8,127.0.0.1\" {public}\n"),
+        )
+        .unwrap();
+        let outcome = send(session(&via, &header, vec![1u8], &cancel), |_| {})
+            .await
+            .unwrap();
+        assert_eq!(outcome.exit, 0, "{outcome:?}");
         f.stop().await;
     }
 

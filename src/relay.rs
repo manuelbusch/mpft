@@ -29,6 +29,7 @@
 //! finishing, the memory cache with retries, timeouts — applies unchanged.
 
 pub mod agent;
+mod authorized_keys;
 pub mod broker;
 pub mod client;
 pub mod endpoint;
