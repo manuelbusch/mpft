@@ -697,6 +697,43 @@ mod tests {
         f.stop().await;
     }
 
+    /// A body that has more or fewer bytes than the header says — a file
+    /// that changed while it was sent — is an error of this side, and the
+    /// relay finishes no target with it.
+    #[tokio::test]
+    async fn a_body_of_another_size_than_announced_is_not_delivered() {
+        let f = Fixture::start(1).await;
+        let out = f.dir.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let via = f.via("client_key");
+        let cancel = CancellationToken::new();
+        for (announced, actual, what) in [
+            (100_000u64, 100_001usize, "grew"),
+            (100_000, 150_000, "grew"),
+            (100_000, 99_999, "ended after 99999 of 100000"),
+        ] {
+            let header = Header::stream("x.bin", announced, vec![format!("{}/", out.display())]);
+            let s = session(&via, &header, vec![3u8; actual], &cancel);
+            let err = tokio::time::timeout(Duration::from_secs(20), send(s, |_| {}))
+                .await
+                .expect("the session ends")
+                .unwrap_err();
+            assert!(
+                err.to_string().contains(what),
+                "{announced}/{actual}: {err}"
+            );
+            let started = std::time::Instant::now();
+            while std::fs::read_dir(&out).unwrap().next().is_some() {
+                assert!(
+                    started.elapsed() < Duration::from_secs(10),
+                    "{announced}/{actual}: delivered or left behind"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+        f.stop().await;
+    }
+
     #[tokio::test]
     async fn a_refused_header_comes_back_as_the_relays_error() {
         let f = Fixture::start(1).await;

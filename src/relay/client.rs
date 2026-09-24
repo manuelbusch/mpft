@@ -139,10 +139,11 @@ pub async fn send(session: Session<'_>, mut on_line: impl FnMut(&Value)) -> Resu
 
         // The feeder: the body in frames, as the credit allows.
         let credit = Arc::new(Credit::new(protocol::INITIAL_CREDIT));
+        let size = header.size.unwrap_or(0);
         let mut feeding = body.map(|body| {
             let credit = Arc::clone(&credit);
             let data_tx = data_tx.clone();
-            tokio::spawn(feed(body, credit, data_tx))
+            tokio::spawn(feed(body, size, credit, data_tx))
         });
         drop(data_tx);
 
@@ -157,7 +158,7 @@ pub async fn send(session: Session<'_>, mut on_line: impl FnMut(&Value)) -> Resu
                     let _ = channel.close().await;
                     return Err(Error::Cancelled);
                 }
-                // A body that cannot be read ends the session:
+                // A body that cannot be read to its size ends the session:
                 // the relay then fails its targets, instead of waiting for
                 // the rest until its timeout.
                 fed = async {
@@ -259,17 +260,41 @@ pub async fn send(session: Session<'_>, mut on_line: impl FnMut(&Value)) -> Resu
     result
 }
 
-/// Cut `body` into data frames as the credit allows, until it ends.
+/// Cut `body` into data frames as the credit allows: exactly `size` bytes.
+/// A body that ends before that, or that has more — a file that changed
+/// while it was sent — is an error, and the frame that would complete the
+/// payload is then not sent, so the relay finishes no target with it.
 async fn feed(
     mut body: ByteStream,
+    size: u64,
     credit: Arc<Credit>,
     data_tx: mpsc::Sender<Vec<u8>>,
 ) -> std::io::Result<()> {
+    let grown = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("the source grew while it was sent: more than the {size} bytes it had"),
+        )
+    };
     let mut buf = vec![0u8; protocol::CHUNK];
-    loop {
-        let n = body.read(&mut buf).await?;
+    let mut sent = 0u64;
+    // An empty payload needs nothing from here, and the relay may have
+    // finished with it already; a growth is still an error of this side.
+    if size == 0 && body.read(&mut buf[..1]).await? > 0 {
+        return Err(grown());
+    }
+    while sent < size {
+        let want = usize::try_from(size - sent).map_or(buf.len(), |left| left.min(buf.len()));
+        let n = body.read(&mut buf[..want]).await?;
         if n == 0 {
-            break;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("the source ended after {sent} of {size} bytes"),
+            ));
+        }
+        sent += n as u64;
+        if sent == size && body.read(&mut [0u8; 1]).await? > 0 {
+            return Err(grown());
         }
         credit.take(n as u64).await;
         if data_tx

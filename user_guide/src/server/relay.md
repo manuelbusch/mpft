@@ -160,7 +160,9 @@ session still has to stay open: it is what carries the progress, the questions
 and the report.) If the connection drops, the relay's source ends early or is
 cancelled, every target fails and partial files are removed (`--no-atomic`
 leaves them). Nothing resumes, because nothing is kept on the
-relay. The slowest target sets the pace, as in any [fan-out](../guide/fan-out.md#slow-targets-stalled-targets);
+relay. The same happens when this side cannot read the file to the end, or
+when the file grows or shrinks while it is sent: the job fails with that
+error, and the relay finishes no target with what it got. The slowest target sets the pace, as in any [fan-out](../guide/fan-out.md#slow-targets-stalled-targets);
 `--timeout` drops one that stops taking data, and the others finish.
 
 ### Making it the rule
