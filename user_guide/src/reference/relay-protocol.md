@@ -65,7 +65,8 @@ frames, no questions, no `src` and no chained targets.
 
 ## Lines from the relay
 
-The relay writes JSON lines to its standard output:
+The relay writes JSON lines to its standard output, each at most 1 MiB; `cp
+--via` ends the session on a longer one:
 
 ```
 {"progress": {"read": 12345, "total": 40000}}   four times a second while bytes move

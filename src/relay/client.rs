@@ -24,6 +24,12 @@ use crate::broker::AgentSource;
 use crate::protocols::ssh::{SshConfig, disconnect, ssh_err};
 use crate::{ByteStream, Error, Location, Result};
 
+/// The longest line the relay may write; a report of many targets is far
+/// shorter.
+const MAX_LINE: usize = 1 << 20;
+/// How much of the relay's stderr is kept: the end of it.
+const MAX_STDERR: usize = 64 << 10;
+
 /// What the relay said at the end.
 #[derive(Debug, Default)]
 pub struct Outcome {
@@ -33,7 +39,8 @@ pub struct Outcome {
     pub report: Option<Value>,
     /// The `error` line, when the relay refused or could not read.
     pub error: Option<Value>,
-    /// Whatever the relay wrote to stderr (its log, when it was asked for one).
+    /// What the relay wrote to stderr (its log, when it was asked for
+    /// one): the last 64 KiB of it.
     pub stderr: String,
 }
 
@@ -224,9 +231,16 @@ pub async fn send(session: Session<'_>, mut on_line: impl FnMut(&Value)) -> Resu
                             Err(e) => debug!("relay wrote a line that is not JSON: {e}"),
                         }
                     }
+                    if pending.len() > MAX_LINE {
+                        writing.abort();
+                        let _ = channel.close().await;
+                        return Err(Error::Remote(format!(
+                            "the relay wrote a line longer than {MAX_LINE} bytes"
+                        )));
+                    }
                 }
                 russh::ChannelMsg::ExtendedData { data, .. } => {
-                    outcome.stderr.push_str(&String::from_utf8_lossy(&data));
+                    keep_tail(&mut outcome.stderr, &String::from_utf8_lossy(&data));
                 }
                 russh::ChannelMsg::ExitStatus { exit_status } => exit = Some(exit_status),
                 russh::ChannelMsg::Eof | russh::ChannelMsg::Close if exit.is_some() => break,
@@ -258,6 +272,19 @@ pub async fn send(session: Session<'_>, mut on_line: impl FnMut(&Value)) -> Resu
     .await;
     disconnect(&handle).await;
     result
+}
+
+/// Append `more` to `text` and keep no more than [`MAX_STDERR`] bytes of
+/// its end.
+fn keep_tail(text: &mut String, more: &str) {
+    text.push_str(more);
+    if text.len() > MAX_STDERR {
+        let mut cut = text.len() - MAX_STDERR;
+        while !text.is_char_boundary(cut) {
+            cut += 1;
+        }
+        text.drain(..cut);
+    }
 }
 
 /// Cut `body` into data frames as the credit allows: exactly `size` bytes.
@@ -307,4 +334,21 @@ async fn feed(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_end_of_stderr_is_kept() {
+        let mut text = String::new();
+        for _ in 0..100 {
+            keep_tail(&mut text, &"é".repeat(1000));
+        }
+        keep_tail(&mut text, "the end");
+        assert!(text.len() <= MAX_STDERR);
+        assert!(text.len() > MAX_STDERR - 4);
+        assert!(text.ends_with("the end"));
+    }
 }
