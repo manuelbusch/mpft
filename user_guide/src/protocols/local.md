@@ -16,8 +16,8 @@ and is only needed when a path could be mistaken for something else.
 
 Relative paths are resolved against the working directory, absolute ones are
 taken as they are. The [trailing
-slash](../getting-started/addressing.md#the-trailing-slash-decides-where-a-file-lands)
-decides whether a target is a directory or a file name, as elsewhere.
+slash](../getting-started/addressing.md#where-a-file-lands),
+or a directory that already exists, makes a target a directory, as elsewhere.
 
 A `~` in a local path is expanded by the shell, so write it unquoted. Inside a
 URL option (`?key=~/.ssh/id_ed25519`) it is `mpt` that expands it; see

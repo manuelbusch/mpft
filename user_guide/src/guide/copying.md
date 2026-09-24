@@ -16,9 +16,9 @@ to spare can still move a file that would not fit on it.
 
 ## Where the file lands
 
-The [trailing slash](../getting-started/addressing.md#the-trailing-slash-decides-where-a-file-lands)
-decides: `backup/` puts the file at `backup/report.pdf`,
-`backup/2026-09-10.pdf` renames it on the way.
+The [trailing slash](../getting-started/addressing.md#where-a-file-lands)
+decides, or a directory that already exists: `backup/` puts the file at
+`backup/report.pdf`, `backup/2026-09-10.pdf` renames it on the way.
 
 A **local** target creates the directories it needs. A **remote** one does not:
 

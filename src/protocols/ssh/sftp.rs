@@ -186,6 +186,7 @@ impl Sender for SftpEndpoint {
             && let Ok(md) = sftp.metadata(target.clone()).await
             && md.is_dir()
         {
+            let name = crate::location::safe_name(name)?;
             target = format!("{}/{}", target.trim_end_matches('/'), name);
         }
         debug!(%target, "sftp upload");
@@ -203,6 +204,18 @@ impl Sender for SftpEndpoint {
         let _ = sftp.close().await;
         super::disconnect(&handle).await;
         Ok(())
+    }
+
+    async fn is_dir(&self) -> Result<bool> {
+        let (handle, sftp) = self.session().await?;
+        let md = sftp.metadata(self.remote_path()).await.map_err(sftp_err);
+        let _ = sftp.close().await;
+        super::disconnect(&handle).await;
+        match md {
+            Ok(md) => Ok(md.is_dir()),
+            Err(e) if e.is_not_found() => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     fn supports_rename(&self) -> bool {

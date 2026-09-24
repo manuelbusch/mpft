@@ -89,7 +89,7 @@ The path of the reference is appended to the profile's own path:
 | `mpt://prod/incoming/` | `…/data/incoming/` |
 | `mpt://prod/incoming/x.pdf` | `…/data/incoming/x.pdf` |
 
-The [trailing-slash rule](../getting-started/addressing.md#the-trailing-slash-decides-where-a-file-lands)
+The [trailing-slash rule](../getting-started/addressing.md#where-a-file-lands)
 applies to the result, as always.
 
 A reference is read like any other URL: its path is percent-decoded

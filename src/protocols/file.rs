@@ -104,6 +104,14 @@ impl Sender for FileEndpoint {
         Ok(())
     }
 
+    async fn is_dir(&self) -> Result<bool> {
+        match fs::metadata(self.path()).await {
+            Ok(md) => Ok(md.is_dir()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     fn supports_rename(&self) -> bool {
         true
     }

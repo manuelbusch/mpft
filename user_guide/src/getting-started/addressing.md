@@ -21,23 +21,32 @@ mailto:boss@example.com?subject=Report
 The last one is a URL too, in the way that matters: a path without a scheme is
 a local file. You never have to write `file://` unless you want to.
 
-## The trailing slash decides where a file lands
+## Where a file lands
 
 A path that ends in `/` is a **directory**, and the source's file name is
-appended to it. A path that does not is the **file name itself**.
+appended to it. A path that does not is the **file name itself**, unless it
+names a directory that already exists: then the file goes into it, as with
+`cp` and `scp`.
 
 | Target | Source `report.pdf` ends up as |
 |---|---|
 | `backup/` | `backup/report.pdf` |
+| `backup`, an existing directory | `backup/report.pdf` |
 | `backup/2026-09-10.pdf` | `backup/2026-09-10.pdf` |
 | `sftp://srv/incoming/` | `/incoming/report.pdf` |
+| `sftp://srv/incoming`, an existing directory | `/incoming/report.pdf` |
 | `sftp://srv/incoming/final.pdf` | `/incoming/final.pdf` |
 
-It works the same for every protocol, including the ones with no real
+The slash works the same for every protocol, including the ones with no real
 directories: an `s3://bucket/reports/` target appends the file name to the key
-prefix.
+prefix. The existing directory counts where directories are real: local paths,
+`sftp://`, `scp://`, `ftp://`, `ftps://`, `webdav://` and `webdavs://`, each
+of which asks the server first. On `s3://` and `http(s)://` only the slash
+decides, as with `aws s3 cp` and `curl`: `s3://bucket/reports` is the key
+`reports`.
 
-A missing slash where you meant one is the most common early mistake, and it is
+A missing slash where you meant one is still the most common early mistake
+where the directory does not exist yet, or on S3 and HTTP, and there it is
 silent: you get a file named after the directory you expected. When in doubt,
 add the slash.
 

@@ -24,16 +24,16 @@ machine-readable report from stdout while a person watches this on the
 terminal.
 
 The trailing slash on `backup/` says *directory*, so the copy lands at
-`backup/report.pdf`. Without it the target is the file name itself:
+`backup/report.pdf`. Without it the target is the file name itself, unless a
+directory of that name exists already:
 
 ```
 $ mpt cp report.pdf backup/2026-09-10.pdf
 report.pdf -> backup/2026-09-10.pdf: 40000 bytes in 8.93ms
 ```
 
-The rule holds for every protocol; [Thinking in
-URLs](addressing.md#the-trailing-slash-decides-where-a-file-lands) states it in
-full.
+[Thinking in URLs](addressing.md#where-a-file-lands) states the rule in
+full, and where it differs between protocols.
 
 ## 2. An upload that is refused
 

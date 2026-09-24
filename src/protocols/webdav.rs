@@ -186,6 +186,20 @@ impl Sender for WebDavEndpoint {
             .map_err(dav_err)
     }
 
+    async fn is_dir(&self) -> Result<bool> {
+        let entities = self
+            .client()
+            .await?
+            .list(&self.loc.encoded_path(), Depth::Number(0))
+            .await
+            .map_err(dav_err);
+        match entities {
+            Ok(e) => Ok(matches!(e.first(), Some(ListEntity::Folder(_)))),
+            Err(e) if e.is_not_found() => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     fn supports_rename(&self) -> bool {
         true
     }

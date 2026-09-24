@@ -453,6 +453,20 @@ impl Sender for FtpEndpoint {
         Ok(())
     }
 
+    /// Whether CWD into the path succeeds. A permanent refusal means it is
+    /// no directory, or none this login may enter, which a file cannot be
+    /// written into either.
+    async fn is_dir(&self) -> Result<bool> {
+        let mut ftp = self.connect().await?;
+        let cwd = self.ctl("CWD", ftp.cwd(self.remote_path())).await;
+        let _ = tokio::time::timeout(self.timeout, ftp.quit()).await;
+        match cwd {
+            Ok(()) => Ok(true),
+            Err(e) if refused_for_good(&e) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     fn supports_rename(&self) -> bool {
         true
     }

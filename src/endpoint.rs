@@ -123,6 +123,15 @@ pub trait Sender: Send + Sync {
         }
     }
 
+    /// Whether this endpoint's location names a directory that exists. The
+    /// copy then treats it like one with a trailing slash, as `cp` and `scp`
+    /// do: the file goes into it under its own name. A location that is not
+    /// there is not a directory. Default: `false`, which is right where only
+    /// the slash decides (S3, HTTP, mail).
+    async fn is_dir(&self) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Whether a checksum file can be put next to the file. Not for mail,
     /// which attaches it instead, and not for a relay hop, which writes
     /// its own on the far side.

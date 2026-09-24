@@ -67,6 +67,12 @@ impl ScpEndpoint {
     /// Run a command on the server and turn a non-zero exit status into an
     /// error, with whatever the command wrote as the message.
     async fn run(&self, command: &str) -> Result<()> {
+        let (ended, output) = self.exec_status(command).await?;
+        judge(command, ended, &output)
+    }
+
+    /// Run a command on the server and say how it ended, with what it wrote.
+    async fn exec_status(&self, command: &str) -> Result<(Ended, Vec<u8>)> {
         let handle = self.cfg.connect().await?;
         let mut channel = handle.channel_open_session().await.map_err(ssh_err)?;
         debug!(%command, "ssh exec");
@@ -100,7 +106,7 @@ impl ScpEndpoint {
                 self.cfg.timeout
             )));
         }
-        judge(command, ended, &output)
+        Ok((ended, output))
     }
 }
 
@@ -471,6 +477,22 @@ impl Sender for ScpEndpoint {
         stream.shutdown().await?;
         super::disconnect(&handle).await;
         Ok(())
+    }
+
+    /// By `test -d` on the server. The two-argument form of `test` takes
+    /// its second argument as the operand, whatever it starts with.
+    async fn is_dir(&self) -> Result<bool> {
+        let path = self.remote_path();
+        if path.is_empty() {
+            return Ok(true);
+        }
+        let command = format!("test -d {}", shell_quote(&path));
+        let (ended, output) = self.exec_status(&command).await?;
+        match ended {
+            Ended::Status(0) => Ok(true),
+            Ended::Status(1) => Ok(false),
+            other => judge(&command, other, &output).map(|()| false),
+        }
     }
 
     /// SCP itself cannot rename, but the SSH session it runs on can.

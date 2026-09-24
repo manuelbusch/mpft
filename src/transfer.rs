@@ -305,10 +305,9 @@ pub async fn copy_many(
         ));
     }
     let receiver = src.receiver()?;
-    let senders = dsts
-        .iter()
-        .map(|d| d.sender())
-        .collect::<Result<Vec<_>>>()?;
+    for d in dsts {
+        d.sender()?;
+    }
     if opts.delete_source {
         let can = src.as_sender().is_some_and(|s| s.supports_remove());
         if !can || src.location().filename().is_none() {
@@ -331,6 +330,21 @@ pub async fn copy_many(
     if let Some(name) = src.location().filename() {
         meta.set_filename(name)?;
     }
+    // A target that names a directory that exists is one, slash or not, as
+    // with `cp` and `scp`. It is opened again as a directory target, so the
+    // part file, the checksum file and the skip check all find the file in
+    // it rather than next to it.
+    let reopened = reopen_directories(dsts, &meta).await;
+    let dsts: Vec<&dyn Endpoint> = dsts
+        .iter()
+        .zip(&reopened)
+        .map(|(d, r)| r.as_deref().unwrap_or(*d))
+        .collect();
+    let dsts = &dsts[..];
+    let senders = dsts
+        .iter()
+        .map(|d| d.sender())
+        .collect::<Result<Vec<_>>>()?;
     // Where it goes is debug: an operator's log at info names sizes and
     // outcomes, not hosts and paths.
     info!(targets = dsts.len(), size = ?size, cache = ?opts.cache, hash = ?opts.hash, check = opts.check, "copy");
@@ -908,6 +922,40 @@ async fn finalize(job: &Job<'_>, result: Result<()>) -> Result<()> {
     }
 }
 
+/// Each target whose location names a directory that exists, without the
+/// trailing slash that says so, opened again as a directory target; `None`
+/// for the others. A target that cannot be asked stays as it is, and sending
+/// to it says what is wrong, for that target alone.
+async fn reopen_directories(
+    dsts: &[&dyn Endpoint],
+    meta: &SendMeta,
+) -> Vec<Option<Box<dyn Endpoint>>> {
+    futures::future::join_all(dsts.iter().map(|d| reopen_directory(*d, meta))).await
+}
+
+async fn reopen_directory(dst: &dyn Endpoint, meta: &SendMeta) -> Option<Box<dyn Endpoint>> {
+    let loc = dst.location();
+    if meta.filename.is_none() || loc.is_dir_target() || loc.scheme().is_mail() {
+        return None;
+    }
+    match dst.sender().ok()?.is_dir().await {
+        Ok(true) => {}
+        Ok(false) => return None,
+        Err(e) => {
+            debug!(target = %loc, "cannot tell whether the target is a directory: {e}");
+            return None;
+        }
+    }
+    debug!(target = %loc, "an existing directory: the file goes into it");
+    match loc.join("/").and_then(crate::protocols::open) {
+        Ok(ep) => Some(ep),
+        Err(e) => {
+            debug!(target = %loc, "cannot open it as a directory: {e}");
+            None
+        }
+    }
+}
+
 /// Effective file name on the target (directory targets take the source name).
 fn target_filename(dst: &dyn Endpoint, meta: &SendMeta) -> String {
     if dst.location().is_dir_target() {
@@ -1141,6 +1189,48 @@ mod tests {
         assert_eq!(report.targets[0].bytes, data.len() as u64);
         assert_eq!(std::fs::read(dir.path().join("a/src.bin")).unwrap(), data);
         assert_eq!(std::fs::read(dir.path().join("b/src.bin")).unwrap(), data);
+    }
+
+    /// `cp a.txt dir` with `dir` a directory puts the file into it, the
+    /// part file and the checksum file included, slash or not.
+    #[tokio::test]
+    async fn an_existing_directory_is_a_directory_target_without_the_slash() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("a.txt");
+        std::fs::write(&src_path, b"hello").unwrap();
+        std::fs::create_dir(dir.path().join("out")).unwrap();
+        let src = crate::open(src_path.to_str().unwrap()).unwrap();
+        let dst = crate::open(dir.path().join("out").to_str().unwrap()).unwrap();
+        let opts = CopyOptions {
+            hash: Some(HashAlgo::Sha256),
+            ..Default::default()
+        };
+        assert!(opts.atomic);
+        let report = copy_many(src.as_ref(), &[dst.as_ref()], &opts)
+            .await
+            .unwrap();
+        assert!(report.all_ok(), "{:?}", report.targets[0].result);
+        assert_eq!(
+            std::fs::read(dir.path().join("out/a.txt")).unwrap(),
+            b"hello"
+        );
+        let mut names: Vec<_> = std::fs::read_dir(dir.path().join("out"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["a.txt", "a.txt.sha256"]);
+        assert!(!dir.path().join("out.mpt-part").exists());
+
+        // A path that is not there is still the file name itself.
+        let dst = crate::open(dir.path().join("renamed.txt").to_str().unwrap()).unwrap();
+        copy_many(src.as_ref(), &[dst.as_ref()], &CopyOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(dir.path().join("renamed.txt")).unwrap(),
+            b"hello"
+        );
     }
 
     #[tokio::test]

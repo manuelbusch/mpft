@@ -354,6 +354,56 @@ async fn atomic_finish_leaves_no_part_files() {
     }
 }
 
+/// A target that names an existing directory without the trailing slash
+/// takes the file into it, as `cp` and `scp` do, atomic finish included.
+/// On S3 only the slash decides.
+#[tokio::test]
+async fn an_existing_directory_takes_the_file_without_a_slash() {
+    let remotes: Vec<(&str, String)> = [
+        "MPT_IT_SFTP",
+        "MPT_IT_SCP",
+        "MPT_IT_FTP",
+        "MPT_IT_WEBDAV",
+        "MPT_IT_S3",
+    ]
+    .iter()
+    .filter_map(|v| env(v).map(|u| (*v, u)))
+    .collect();
+    if remotes.is_empty() {
+        eprintln!("skipping: no MPT_IT_* directory URL set");
+        return;
+    }
+    mpt::init_crypto();
+    let tag = std::process::id();
+    let name = format!("into_{tag}.txt");
+    let dir = tempfile::tempdir().unwrap();
+    let src_path = dir.path().join(&name);
+    std::fs::write(&src_path, b"into").unwrap();
+    let src = mpt::open(src_path.to_str().unwrap()).unwrap();
+    for (var, base) in &remotes {
+        let sub = format!("/intodir_{tag}");
+        let slashed = dir_url(base, &format!("{sub}/"));
+        mpt::open(&slashed)
+            .unwrap()
+            .sender()
+            .unwrap()
+            .mkdir_all()
+            .await
+            .expect("mkdir");
+        let dst = mpt::open(&dir_url(base, &sub)).unwrap();
+        let report = mpt::copy_many(src.as_ref(), &[dst.as_ref()], &Default::default())
+            .await
+            .expect("copy_many");
+        assert!(report.all_ok(), "{var}: {:?}", report.targets);
+        if *var == "MPT_IT_S3" {
+            // The key is the name as given.
+            assert_eq!(fetch(base, &sub[1..]).await, b"into", "{var}");
+        } else {
+            assert_eq!(fetch(&slashed, &name).await, b"into", "{var}");
+        }
+    }
+}
+
 /// `--hash`: the sidecar next to every real target must contain the digest of
 /// the source, in `sha256sum` format; `--check` must then accept that sidecar.
 #[tokio::test]
