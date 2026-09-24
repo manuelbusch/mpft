@@ -477,6 +477,9 @@ async fn intake<R: AsyncRead + Unpin>(
         let mut received = 0u64;
         loop {
             match protocol::read_frame(&mut reader).await {
+                // An empty data frame carries nothing; handed on, it would
+                // read as the end of the payload.
+                Ok(Some(Frame::Data(bytes))) if bytes.is_empty() => {}
                 Ok(Some(Frame::Data(bytes))) => {
                     received += bytes.len() as u64;
                     if received > granted.load(Ordering::SeqCst) {
@@ -1251,6 +1254,20 @@ mod tests {
             .to_string();
         assert!(err.contains("60 of 100"), "{err}");
         assert!(!dir.path().join("x.bin").exists());
+    }
+
+    /// An empty data frame is no end of the payload.
+    #[tokio::test]
+    async fn an_empty_data_frame_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let header =
+            json!({ "name": "x.bin", "size": 6, "dst": [format!("{}/", dir.path().display())] });
+        let mut payload = protocol::frame(protocol::DATA, b"abc");
+        payload.extend(protocol::frame(protocol::DATA, b""));
+        payload.extend(protocol::frame(protocol::DATA, b"def"));
+        let (code, lines) = relay_run(&relay(0), &header.to_string(), &payload).await;
+        assert_eq!(code, 0, "{lines:?}");
+        assert_eq!(std::fs::read(dir.path().join("x.bin")).unwrap(), b"abcdef");
     }
 
     #[tokio::test]

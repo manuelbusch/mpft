@@ -44,6 +44,9 @@ In version 2 the payload follows the header as frames:
 | 4 | length, big-endian `u32` |
 | *length* | the bytes, at most 1 MiB for payload and 64 KiB for control |
 
+A payload frame of length 0 is allowed and carries nothing; the payload ends
+after `size` bytes, not at an empty frame.
+
 A control frame is a JSON object. The only one a relay acts on is the answer
 to a question of its own:
 

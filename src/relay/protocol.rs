@@ -128,7 +128,8 @@ impl AsyncRead for ChannelReader {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        if self.offset >= self.pending.len() {
+        // An empty chunk is skipped: 0 bytes read would mean the end.
+        while self.offset >= self.pending.len() {
             match self.rx.poll_recv(cx) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(None) => return Poll::Ready(Ok(())),
@@ -227,6 +228,7 @@ mod tests {
         let (ctx, mut crx) = mpsc::unbounded_channel();
         let mut reader = ChannelReader::new(rx, ctx);
         tx.send(vec![1; 10]).unwrap();
+        tx.send(Vec::new()).unwrap();
         tx.send(vec![2; 5]).unwrap();
         drop(tx);
         let mut out = Vec::new();
