@@ -20,6 +20,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tracing::{debug, warn};
 
 use super::{ClientHandler, SshConfig, shell_quote, ssh_err};
+use crate::protocols::strip_home;
 use crate::{
     ByteStream, Endpoint, Entry, Error, Location, Receiver, Result, SendMeta, Sender, stream,
 };
@@ -48,20 +49,14 @@ impl ScpEndpoint {
         ))
     }
 
+    /// Remote path; a leading `/~/` means "relative to the login directory".
     fn remote_path(&self) -> String {
-        let p = self.loc.path();
-        p.strip_prefix("/~/")
-            .map(String::from)
-            .unwrap_or_else(|| p.to_string())
+        strip_home(self.loc.path())
     }
 
     /// Remote path of a file called `name` next to this location.
     fn sibling_path(&self, name: &str) -> Result<String> {
-        let p = self.loc.sibling(name)?;
-        Ok(p.path()
-            .strip_prefix("/~/")
-            .map(String::from)
-            .unwrap_or_else(|| p.path().to_string()))
+        Ok(strip_home(self.loc.sibling(name)?.path()))
     }
 
     /// Run a command on the server and turn a non-zero exit status into an
@@ -108,6 +103,26 @@ impl ScpEndpoint {
         }
         Ok((ended, output))
     }
+}
+
+/// The command that sends `path` to us. `--` ends the options, so a
+/// home-relative name that starts with `-` is still a name.
+fn source_command(path: &str) -> String {
+    format!("scp -f -- {}", shell_quote(path))
+}
+
+/// The command that receives a file at `path`, or into it as a directory.
+/// The login directory itself, an empty path after `/~/`, is `.`.
+fn sink_command(path: &str, dir: bool) -> String {
+    if !dir {
+        return format!("scp -t -- {}", shell_quote(path));
+    }
+    let dir = match path.trim_end_matches('/') {
+        "" if path.is_empty() => ".",
+        "" => "/",
+        d => d,
+    };
+    format!("scp -t -d -- {}", shell_quote(dir))
 }
 
 /// How a remote command ended, as far as the server said.
@@ -233,9 +248,7 @@ async fn read_line<S: AsyncRead + Unpin>(s: &mut S) -> Result<String> {
 #[async_trait]
 impl Receiver for ScpEndpoint {
     async fn receive(&self) -> Result<ByteStream> {
-        let (handle, mut stream) = self
-            .exec(&format!("scp -f {}", shell_quote(&self.remote_path())))
-            .await?;
+        let (handle, mut stream) = self.exec(&source_command(&self.remote_path())).await?;
         let size = read_header(&mut stream)
             .await?
             .ok_or_else(|| Error::Remote("scp: remote path is a directory".into()))?;
@@ -250,9 +263,7 @@ impl Receiver for ScpEndpoint {
     /// From the header of an `scp -f` that is then abandoned: a login of
     /// its own, as SFTP's stat costs one.
     async fn size(&self) -> Result<Option<u64>> {
-        let (handle, mut stream) = self
-            .exec(&format!("scp -f {}", shell_quote(&self.remote_path())))
-            .await?;
+        let (handle, mut stream) = self.exec(&source_command(&self.remote_path())).await?;
         let header = read_header(&mut stream).await;
         super::disconnect(&handle).await;
         match header {
@@ -453,11 +464,7 @@ impl Sender for ScpEndpoint {
         };
 
         let target = self.remote_path();
-        let cmd = if self.loc.is_dir_target() {
-            format!("scp -t -d {}", shell_quote(target.trim_end_matches('/')))
-        } else {
-            format!("scp -t {}", shell_quote(&target))
-        };
+        let cmd = sink_command(&target, self.loc.is_dir_target());
         let (handle, mut stream) = self.exec(&cmd).await?;
 
         read_ack(&mut stream).await?;
@@ -504,7 +511,7 @@ impl Sender for ScpEndpoint {
         let from = self.sibling_path(from)?;
         let to = self.sibling_path(to)?;
         self.run(&format!(
-            "mv -f {} {}",
+            "mv -f -- {} {}",
             shell_quote(&from),
             shell_quote(&to)
         ))
@@ -517,7 +524,7 @@ impl Sender for ScpEndpoint {
 
     async fn remove(&self, name: &str) -> Result<()> {
         let path = self.sibling_path(name)?;
-        self.run(&format!("rm -f {}", shell_quote(&path))).await
+        self.run(&format!("rm -f -- {}", shell_quote(&path))).await
     }
 
     fn supports_mkdir(&self) -> bool {
@@ -525,16 +532,12 @@ impl Sender for ScpEndpoint {
     }
 
     async fn mkdir_all(&self) -> Result<()> {
-        let dir = self.loc.parent()?;
-        let path = dir
-            .path()
-            .strip_prefix("/~/")
-            .unwrap_or(dir.path())
-            .to_string();
+        let path = strip_home(self.loc.parent()?.path());
         if path.is_empty() {
             return Ok(());
         }
-        self.run(&format!("mkdir -p {}", shell_quote(&path))).await
+        self.run(&format!("mkdir -p -- {}", shell_quote(&path)))
+            .await
     }
 }
 
@@ -559,6 +562,16 @@ mod tests {
         let res = reader.read_to_end(&mut got).await.map(|_| got);
         drop(reader);
         (res, remote.await.unwrap())
+    }
+
+    #[test]
+    fn remote_commands_take_every_path_as_a_path() {
+        assert_eq!(source_command("-rf"), "scp -f -- '-rf'");
+        assert_eq!(sink_command("-x.txt", false), "scp -t -- '-x.txt'");
+        assert_eq!(sink_command("in/", true), "scp -t -d -- 'in'");
+        // `scp://h/~/` is the login directory, `scp://h/` the root.
+        assert_eq!(sink_command("", true), "scp -t -d -- '.'");
+        assert_eq!(sink_command("/", true), "scp -t -d -- '/'");
     }
 
     #[test]
