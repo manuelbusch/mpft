@@ -69,9 +69,9 @@ error: --check is not available with a relay: it needs what only this side has
 ```
 
 `--check`, `--sign` and `--resume` are those three. `--delete-source` is
-allowed in one case — when the relay reads the source itself and writes every
-target of the job; see [Letting the relay read the
-source](relay-topologies.md#letting-the-relay-read-the-source).
+allowed in one case — when the relay reads the source itself, writes every
+target of the job and was started to allow it; see [Deleting a source the
+relay read](relay-topologies.md#deleting-a-source-the-relay-read).
 
 ### Passwords: in the header, or asked for at every login
 

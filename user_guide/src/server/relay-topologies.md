@@ -30,18 +30,37 @@ The progress this side prints is the relay's, counted as it reads. Only a
 profile's own `via` makes a source travel this way; `[defaults] via` and
 `--via` decide where targets are written, never where a source is read.
 
-This is also what makes `--delete-source` possible over a relay. The relay
-read the source, so it knows when every target has the file:
+### Deleting a source the relay read
+
+This is also what makes `--delete-source` possible over a relay, which then
+moves a file rather than copying it. The relay read the source, so it knows
+when every target has the file. It deletes it only when it was started with
+`--allow-delete` (or `[relay] allow_delete = true`), and never when the source
+is a file on the relay host itself — a client decides which files a relay
+reads, not which of its own it removes. The source is on a third host then:
+
+```toml
+[profiles.inbox]
+url = "sftp://collect@ingest.example.com/outgoing/report.pdf"
+via = "mpt://relay"
+```
 
 ```
-$ mpt cp --delete-source mpt://incoming mpt://prod/
-[1/1] in/report.pdf -> sftp://deploy@srv.example.com/data/: 40000 bytes in 14.25ms
+$ mpt cp --delete-source mpt://inbox mpt://prod/
+[1/1] sftp://collect@ingest.example.com/outgoing/report.pdf -> sftp://deploy@srv.example.com/data/: 40000 bytes in 14.25ms
 [1/1] source deleted
+```
+
+Each of the other cases is refused before anything is read:
+
+```
+invalid option 'delete_source': this relay deletes no source; start it with --allow-delete (or [relay] allow_delete) if that is meant
+invalid option 'delete_source': in/report.pdf: a file on the relay host is never deleted by a relay
 ```
 
 Add a target the relay does not write, and the client is back in the path —
 then nobody can say when the source is safe to remove, and the flag is
-refused:
+refused on this side:
 
 ```
 [1/1] FAILED in/report.pdf: invalid option 'delete-source': with a relay, only when the source and every target are behind the relay that reads the source (a profile with `via`)

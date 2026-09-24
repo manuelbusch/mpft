@@ -244,6 +244,9 @@ pub struct Relay {
     pub max_size: u64,
     /// Which way the passwords may come.
     pub credentials: RelayCredentials,
+    /// A header may ask for the source to be deleted (`--allow-delete`).
+    /// Only a source the relay read itself, and never a local file.
+    pub allow_delete: bool,
     /// Stops the running copy: Ctrl-C on the relay.
     pub cancel: CancellationToken,
 }
@@ -609,11 +612,20 @@ async fn prepare(
             return Err(Error::invalid_option(name, "not over a relay"));
         }
     }
+    // Only a source the relay opened itself can be deleted by it, and only
+    // when the relay was started to allow that.
+    let delete_source = header.src.is_some() && o.delete_source == Some(true);
+    if delete_source && !relay.allow_delete {
+        return Err(Error::invalid_option(
+            "delete_source",
+            "this relay deletes no source; start it with --allow-delete \
+             (or [relay] allow_delete) if that is meant",
+        ));
+    }
     let mut copy = header.options.apply(&relay.copy, relay.cache_limit)?;
     copy.check = false;
     copy.verify = None;
-    // Only a source the relay opened itself can be deleted by it.
-    copy.delete_source = header.src.is_some() && o.delete_source == Some(true);
+    copy.delete_source = delete_source;
     copy.cancel = Some(cancel.clone());
     copy.progress = Some(Progress::new());
     let agent = match (header.agent, agent) {
@@ -673,6 +685,12 @@ async fn prepare(
         None => None,
         Some(url) => {
             let loc = (relay.locate)(url, &header.options)?;
+            if delete_source && loc.scheme() == crate::Scheme::File {
+                return Err(Error::invalid_option(
+                    "delete_source",
+                    format!("{loc}: a file on the relay host is never deleted by a relay"),
+                ));
+            }
             let loc = with_broker(loc, broker, Who::Src)?;
             let source = crate::protocols::open(with_agent(loc, &agent))?;
             if relay.max_size > 0
@@ -784,6 +802,7 @@ mod tests {
             locate: Arc::new(|url, _| crate::Location::parse(url)),
             max_size,
             credentials: RelayCredentials::Header,
+            allow_delete: false,
             cancel: CancellationToken::new(),
         }
     }
@@ -925,9 +944,9 @@ mod tests {
         assert_eq!(lines.last().unwrap()["report"]["ok"], true);
     }
 
-    /// A source named in the header is read by the relay, and deleted by
-    /// it when asked; nothing of the file comes over the pipe. The
-    /// client's input stays open until the relay is done.
+    /// A source named in the header is read by the relay; nothing of the
+    /// file comes over the pipe. The client's input stays open until the
+    /// relay is done.
     #[tokio::test]
     async fn a_source_the_relay_reads_itself() {
         let dir = tempfile::tempdir().unwrap();
@@ -937,41 +956,59 @@ mod tests {
         std::fs::write(&src, &payload).unwrap();
         let out = dir.path().join("out");
         std::fs::create_dir_all(&out).unwrap();
-        let header = json!({
-            "src": src.display().to_string(),
-            "dst": [format!("{}/", out.display())],
-            "options": { "delete_source": true, "hash": "sha256" }
-        });
-        let (mut client_in, server_in) = duplex(64 << 10);
-        let (server_out, mut client_out) = duplex(64 << 10);
-        let feed = tokio::spawn(async move {
-            let mut line = header.to_string();
-            line.push('\n');
-            client_in.write_all(line.as_bytes()).await.unwrap();
-            std::future::pending::<()>().await;
-        });
-        let read = tokio::spawn(async move {
-            let mut text = String::new();
-            client_out.read_to_string(&mut text).await.unwrap();
-            text
-        });
-        let code = run(&relay(0), server_in, server_out).await;
-        feed.abort();
-        let text = read.await.unwrap();
-        let lines: Vec<serde_json::Value> = text
-            .lines()
-            .map(|l| serde_json::from_str(l).unwrap())
-            .collect();
+        let session = |relay: Relay, options: serde_json::Value| {
+            let header = json!({
+                "src": src.display().to_string(),
+                "dst": [format!("{}/", out.display())],
+                "options": options
+            });
+            async move {
+                let (mut client_in, server_in) = duplex(64 << 10);
+                let (server_out, mut client_out) = duplex(64 << 10);
+                let feed = tokio::spawn(async move {
+                    let mut line = header.to_string();
+                    line.push('\n');
+                    client_in.write_all(line.as_bytes()).await.unwrap();
+                    std::future::pending::<()>().await;
+                });
+                let read = tokio::spawn(async move {
+                    let mut text = String::new();
+                    client_out.read_to_string(&mut text).await.unwrap();
+                    text
+                });
+                let code = run(&relay, server_in, server_out).await;
+                feed.abort();
+                let text = read.await.unwrap();
+                let lines: Vec<serde_json::Value> = text
+                    .lines()
+                    .map(|l| serde_json::from_str(l).unwrap())
+                    .collect();
+                (code, lines)
+            }
+        };
+        let (code, lines) = session(relay(0), json!({ "hash": "sha256" })).await;
         assert_eq!(code, 0, "{lines:?}");
         assert_eq!(std::fs::read(out.join("x.bin")).unwrap(), payload);
         assert!(out.join("x.bin.sha256").exists());
-        assert!(!src.exists(), "the relay deletes the source it read");
         let report = &lines.last().unwrap()["report"];
-        assert_eq!(report["source_removed"], true, "{report}");
         assert_eq!(report["bytes_read"], payload.len());
+        assert!(src.exists());
+
+        // Deleting it takes --allow-delete, and even then a file on the
+        // relay host stays.
+        let (code, lines) = session(relay(0), json!({ "delete_source": true })).await;
+        assert_eq!(code, 2, "{lines:?}");
+        let message = lines[0]["error"]["message"].as_str().unwrap();
+        assert!(message.contains("--allow-delete"), "{message}");
+        let mut allowing = relay(0);
+        allowing.allow_delete = true;
+        let (code, lines) = session(allowing, json!({ "delete_source": true })).await;
+        assert_eq!(code, 2, "{lines:?}");
+        let message = lines[0]["error"]["message"].as_str().unwrap();
+        assert!(message.contains("never deleted"), "{message}");
+        assert!(src.exists());
 
         // Too large for this relay: refused before anything is read.
-        std::fs::write(&src, &payload).unwrap();
         let header =
             json!({ "src": src.display().to_string(), "dst": [format!("{}/", out.display())] });
         let (mut client_in, server_in) = duplex(64 << 10);

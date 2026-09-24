@@ -39,6 +39,7 @@ restart.
 | `--grace <SECONDS>` | `grace` | `30` | how long a shutdown waits for running relays |
 | `--credentials <MODE>` | `credentials` | `header` | how clients may send the targets' passwords: `header`, `on-demand` or `any` |
 | `--no-agent-forwarding` | `agent_forwarding` | `true` | take the ssh-agent a client forwards; the flag refuses it |
+| `--allow-delete` | `allow_delete` | `false` | let a client have the source deleted that the relay read for it; see [Deleting a source the relay read](relay-topologies.md#deleting-a-source-the-relay-read) |
 | `--port-file <PATH>` | – | – | write the port actually bound, for `--listen 127.0.0.1:0` |
 
 The flags of the process apply to every relay it runs, as they do for the

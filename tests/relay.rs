@@ -593,8 +593,9 @@ fn a_profile_picks_its_relay_and_the_rest_is_copied_from_here() {
 
 /// A source whose profile names a relay is read by that relay: a path
 /// only the relay can see arrives at a target behind the same relay, and
-/// nothing of the file comes through here. --delete-source is the
-/// relay's to do then, and refused when any target is not its own.
+/// nothing of the file comes through here. --delete-source is refused
+/// when any target is not the relay's own, and by a relay that does not
+/// allow it.
 #[test]
 fn a_source_behind_the_relay_is_pulled_by_it() {
     let relay = Relay::start(&[]);
@@ -652,13 +653,79 @@ fn a_source_behind_the_relay_is_pulled_by_it() {
     );
     assert!(relay.path("in/x.bin").exists());
 
-    // Every target behind the relay: it reads, writes, and removes.
-    let (code, out, err) = run(&["--delete-source", "mpt://src", "mpt://a/again/"]);
+    // Every target behind the relay, but a relay that was not started
+    // with --allow-delete: refused before anything is read.
+    let (code, _, err) = run(&["--delete-source", "mpt://src", "mpt://a/again/"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("--allow-delete"), "{err}");
+    assert!(relay.path("in/x.bin").exists());
+    assert!(!relay.path("a/again/x.bin").exists());
+}
+
+/// A relay started with --allow-delete removes a source it read for the
+/// client — one on another host, never a file of its own.
+#[test]
+fn a_relay_deletes_a_pulled_source_only_when_allowed() {
+    let Some(ftp) = it_env("MPT_IT_FTP") else {
+        eprintln!("skipping: MPT_IT_FTP not set");
+        return;
+    };
+    let relay = Relay::start(&["--allow-delete"]);
+    let (base, query) = ftp.split_once('?').unwrap_or((&ftp, ""));
+    let name = format!("pulled_{}.bin", std::process::id());
+    let remote = format!("{}/{name}?{query}", base.trim_end_matches('/'));
+    let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 211) as u8).collect();
+    std::fs::write(relay.path(&name), &payload).unwrap();
+    let mpt = |config: Option<&Path>, args: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_mpt"));
+        command.env_remove("MPT_CONFIG");
+        if let Some(config) = config {
+            command.arg("--config").arg(config);
+        }
+        let out = command
+            .args(["--color", "never", "--json", "cp"])
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let (code, _, err) = mpt(None, &[relay.path(&name).to_str().unwrap(), &remote]);
     assert_eq!(code, 0, "{err}");
-    assert_eq!(std::fs::read(relay.path("a/again/x.bin")).unwrap(), payload);
+    std::fs::write(
+        relay.path("pull.toml"),
+        format!(
+            "[profiles.relay]\nurl = \"{}\"\n\
+             [profiles.src]\nurl = \"{remote}\"\nvia = \"mpt://relay\"\n\
+             [profiles.local]\nurl = \"{}\"\nvia = \"mpt://relay\"\n\
+             [profiles.a]\nurl = \"{}/a/\"\nvia = \"mpt://relay\"\n",
+            relay.via("client"),
+            relay.path(&name).display(),
+            relay.dir.path().display()
+        ),
+    )
+    .unwrap();
+    let config = relay.path("pull.toml");
+
+    // A file on the relay host stays, --allow-delete or not.
+    let (code, _, err) = mpt(
+        Some(&config),
+        &["--delete-source", "mpt://local", "mpt://a/"],
+    );
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("never deleted by a relay"), "{err}");
+    assert!(relay.path(&name).exists());
+
+    let (code, out, err) = mpt(Some(&config), &["--delete-source", "mpt://src", "mpt://a/"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(std::fs::read(relay.path("a").join(&name)).unwrap(), payload);
     let report: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
     assert_eq!(report["source_removed"], true, "{report}");
-    assert!(!relay.path("in/x.bin").exists());
+    let (code, _, _) = mpt(None, &[&remote, relay.path("back.bin").to_str().unwrap()]);
+    assert_ne!(code, 0, "the source is still on the server");
 }
 
 /// A chain of two relays: the one that reads the source writes its own

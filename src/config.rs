@@ -255,6 +255,8 @@ pub struct RelaySection {
     pub credentials: Option<String>,
     /// Take the agent a client forwards (default true).
     pub agent_forwarding: Option<bool>,
+    /// Let a session delete the source the relay read (default false).
+    pub allow_delete: Option<bool>,
 }
 
 /// Which URLs the server accepts in a job.
@@ -753,6 +755,7 @@ impl Config {
             max_size,
             credentials,
             agent_forwarding,
+            allow_delete,
         } = &self.relay;
         if host_key.is_some()
             || authorized_keys.is_some()
@@ -761,6 +764,7 @@ impl Config {
             || max_size.is_some()
             || credentials.is_some()
             || agent_forwarding.is_some()
+            || allow_delete.is_some()
         {
             out.push("relay");
         }

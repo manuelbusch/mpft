@@ -334,6 +334,7 @@ async fn relay_on(
                     locate: Arc::clone(&shared.relay.locate),
                     max_size: shared.relay.max_size,
                     credentials: shared.relay.credentials,
+                    allow_delete: shared.relay.allow_delete,
                     cancel: shared.abort.child_token(),
                 };
                 let code = super::run_with(&relay, reader, &mut writer, agent).await;
@@ -516,6 +517,7 @@ mod tests {
                 locate: Arc::new(|url, _| crate::Location::parse(url)),
                 max_size: 0,
                 credentials: super::super::RelayCredentials::Header,
+                allow_delete: false,
                 cancel: CancellationToken::new(),
             });
             let cancel = CancellationToken::new();

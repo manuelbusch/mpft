@@ -173,7 +173,7 @@ mpt -r cp /data/export/ sftp://srv/in/                  # error: unexpected argu
 | `--retries` without `--cache` | a stream cannot be replayed |
 | `--via` with `--no-via` | one decision about the relay |
 | `--via` with `--check`, `--sign` or `--resume` | those need what only the client has: the checksum file, the key, the source |
-| `--via` with `--delete-source` | unless the relay reads the source itself and writes every target of the job ([see the relay chapter](../server/relay-topologies.md#letting-the-relay-read-the-source)) |
+| `--via` with `--delete-source` | unless the relay reads the source itself, writes every target of the job and allows it ([see the relay chapter](../server/relay-topologies.md#deleting-a-source-the-relay-read)) |
 
 The first three and `--via` with `--no-via` are rejected by the parser (`the
 argument '--resume' cannot be used with '--no-atomic'`), the others by `mpt`

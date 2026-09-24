@@ -110,6 +110,7 @@ For a machine that runs `mpt` unattended, or for anyone else's jobs:
 | `[server] urls = "profiles"` (the default) and `profiles = […]` | the API reaches only the named profiles, and no request carries a password | [What a client can reach](../server/serve.md#what-a-client-can-reach) |
 | the server behind a reverse proxy with TLS | the token never crosses the network in the clear | [Securing the listener](../server/serve.md#securing-the-listener) |
 | `[server] allow_delete` left off | no job may delete its source | [What a job may set](../server/serve.md#what-a-job-may-set) |
+| `[relay] allow_delete` left off | no client may have a relay delete the source it read | [Deleting a source the relay read](../server/relay-topologies.md#deleting-a-source-the-relay-read) |
 
 A [`./mpt.toml`](../configuration/file.md#the-file-in-the-working-directory)
 in the working directory cannot loosen any of this: it contributes only

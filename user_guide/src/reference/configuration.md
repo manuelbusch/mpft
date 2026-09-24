@@ -157,6 +157,7 @@ Settings for [`mpt relay --listen`](../server/relay-host.md#on-the-relay-host)
 | `max_size` | size | `"0"` (no limit) | refuse larger uploads |
 | `credentials` | `"header"`, `"on-demand"`, `"any"` | `"header"` | which way a client may send the targets' passwords |
 | `agent_forwarding` | boolean | `true` | take the ssh-agent a client forwards |
+| `allow_delete` | boolean | `false` | let a client have the source deleted that the relay read for it; never a file on the relay host |
 
 ## `[profiles.<name>]`
 

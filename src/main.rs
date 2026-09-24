@@ -247,6 +247,10 @@ struct RelayArgs {
     /// targets then authenticate with this side's keys and passwords only
     #[arg(long)]
     no_agent_forwarding: bool,
+    /// Let a client have the source deleted that the relay read for it
+    /// (delete_source); never a file on this host. Off unless given
+    #[arg(long)]
+    allow_delete: bool,
     /// Write the port actually bound to this file (for --listen 127.0.0.1:0)
     #[arg(long, value_name = "PATH")]
     port_file: Option<PathBuf>,
@@ -1170,8 +1174,9 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
         }
         #[cfg(feature = "relay")]
         Cmd::Relay(args) => {
-            // What only this side could do is refused up front, so a
-            // header cannot switch it on either.
+            // The relay's own flags for what only the client can mean are
+            // refused: its source is the upload. A header's delete_source
+            // is judged per session, against --allow-delete.
             for (flag, set) in [
                 ("--check", opts.check),
                 ("--delete-source", opts.delete_source),
@@ -1205,6 +1210,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                         .map_err(|e| anyhow::anyhow!("[relay] credentials: {e}"))?,
                     (None, None) => mpt::relay::RelayCredentials::Header,
                 },
+                allow_delete: args.allow_delete || section.allow_delete.unwrap_or(false),
                 cancel: cancel.clone(),
             };
             match &args.listen {
@@ -2613,6 +2619,7 @@ fn show_config(cfg: &mpt::Config) {
         "relay".max_size = cfg.relay.max_size,
         "relay".credentials = cfg.relay.credentials,
         "relay".agent_forwarding = cfg.relay.agent_forwarding,
+        "relay".allow_delete = cfg.relay.allow_delete,
     );
     if !cfg.server.profiles.is_empty() {
         rows.push(("[server] profiles".into(), cfg.server.profiles.join(", ")));
