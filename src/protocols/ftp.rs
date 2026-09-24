@@ -12,6 +12,7 @@ use suppaftp::{FtpError, Status};
 use tokio::io::{AsyncRead, AsyncWriteExt};
 use tracing::{debug, warn};
 
+use crate::protocols::strip_home;
 use crate::{
     ByteStream, Endpoint, Entry, Error, Location, Receiver, Result, Scheme, SendMeta, Sender,
     stream,
@@ -178,8 +179,15 @@ impl FtpEndpoint {
         ))
     }
 
-    fn remote_path(&self) -> &str {
-        self.loc.path()
+    /// The path on the server: absolute, or relative to the login
+    /// directory after a leading `/~/`.
+    fn remote_path(&self) -> String {
+        strip_home(self.loc.path())
+    }
+
+    /// The server path of a file called `name` next to this location.
+    fn sibling_path(&self, name: &str) -> Result<String> {
+        Ok(strip_home(self.loc.sibling(name)?.path()))
     }
 }
 
@@ -367,12 +375,12 @@ impl Receiver for FtpEndpoint {
     async fn receive(&self) -> Result<ByteStream> {
         let mut ftp = self.connect().await?;
         let expected = self
-            .ctl("SIZE", ftp.size(self.remote_path()))
+            .ctl("SIZE", ftp.size(&self.remote_path()))
             .await
             .ok()
             .map(|s| s as u64);
         let stream = self
-            .ctl("RETR", ftp.retr_as_stream(self.remote_path()))
+            .ctl("RETR", ftp.retr_as_stream(&self.remote_path()))
             .await?;
         Ok(stream::boxed(FtpReader {
             stream: Some(stream::Idle::maybe(stream, self.idle)),
@@ -389,10 +397,11 @@ impl Receiver for FtpEndpoint {
     async fn list(&self) -> Result<Vec<Entry>> {
         let mut ftp = self.connect().await?;
         let path = self.remote_path();
-        let path_arg = if path.is_empty() || path == "/" {
+        // Nothing left of the path is the login directory itself.
+        let path_arg = if path.is_empty() {
             None
         } else {
-            Some(path)
+            Some(path.as_str())
         };
 
         let files: Vec<FtpFile> = match self.ctl("MLSD", ftp.mlsd(path_arg)).await {
@@ -435,7 +444,7 @@ impl Receiver for FtpEndpoint {
 
     async fn size(&self) -> Result<Option<u64>> {
         let mut ftp = self.connect().await?;
-        let size = self.ctl("SIZE", ftp.size(self.remote_path())).await;
+        let size = self.ctl("SIZE", ftp.size(&self.remote_path())).await;
         self.quit(ftp).await;
         match size {
             Ok(n) => Ok(Some(n as u64)),
@@ -456,7 +465,7 @@ impl Sender for FtpEndpoint {
 
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()> {
         let mut ftp = self.connect().await?;
-        let target = self.loc.target_path(meta.filename.as_deref())?;
+        let target = strip_home(&self.loc.target_path(meta.filename.as_deref())?);
         debug!(%target, "ftp upload");
         let up = self.ctl("STOR", ftp.put_with_stream(&target)).await?;
         let mut up = stream::Idle::maybe(up, self.idle);
@@ -493,7 +502,7 @@ impl Sender for FtpEndpoint {
     /// written into either.
     async fn is_dir(&self) -> Result<bool> {
         let mut ftp = self.connect().await?;
-        let cwd = self.ctl("CWD", ftp.cwd(self.remote_path())).await;
+        let cwd = self.ctl("CWD", ftp.cwd(&self.remote_path())).await;
         self.quit(ftp).await;
         match cwd {
             Ok(()) => Ok(true),
@@ -512,7 +521,7 @@ impl Sender for FtpEndpoint {
 
     async fn existing_size(&self, name: &str) -> Result<Option<u64>> {
         let mut ftp = self.connect().await?;
-        let path = self.loc.sibling(name)?.path().to_string();
+        let path = self.sibling_path(name)?;
         let size = self.ctl("SIZE", ftp.size(&path)).await;
         self.quit(ftp).await;
         match size {
@@ -525,7 +534,7 @@ impl Sender for FtpEndpoint {
 
     async fn append(&self, body: ByteStream, meta: &SendMeta, offset: u64) -> Result<()> {
         let mut ftp = self.connect().await?;
-        let target = self.loc.target_path(meta.filename.as_deref())?;
+        let target = strip_home(&self.loc.target_path(meta.filename.as_deref())?);
         debug!(%target, offset, "ftp resume (APPE)");
         let up = self.ctl("APPE", ftp.append_with_stream(&target)).await?;
         let mut up = stream::Idle::maybe(up, self.idle);
@@ -554,8 +563,8 @@ impl Sender for FtpEndpoint {
     }
 
     async fn rename(&self, from: &str, to: &str) -> Result<()> {
-        let from = self.loc.sibling(from)?.path().to_string();
-        let to = self.loc.sibling(to)?.path().to_string();
+        let from = self.sibling_path(from)?;
+        let to = self.sibling_path(to)?;
         let mut ftp = self.connect().await?;
         // RNTO fails on most servers when the target exists. The old file is
         // moved aside rather than deleted, so a failed rename loses nothing.
@@ -577,7 +586,7 @@ impl Sender for FtpEndpoint {
     }
 
     async fn remove(&self, name: &str) -> Result<()> {
-        let path = self.loc.sibling(name)?.path().to_string();
+        let path = self.sibling_path(name)?;
         let mut ftp = self.connect().await?;
         let res = self.ctl("DELE", ftp.rm(path.as_str())).await;
         self.quit(ftp).await;
@@ -589,13 +598,20 @@ impl Sender for FtpEndpoint {
     }
 
     async fn mkdir_all(&self) -> Result<()> {
-        let dir = self.loc.parent()?.path().to_string();
+        let dir = strip_home(self.loc.parent()?.path());
+        if dir.is_empty() {
+            // The login directory, which is there.
+            return Ok(());
+        }
         let mut ftp = self.connect().await?;
         // MKD one component at a time; a failure usually means it is there
         // already, which CWD at the end settles either way.
+        let absolute = dir.starts_with('/');
         let mut path = String::new();
         for part in dir.split('/').filter(|p| !p.is_empty()) {
-            path.push('/');
+            if absolute || !path.is_empty() {
+                path.push('/');
+            }
             path.push_str(part);
             let _ = self.ctl("MKD", ftp.mkdir(path.as_str())).await;
         }

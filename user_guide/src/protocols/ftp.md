@@ -58,9 +58,15 @@ a listing looks wrong, `-vv` shows the raw lines.
 
 ## Paths
 
-Paths are as the server presents them, which is usually relative to the login
-directory. A leading `/` means the server's root, which for a locked-down
-account is often the same thing.
+FTP paths are absolute on the server: `ftp://srv/incoming/` is `/incoming/`,
+under the server's root, which for a locked-down account is often the login
+directory anyway. To address something relative to the login directory, use
+`/~/`, as over SSH:
+
+```
+mpt cp report.pdf ftps://deploy@srv.example.com/~/incoming/
+mpt ls ftps://deploy@srv.example.com/~/
+```
 
 ## Timeouts
 

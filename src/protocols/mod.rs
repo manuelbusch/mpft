@@ -46,6 +46,17 @@ where
     }
 }
 
+/// A server path as the protocol takes it: a leading `/~/` means "relative
+/// to the login directory" and is dropped, every other path is taken as
+/// it is. (A URL path always starts with `/`, so without this there would
+/// be no way to name a path relative to where the login lands.)
+#[allow(dead_code)]
+pub(crate) fn strip_home(p: &str) -> String {
+    p.strip_prefix("/~/")
+        .map(String::from)
+        .unwrap_or_else(|| p.to_string())
+}
+
 /// Rename and delete on one open connection, for [`replace_aside`].
 #[allow(dead_code)]
 #[async_trait::async_trait]

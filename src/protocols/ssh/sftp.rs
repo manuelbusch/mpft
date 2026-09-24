@@ -42,11 +42,7 @@ impl SftpEndpoint {
     }
 }
 
-fn strip_home(p: &str) -> String {
-    p.strip_prefix("/~/")
-        .map(|rest| rest.to_string())
-        .unwrap_or_else(|| p.to_string())
-}
+use crate::protocols::strip_home;
 
 /// The server's status the way every protocol reports it: a missing file
 /// as [`Error::not_found`], a refusal as a permission error, any other

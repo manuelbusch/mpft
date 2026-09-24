@@ -157,8 +157,7 @@ Path conventions differ, and `mpt` keeps each protocol's own:
 | Scheme | Path is |
 |---|---|
 | local | a file-system path; relative to the working directory unless it starts with `/` |
-| `sftp://`, `scp://` | absolute on the server; `/~/reports/` is relative to the login directory |
-| `ftp://`, `ftps://` | as the server presents it, usually relative to the login directory |
+| `sftp://`, `scp://`, `ftp://`, `ftps://` | absolute on the server; `/~/reports/` is relative to the login directory |
 | `http(s)://`, `webdav(s)://` | the request path |
 | `s3://` | `bucket/key`, where the first segment is the bucket |
 | `mailto:` | the recipient list, comma-separated |

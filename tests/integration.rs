@@ -404,6 +404,40 @@ async fn an_existing_directory_takes_the_file_without_a_slash() {
     }
 }
 
+/// `ftp://host/~/…` is relative to the login directory, which the test
+/// server makes its root: the same file as `ftp://host/…`.
+#[tokio::test]
+async fn ftp_paths_after_a_tilde_start_at_the_login_directory() {
+    let Some(base) = env("MPT_IT_FTP") else {
+        eprintln!("skipping: MPT_IT_FTP not set");
+        return;
+    };
+    mpt::init_crypto();
+    let tag = std::process::id();
+    let name = format!("tilde_{tag}.txt");
+    let dir = tempfile::tempdir().unwrap();
+    let src_path = dir.path().join(&name);
+    std::fs::write(&src_path, b"home").unwrap();
+    let src = mpt::open(src_path.to_str().unwrap()).unwrap();
+    let home = dir_url(&base, &format!("/~/sub_{tag}/"));
+    let dst = mpt::open(&home).unwrap();
+    dst.sender().unwrap().mkdir_all().await.expect("mkdir");
+    let report = mpt::copy_many(src.as_ref(), &[dst.as_ref()], &Default::default())
+        .await
+        .expect("copy_many");
+    assert!(report.all_ok(), "{:?}", report.targets);
+    let sub = dir_url(&base, &format!("/sub_{tag}/"));
+    assert_eq!(fetch(&sub, &name).await, b"home");
+    let listing = mpt::open(&home)
+        .unwrap()
+        .receiver()
+        .unwrap()
+        .list()
+        .await
+        .unwrap();
+    assert!(listing.iter().any(|e| e.name == name), "{listing:?}");
+}
+
 /// `--hash`: the sidecar next to every real target must contain the digest of
 /// the source, in `sha256sum` format; `--check` must then accept that sidecar.
 #[tokio::test]
