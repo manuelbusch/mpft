@@ -82,9 +82,17 @@ pub(crate) async fn replace_aside(r: &mut dyn Renamer, from: &str, to: &str) -> 
     };
     let old = format!("{to}{OLD_SUFFIX}");
     if r.rename(to, &old).await.is_err() {
-        // Nothing there to move aside, or it cannot be moved: the first
-        // error is the one that says what is wrong.
-        return Err(first);
+        // A file left under the temporary name by a run that stopped half
+        // way is in the way. The name is mpt's own, so it goes, once.
+        if r.remove(&old).await.is_err() {
+            // Nothing there to move aside, or it cannot be moved: the
+            // first error is the one that says what is wrong.
+            return Err(first);
+        }
+        tracing::debug!(%old, "removed a stale file left under the temporary name");
+        if r.rename(to, &old).await.is_err() {
+            return Err(first);
+        }
     }
     if let Err(e) = r.rename(from, to).await {
         if let Err(back) = r.rename(&old, to).await {
@@ -196,6 +204,17 @@ mod tests {
         assert_eq!(s.files["f"], "newer");
         assert_eq!(s.files["f.mpt-part"], "newest");
         assert!(!s.files.contains_key("f.mpt-old"));
+    }
+
+    #[tokio::test]
+    async fn a_stale_file_under_the_temporary_name_is_not_in_the_way() {
+        let mut s = Server::default();
+        s.files.insert("f".into(), "old");
+        s.files.insert("f.mpt-old".into(), "left by a crash");
+        s.files.insert("f.mpt-part".into(), "new");
+        replace_aside(&mut s, "f.mpt-part", "f").await.unwrap();
+        assert_eq!(s.files.len(), 1, "{:?}", s.files);
+        assert_eq!(s.files["f"], "new");
     }
 
     #[tokio::test(start_paused = true)]

@@ -44,7 +44,8 @@ Plain SFTP `RENAME` and most FTP servers refuse to rename onto an existing
 file. There the file being replaced is first renamed to `<name>.mpt-old`, the
 new one is renamed into place, and only then is `<name>.mpt-old` deleted. If
 the second rename fails, the old file is renamed back, so a failed finish never
-leaves the target without either version.
+leaves the target without either version. A `<name>.mpt-old` that is already
+there, left by a run that stopped half way, is deleted when it is in the way.
 
 `--no-atomic` writes straight to the final name. It exists for pickup processes
 that cannot cope with an extra file appearing next to the one they are waiting
