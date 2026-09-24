@@ -15,7 +15,9 @@ pub fn boxed<R: AsyncRead + Send + 'static>(reader: R) -> ByteStream {
 /// Read a whole stream into memory, refusing to exceed `max` bytes.
 pub async fn read_to_vec(mut stream: ByteStream, max: u64) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    let mut limited = (&mut stream).take(max + 1);
+    // One byte more than allowed tells "exactly max" from "more"; at
+    // u64::MAX there is no more.
+    let mut limited = (&mut stream).take(max.saturating_add(1));
     limited.read_to_end(&mut buf).await?;
     if buf.len() as u64 > max {
         return Err(crate::Error::Io(std::io::Error::other(format!(
@@ -400,6 +402,26 @@ mod tests {
 
     fn payload(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i * 7 % 251) as u8).collect()
+    }
+
+    /// No limit at all (`u64::MAX`) does not overflow, and a limit is exact.
+    #[tokio::test]
+    async fn read_to_vec_takes_any_limit() {
+        let data = payload(100);
+        let got = read_to_vec(boxed(std::io::Cursor::new(data.clone())), u64::MAX)
+            .await
+            .unwrap();
+        assert_eq!(got, data);
+        assert!(
+            read_to_vec(boxed(std::io::Cursor::new(data.clone())), 100)
+                .await
+                .is_ok()
+        );
+        assert!(
+            read_to_vec(boxed(std::io::Cursor::new(data)), 99)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

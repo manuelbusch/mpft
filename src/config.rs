@@ -803,6 +803,12 @@ impl Config {
         if let Some(v) = &cfg.server.max_body {
             parse_size(v).map_err(|e| format!("[server] max_body: {e}"))?;
         }
+        if let Some(v) = &cfg.relay.grace {
+            parse_duration(v).map_err(|e| format!("[relay] grace: {e}"))?;
+        }
+        if let Some(v) = &cfg.relay.max_size {
+            parse_size(v).map_err(|e| format!("[relay] max_size: {e}"))?;
+        }
         for (what, v) in [
             ("parallel", cfg.server.parallel),
             ("max_transfers", cfg.server.max_transfers),
@@ -1305,8 +1311,9 @@ pub fn parse_size(s: &str) -> std::result::Result<u64, String> {
     };
     num.trim()
         .parse::<u64>()
-        .map(|n| n * mult)
-        .map_err(|e| format!("invalid size '{s}': {e}"))
+        .map_err(|e| format!("invalid size '{s}': {e}"))?
+        .checked_mul(mult)
+        .ok_or_else(|| format!("invalid size '{s}': too large"))
 }
 
 /// Parse spans like `90` (seconds), `30m`, `24h` or `7d`. `0` means "no
@@ -1322,8 +1329,10 @@ pub fn parse_duration(s: &str) -> std::result::Result<std::time::Duration, Strin
     };
     num.trim()
         .parse::<u64>()
-        .map(|n| std::time::Duration::from_secs(n * mult))
-        .map_err(|e| format!("invalid duration '{s}': {e} (try 7d, 24h, 30m or 0)"))
+        .map_err(|e| format!("invalid duration '{s}': {e} (try 7d, 24h, 30m or 0)"))?
+        .checked_mul(mult)
+        .map(std::time::Duration::from_secs)
+        .ok_or_else(|| format!("invalid duration '{s}': too long"))
 }
 
 /// A configured path, with `~/` expanded.
@@ -1425,6 +1434,14 @@ mod tests {
         assert_eq!(parse_size("64K").unwrap(), 64 * 1024);
         assert_eq!(parse_size(" 2G ").unwrap(), 2 * 1024 * 1024 * 1024);
         assert!(parse_size("big").is_err());
+        // Too large for a u64 is an error, not a wrapped number or a panic.
+        let err = Config::parse("[server]\nmax_body = \"20000000000G\"\n").unwrap_err();
+        assert!(err.contains("too large"), "{err}");
+        assert!(parse_duration("999999999999999999d").is_err());
+        let err = Config::parse("[relay]\ngrace = \"soon\"\n").unwrap_err();
+        assert!(err.contains("[relay] grace"), "{err}");
+        let err = Config::parse("[relay]\nmax_size = \"big\"\n").unwrap_err();
+        assert!(err.contains("[relay] max_size"), "{err}");
     }
 
     #[test]
