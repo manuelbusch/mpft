@@ -110,6 +110,20 @@ secrets](../configuration/credentials.md).
 A device-code flow with a refresh token in the key store is not built in; a
 script that prints a token covers the same ground.
 
+## Redirects
+
+A download follows up to ten redirects. The endpoint's own headers, its token
+and its password go only to the host the URL names: a redirect to another host
+(a download API that hands over to a CDN or to a presigned storage URL) is
+followed without any of them, and stays without them if it comes back. A
+redirect from `https://` to `http://`, or to anything but HTTP, is refused.
+
+An upload is not redirected, since its payload has been streamed once: a
+`3xx` answer to a PUT or POST fails the upload and names where the server
+wanted it sent.
+
+A `webdav(s)://` endpoint refuses the same downgrade.
+
 ## Listing
 
 `mpt ls` on `http://` fails, and says what to do about it:

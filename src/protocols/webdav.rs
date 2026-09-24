@@ -27,7 +27,7 @@ pub struct WebDavEndpoint {
 impl WebDavEndpoint {
     pub fn new(loc: Location) -> Result<Self> {
         let base = base_url(&loc, &["http", "https"])?;
-        let agent = build_client(&loc)?;
+        let agent = build_client(&loc, super::http::guarded_redirects(false))?;
         Ok(WebDavEndpoint {
             host: base.to_string().trim_end_matches('/').to_string(),
             loc,
