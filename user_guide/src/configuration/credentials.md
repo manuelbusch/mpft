@@ -84,7 +84,7 @@ The same syntax works for every secret in the file:
 | `[ssh] passphrase` | passphrase of the SSH key |
 | `[signing] passphrase` | passphrase of the signing key |
 | `[mail] password` | SMTP password, or the OAuth2 token with `auth = "xoauth2"` |
-| `[http] token` | bearer token for HTTP and WebDAV |
+| `[http] token` | bearer token for HTTP and WebDAV, to the hosts `[http] hosts` names |
 | `[s3] access_key_id`, `secret_access_key` | S3 keys |
 
 A plain string (`password = "hunter2"`) works too, and warns. It is meant for
@@ -114,6 +114,7 @@ time it is needed:
 ```toml
 [http]
 token = { cmd = "gcloud auth print-access-token", ttl = "45m" }
+hosts = ["storage.googleapis.com"]
 ```
 
 `env` and `file` are read again every time; they cost nothing.

@@ -191,8 +191,13 @@ pub struct MailSection {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HttpSection {
-    /// OAuth2 bearer token, sent as `Authorization: Bearer …`.
+    /// OAuth2 bearer token, sent as `Authorization: Bearer …` to `hosts`
+    /// over TLS, and to nothing else.
     pub token: Option<Secret>,
+    /// The hosts `token` is for, by name (`graph.example.com`), without a
+    /// port. Without any, the token is sent nowhere.
+    #[serde(default)]
+    pub hosts: Vec<String>,
 }
 
 /// `[server]` — settings for `mpt serve`.
@@ -707,8 +712,8 @@ impl Config {
         {
             out.push("s3");
         }
-        let HttpSection { token } = &self.http;
-        if token.is_some() {
+        let HttpSection { token, hosts } = &self.http;
+        if token.is_some() || !hosts.is_empty() {
             out.push("http");
         }
         let ServerSection {
@@ -1052,6 +1057,31 @@ impl Config {
                 Some(s.resolve_under("[signing] passphrase", strict).await?);
         }
         Ok(())
+    }
+
+    /// `[http] token` for an endpoint at `loc`: only over TLS (`https://`,
+    /// `webdavs://`), and only to a host `[http] hosts` names, so a token
+    /// meant for one API never reaches a download mirror or the network in
+    /// the clear. The first time a token is held back because no host is
+    /// named at all, a warning says so.
+    pub fn http_token_for(&self, loc: &Location) -> Option<&SecretString> {
+        let token = self.resolved.http_token.as_ref()?;
+        if !matches!(loc.scheme(), crate::Scheme::Https | crate::Scheme::WebDavs) {
+            return None;
+        }
+        if self.http.hosts.is_empty() {
+            crate::policy::warn_once(
+                "http-token-hosts".into(),
+                "[http] token is sent to no host: name the hosts it is for in [http] hosts",
+            );
+            return None;
+        }
+        let host = loc.host()?;
+        self.http
+            .hosts
+            .iter()
+            .any(|h| h.trim().eq_ignore_ascii_case(host))
+            .then_some(token)
     }
 
     /// Whether the file holds credentials, which decides how strictly its
@@ -1807,6 +1837,39 @@ mod tests {
             cfg.warnings.iter().any(|w| w.contains("[profiles]")),
             "the reason must be reported: {:?}",
             cfg.warnings
+        );
+    }
+
+    #[test]
+    fn the_http_token_goes_only_to_its_hosts_over_tls() {
+        let mut cfg =
+            Config::parse("[http]\ntoken = { env = \"T\" }\nhosts = [\"api.example.com\"]\n")
+                .unwrap();
+        cfg.resolved.http_token = Some(SecretString::from("t"));
+        let loc = |u: &str| Location::parse(u).unwrap();
+        assert!(
+            cfg.http_token_for(&loc("https://API.example.com/x"))
+                .is_some()
+        );
+        assert!(
+            cfg.http_token_for(&loc("webdavs://api.example.com/x"))
+                .is_some()
+        );
+        assert!(
+            cfg.http_token_for(&loc("http://api.example.com/x"))
+                .is_none(),
+            "never in the clear"
+        );
+        assert!(
+            cfg.http_token_for(&loc("https://mirror.example.org/x"))
+                .is_none(),
+            "never to another host"
+        );
+        cfg.http.hosts.clear();
+        assert!(
+            cfg.http_token_for(&loc("https://api.example.com/x"))
+                .is_none(),
+            "no host named, no token sent"
         );
     }
 

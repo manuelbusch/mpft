@@ -121,7 +121,7 @@ pub fn set_refuse_plaintext_auth(refuse: bool) {
 
 /// Emit `message` at most once per process; the same warning would otherwise
 /// repeat for every sidecar file and every target.
-fn warn_once(key: String, message: &str) {
+pub(crate) fn warn_once(key: String, message: &str) {
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
     if let Ok(mut set) = seen.lock()
@@ -159,7 +159,7 @@ fn plaintext_exposure(loc: &Location) -> Option<&'static str> {
 /// one (`Authorization`, `Cookie`, `X-Api-Key`, …).
 fn sends_http_credentials(loc: &Location) -> bool {
     loc.opt("token").is_some_and(|t| !t.is_empty())
-        || crate::config::global().resolved.http_token.is_some()
+        || crate::config::global().http_token_for(loc).is_some()
         || loc.opts("header").any(|h| {
             h.split_once(':')
                 .is_some_and(|(name, _)| crate::location::is_secret_option(name))

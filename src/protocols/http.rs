@@ -150,16 +150,14 @@ fn parse_headers(loc: &Location) -> Result<HeaderMap> {
     Ok(map)
 }
 
-/// The token for this endpoint: the URL first, then the configuration.
+/// The token for this endpoint: the URL's own, else `[http] token` where
+/// the configuration binds it to this host ([`crate::Config::http_token_for`]).
 fn bearer_token(loc: &Location) -> Option<String> {
     if let Some(t) = loc.opt("token").filter(|t| !t.is_empty()) {
         return Some(t.to_string());
     }
-    use secrecy::ExposeSecret;
     crate::config::global()
-        .resolved
-        .http_token
-        .as_ref()
+        .http_token_for(loc)
         .map(|t| t.expose_secret().to_string())
 }
 

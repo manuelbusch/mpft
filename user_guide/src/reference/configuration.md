@@ -107,7 +107,8 @@ Defaults for `http://`, `https://` and WebDAV.
 
 | Key | Type | Meaning |
 |---|---|---|
-| `token` | secret | OAuth2 bearer token, sent as `Authorization: Bearer …` |
+| `token` | secret | OAuth2 bearer token, sent as `Authorization: Bearer …` to `hosts` over TLS |
+| `hosts` | list of host names | the hosts `token` is for; [nothing else gets it](../protocols/http.md#authentication) |
 
 ## `[s3]`
 
@@ -245,6 +246,7 @@ path_style = true
 
 [http]
 token = { cmd = "az account get-access-token --query accessToken -o tsv" }
+hosts = ["graph.microsoft.com"]
 
 [profiles.prod]
 url     = "sftp://deploy@srv.example.com/data/"

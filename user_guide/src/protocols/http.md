@@ -90,7 +90,14 @@ needed:
 ```toml
 [http]
 token = { cmd = "az account get-access-token --resource https://graph.microsoft.com --query accessToken -o tsv" }
+hosts = ["graph.microsoft.com"]
 ```
+
+The configured token goes only to the hosts `hosts` names (by name, without a
+port, in any case), and only over `https://` and `webdavs://`. Every other
+URL, a download mirror as much as a plain `http://` address, gets no token,
+and with no `hosts` at all it goes nowhere and a warning says so. A token
+written into the URL (`?token=`) belongs to that URL alone.
 
 The token is sent as `Authorization: Bearer …`, the header is marked sensitive
 so it stays out of logs, and it is fetched when needed and [kept for ten

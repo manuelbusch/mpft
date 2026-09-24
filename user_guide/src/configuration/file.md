@@ -68,6 +68,7 @@ path_style = true
 
 [http]                        # defaults for http(s):// and WebDAV
 # token = { cmd = "…" }       # see "Credentials and secrets"
+# hosts = ["api.example.com"] # the hosts the token is for
 
 [profiles.prod]               # see "Profiles"
 url = "sftp://deploy@srv.example.com/data/"
