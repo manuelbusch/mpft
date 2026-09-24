@@ -131,6 +131,15 @@ impl HttpEndpoint {
 const MAX_REDIRECTS: usize = 10;
 
 pub(crate) fn build_client(loc: &Location, redirect: reqwest::redirect::Policy) -> Result<Client> {
+    build_client_with(loc, redirect, HeaderMap::new())
+}
+
+/// [`build_client`] with headers every request carries.
+pub(crate) fn build_client_with(
+    loc: &Location,
+    redirect: reqwest::redirect::Policy,
+    headers: HeaderMap,
+) -> Result<Client> {
     crate::init_crypto();
     let insecure = loc.opt_bool("insecure")?.unwrap_or(false);
     let timeout = loc.timeout_or(Duration::from_secs(30))?;
@@ -138,6 +147,7 @@ pub(crate) fn build_client(loc: &Location, redirect: reqwest::redirect::Policy) 
         .danger_accept_invalid_certs(insecure)
         .connect_timeout(timeout)
         .redirect(redirect)
+        .default_headers(headers)
         .user_agent(concat!("mpt/", env!("CARGO_PKG_VERSION")));
     if let Some(idle) = loc.timeout()? {
         // Per-read deadline for responses, plus TCP keepalive so a peer that
@@ -163,7 +173,9 @@ pub(crate) fn base_url(loc: &Location, schemes: &[&str; 2]) -> Result<Url> {
     Ok(url)
 }
 
-fn parse_headers(loc: &Location) -> Result<HeaderMap> {
+/// The endpoint's own headers: `?header=` and a bearer token, which WebDAV
+/// sends the same way.
+pub(crate) fn parse_headers(loc: &Location) -> Result<HeaderMap> {
     let mut map = HeaderMap::new();
     // A bearer token: `?token=` for one call, [http] token in the
     // configuration for a provider that fetches it (SharePoint, Nextcloud,
@@ -381,7 +393,7 @@ impl Sender for HttpEndpoint {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn headers(url: &str) -> HeaderMap {
@@ -453,7 +465,7 @@ mod tests {
     }
 
     /// Answer one request on `listener` with `reply(request head)`.
-    async fn serve_once(
+    pub(crate) async fn serve_once(
         listener: tokio::net::TcpListener,
         reply: impl FnOnce(&str) -> String + Send + 'static,
     ) {

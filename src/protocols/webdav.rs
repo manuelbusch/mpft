@@ -12,7 +12,7 @@ use secrecy::ExposeSecret;
 use tokio_util::io::{ReaderStream, StreamReader};
 use tracing::debug;
 
-use super::http::{base_url, build_client};
+use super::http::{base_url, build_client_with};
 use crate::{
     ByteStream, Endpoint, Entry, Error, Location, Receiver, Result, SendMeta, Sender, stream,
 };
@@ -27,7 +27,12 @@ pub struct WebDavEndpoint {
 impl WebDavEndpoint {
     pub fn new(loc: Location) -> Result<Self> {
         let base = base_url(&loc, &["http", "https"])?;
-        let agent = build_client(&loc, super::http::guarded_redirects(false))?;
+        // `?header=` and the bearer token as HTTP sends them, on every
+        // request: reqwest_dav has no way to add a header to one. A user
+        // name's basic authentication takes the place of the token.
+        let headers = super::http::parse_headers(&loc)?;
+        let redirects = super::http::guarded_redirects(!headers.is_empty());
+        let agent = build_client_with(&loc, redirects, headers)?;
         Ok(WebDavEndpoint {
             host: base.to_string().trim_end_matches('/').to_string(),
             loc,
@@ -241,5 +246,64 @@ impl Sender for WebDavEndpoint {
             client.mkcol(&path).await.map_err(dav_err)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocols::http::tests::serve_once;
+    use tokio::io::AsyncReadExt;
+
+    /// `?header=` and `?token=` reach a WebDAV server as they reach an
+    /// HTTP one.
+    #[tokio::test]
+    async fn headers_and_the_token_are_sent() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(serve_once(listener, |head| {
+            let head = head.to_ascii_lowercase();
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{head}",
+                head.len()
+            )
+        }));
+        let ep = WebDavEndpoint::new(
+            Location::parse(&format!(
+                "webdav://127.0.0.1:{port}/f?header=X-Api-Key:k3y&token=t0k"
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut seen = String::new();
+        ep.receive()
+            .await
+            .unwrap()
+            .read_to_string(&mut seen)
+            .await
+            .unwrap();
+        assert!(seen.contains("x-api-key: k3y"), "{seen}");
+        assert!(seen.contains("authorization: bearer t0k"), "{seen}");
+    }
+
+    /// With headers of its own, a redirect to another host is refused,
+    /// since they would go along.
+    #[tokio::test]
+    async fn no_redirect_to_another_host_with_headers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(serve_once(listener, move |_| {
+            format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://localhost:{port}/g\r\n\
+                 Content-Length: 0\r\n\r\n"
+            )
+        }));
+        let ep = WebDavEndpoint::new(
+            Location::parse(&format!("webdav://127.0.0.1:{port}/f?header=X-Api-Key:k3y")).unwrap(),
+        )
+        .unwrap();
+        let err = ep.receive().await.err().expect("refused");
+        assert!(err.to_string().contains("headers would go along"), "{err}");
+        assert!(!err.is_transient());
     }
 }

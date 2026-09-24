@@ -57,9 +57,10 @@ The payload is streamed, so uploading a large file does not need memory for it.
 mpt cp report.pdf "https://api.example.com/upload?header=X-Api-Key:abc123&header=X-Run:42"
 ```
 
-`?header=Name:Value` may be repeated. Anything else in the query that `mpt`
-does not recognise is **passed through to the server**, so an API's own
-parameters travel:
+`?header=Name:Value` may be repeated, and a `webdav(s)://` endpoint sends its
+headers on every request as well. Anything else in the query of an
+`http(s)://` URL that `mpt` does not recognise is **passed through to the
+server**, so an API's own parameters travel:
 
 ```
 mpt cp https://api.example.com/export?format=csv&range=30d ./
@@ -99,6 +100,9 @@ URL, a download mirror as much as a plain `http://` address, gets no token,
 and with no `hosts` at all it goes nowhere and a warning says so. A token
 written into the URL (`?token=`) belongs to that URL alone.
 
+Both kinds of token work for `webdav(s)://` too, where a user name's basic
+authentication takes the token's place.
+
 The token is sent as `Authorization: Bearer …`, the header is marked sensitive
 so it stays out of logs, and it is fetched when needed and [kept for ten
 minutes](../configuration/credentials.md#when-references-are-resolved). Anything that prints a
@@ -122,7 +126,9 @@ An upload is not redirected, since its payload has been streamed once: a
 `3xx` answer to a PUT or POST fails the upload and names where the server
 wanted it sent.
 
-A `webdav(s)://` endpoint refuses the same downgrade.
+WebDAV makes its requests through a client that cannot drop headers on the way,
+so a `webdav(s)://` endpoint that sends headers of its own (`?header=`, a token)
+refuses a redirect to another host outright. It refuses the same downgrade.
 
 ## Listing
 
