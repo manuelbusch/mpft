@@ -844,6 +844,26 @@ impl LocateRules {
         }
         Ok(loc)
     }
+
+    /// [`LocateRules::locate`] for a relay, which opens the URLs its
+    /// clients name. Such a URL gets nothing of this side's credentials:
+    /// not `--password` and its siblings, not `MPT_PASSWORD` or
+    /// `MPT_SMTP_PASSWORD` — those are for the hosts this side picks, not
+    /// for whichever host a client names. A profile of the relay's own
+    /// configuration (`mpt://`) is one of those hosts and keeps them.
+    #[cfg(feature = "relay")]
+    fn locate_relayed(&self, url: &str, timeout: Option<u64>) -> mpt::Result<mpt::Location> {
+        if mpt::config::is_profile_ref(url) {
+            return self.locate(url, timeout);
+        }
+        let rules = LocateRules {
+            password: None,
+            ..self.clone()
+        };
+        let mut loc = rules.locate(url, timeout)?;
+        loc.set_env_password(false);
+        Ok(loc)
+    }
 }
 
 async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
@@ -1170,7 +1190,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                 copy: base,
                 cache_limit: settings.cache_limit,
                 locate: std::sync::Arc::new(move |url, o: &mpt::options::JobOptions| {
-                    rules.locate(url, o.timeout)
+                    rules.locate_relayed(url, o.timeout)
                 }),
                 max_size: match (args.max_size, &section.max_size) {
                     (Some(n), _) => n,

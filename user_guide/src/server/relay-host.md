@@ -74,6 +74,16 @@ the relay. Those credentials go over SSH to a host whose key the client
 verified, and the relay's log names sizes and outcomes at `-v`, not hosts or
 paths.
 
+The relay's own password settings — `--password`, `--password-file`,
+`--password-stdin`, `MPT_PASSWORD` and `MPT_SMTP_PASSWORD` — are not applied
+to a URL a client names, since they would go to whichever host that is. They
+apply to the relay's own [profiles](../configuration/profiles.md), an
+`mpt://<name>/` URL in a header, as they do for `cp`, and so do each
+profile's password and credential references. What is tied to a host stays
+with it: `[http] token` goes only to its hosts and `[mail] password` only to
+its server. In an on-demand session no endpoint may bring a password along,
+not even from a profile of the relay's; such a header is refused.
+
 With `--via-credentials on-demand` and the forwarded agent, what the relay
 holds is one password for the length of one login and no key at all. A relay
 that is compromised while nothing is running on it has nothing of yours; one

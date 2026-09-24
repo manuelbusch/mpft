@@ -979,3 +979,110 @@ fn the_relay_reads_stdin_without_a_server() {
         b"hello\n"
     );
 }
+
+/// An HTTP server on a free port that takes every request with `200 OK`
+/// and sends the request heads it saw down the channel.
+fn http_recorder() -> (u16, std::sync::mpsc::Receiver<String>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { break };
+            let mut data = Vec::new();
+            let mut buf = [0u8; 8192];
+            let head_end = loop {
+                if let Some(at) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break Some(at + 4);
+                }
+                match conn.read(&mut buf) {
+                    Ok(0) | Err(_) => break None,
+                    Ok(n) => data.extend_from_slice(&buf[..n]),
+                }
+            };
+            let Some(head_end) = head_end else { continue };
+            let head = String::from_utf8_lossy(&data[..head_end]).into_owned();
+            let length = head
+                .lines()
+                .find_map(|l| {
+                    let (k, v) = l.split_once(':')?;
+                    k.eq_ignore_ascii_case("content-length")
+                        .then(|| v.trim().parse::<usize>().ok())?
+                })
+                .unwrap_or(0);
+            while data.len() < head_end + length {
+                match conn.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => data.extend_from_slice(&buf[..n]),
+                }
+            }
+            let _ = conn
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            if tx.send(head).is_err() {
+                break;
+            }
+        }
+    });
+    (port, rx)
+}
+
+/// The relay's own password — `--password`, `MPT_PASSWORD` — is not for
+/// a host a client names: it would go to whichever host that is. A
+/// profile of the relay's own configuration still gets it.
+#[test]
+fn the_relays_own_password_stays_off_the_clients_urls() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, seen) = http_recorder();
+    std::fs::write(
+        dir.path().join("relay.toml"),
+        format!("[profiles.mine]\nurl = \"http://owner@127.0.0.1:{port}/in/\"\n"),
+    )
+    .unwrap();
+    let run = |flags: &[&str], dst: &str| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_mpt"))
+            .env_remove("MPT_CONFIG")
+            .env("MPT_PASSWORD", "from-the-environment")
+            .arg("--config")
+            .arg(dir.path().join("relay.toml"))
+            .args(flags)
+            .arg("relay")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        {
+            use std::io::Write;
+            let header = serde_json::json!({ "v": 1, "name": "x.txt", "size": 5, "dst": [dst] });
+            let mut stdin = child.stdin.take().unwrap();
+            writeln!(stdin, "{header}").unwrap();
+            stdin.write_all(b"hello").unwrap();
+        }
+        let out = child.wait_with_output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert_eq!(out.status.code(), Some(0), "{text}");
+        let put = seen
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the upload arrives");
+        put.lines()
+            .find_map(|l| {
+                l.strip_prefix("authorization: ")
+                    .or(l.strip_prefix("Authorization: "))
+            })
+            .unwrap_or_default()
+            .to_string()
+    };
+    // echo -n 'u:' | base64
+    let client_url = format!("http://u@127.0.0.1:{port}/in/");
+    assert_eq!(run(&[], &client_url), "Basic dTo=");
+    assert_eq!(
+        run(&["--password", "from-the-flag"], &client_url),
+        "Basic dTo="
+    );
+    // echo -n 'owner:from-the-environment' | base64
+    assert_eq!(
+        run(&[], "mpt://mine/"),
+        "Basic b3duZXI6ZnJvbS10aGUtZW52aXJvbm1lbnQ="
+    );
+}

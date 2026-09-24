@@ -329,6 +329,9 @@ pub struct Location {
     /// The profile this location was resolved from, if any: what decides
     /// which relay it goes through.
     profile: Option<String>,
+    /// False when the environment's passwords are not for this location:
+    /// a URL a relay's client names.
+    env_password: bool,
 }
 
 impl Location {
@@ -430,6 +433,7 @@ impl Location {
             dir_hint,
             brokers: Brokers::default(),
             profile: None,
+            env_password: true,
         })
     }
 
@@ -457,13 +461,16 @@ impl Location {
             password_from_url: false,
             brokers: Brokers::default(),
             profile: None,
+            env_password: true,
         }
     }
 
     /// Fill in a password from the environment if the URL had none (see
-    /// [`Scheme::password_variable`]).
+    /// [`Scheme::password_variable`]). Not for a location whose password
+    /// is asked for at login ([`Brokers::password`]), nor for one that
+    /// was told to keep the environment out ([`Location::set_env_password`]).
     pub fn apply_env(&mut self) {
-        if self.password.is_some() {
+        if self.password.is_some() || self.brokers.password.is_some() || !self.env_password {
             return;
         }
         let Some(var) = self.scheme.password_variable() else {
@@ -542,6 +549,13 @@ impl Location {
     pub fn set_password(&mut self, pw: impl Into<String>) {
         self.password = Some(SecretString::from(pw.into()));
         self.password_from_url = false;
+    }
+
+    /// Whether [`Location::apply_env`] may fill in the password from the
+    /// environment. A relay switches it off for the URLs its clients name:
+    /// its own `MPT_PASSWORD` is not for whichever host a client picks.
+    pub fn set_env_password(&mut self, allowed: bool) {
+        self.env_password = allowed;
     }
 
     /// Whether the password was written into the URL, where the process list

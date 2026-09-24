@@ -709,10 +709,11 @@ fn with_agent(mut loc: Location, agent: &Option<Arc<dyn AgentSource>>) -> Locati
     loc
 }
 
-/// An on-demand session takes no password in a URL: that is the whole
-/// point of it.
+/// An on-demand session takes no password with an endpoint: that is the
+/// whole point of it. Not in a URL, and not from a profile of the relay's
+/// own, which would win over the question and leave the client unasked.
 fn no_password_on_demand(loc: &Location, broker: &Option<Arc<RemoteBroker>>) -> Result<()> {
-    if broker.is_some() && loc.password_in_url() {
+    if broker.is_some() && loc.has_password() {
         return Err(Error::invalid_option(
             "credentials",
             format!("{loc}: carries a password, but the passwords are to be asked for on demand"),
@@ -1156,6 +1157,32 @@ mod tests {
             );
         }
         assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+    }
+
+    /// A password the relay would add itself (a profile of its own) is
+    /// refused in an on-demand session like one in the URL: it would win
+    /// over the question, and the client would never be asked.
+    #[tokio::test]
+    async fn an_on_demand_session_takes_no_password_from_the_relay_either() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut r = relay(0);
+        r.credentials = RelayCredentials::Any;
+        r.locate = Arc::new(|url, _| {
+            let mut loc = crate::Location::parse(url)?;
+            if loc.scheme() == crate::Scheme::Ftp {
+                loc.set_password("the-relays-own");
+            }
+            Ok(loc)
+        });
+        let header = json!({
+            "name": "x", "size": 1, "credentials": "on-demand",
+            "dst": [format!("{}/", dir.path().display()), "ftp://u@h/"]
+        });
+        let (code, lines) = relay_run(&r, &header.to_string(), b"").await;
+        assert_eq!(code, 2, "{lines:?}");
+        let message = lines[0]["error"]["message"].as_str().unwrap();
+        assert!(message.contains("asked for on demand"), "{message}");
+        assert!(!message.contains("the-relays-own"), "{message}");
     }
 
     #[tokio::test]

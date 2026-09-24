@@ -12,7 +12,9 @@ variable wins over the configuration file — except where noted.
 | `MPT_REFUSE_PLAINTEXT_AUTH` | `1` makes unencrypted credentials an error instead of a warning |
 
 `--password`, `--password-file` and `--password-stdin` override
-`MPT_PASSWORD`. A password already in the URL is never replaced.
+`MPT_PASSWORD`. A password already in the URL is never replaced. A relay
+applies none of these to the URLs its clients name, only to its own
+profiles; see [Trust](../server/relay-host.md#trust).
 
 ## SSH
 
