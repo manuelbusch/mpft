@@ -349,7 +349,13 @@ impl Receiver for HttpEndpoint {
             debug!(status = %resp.status(), "http HEAD: size unknown");
             return Ok(None);
         }
-        Ok(resp.content_length())
+        // The header, not `content_length()`: a HEAD response has no body,
+        // and reqwest reports the length of that body, 0.
+        Ok(resp
+            .headers()
+            .get(CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse().ok()))
     }
 }
 
@@ -483,6 +489,21 @@ pub(crate) mod tests {
         let answer = reply(&String::from_utf8_lossy(&head));
         conn.write_all(answer.as_bytes()).await.unwrap();
         conn.shutdown().await.unwrap();
+    }
+
+    /// The size is the one the HEAD response announces, not the length of
+    /// its (empty) body.
+    #[tokio::test]
+    async fn the_size_comes_from_the_head_response() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(serve_once(listener, |head| {
+            assert!(head.starts_with("HEAD /f "), "{head}");
+            "HTTP/1.1 200 OK\r\nContent-Length: 12345\r\n\r\n".to_string()
+        }));
+        let ep = HttpEndpoint::new(Location::parse(&format!("http://127.0.0.1:{port}/f")).unwrap())
+            .unwrap();
+        assert_eq!(ep.size().await.unwrap(), Some(12345));
     }
 
     /// A redirect to another host takes neither the custom headers nor
