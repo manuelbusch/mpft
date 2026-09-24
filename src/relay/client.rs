@@ -139,27 +139,10 @@ pub async fn send(session: Session<'_>, mut on_line: impl FnMut(&Value)) -> Resu
 
         // The feeder: the body in frames, as the credit allows.
         let credit = Arc::new(Credit::new(protocol::INITIAL_CREDIT));
-        let feeding = body.map(|mut body| {
+        let mut feeding = body.map(|body| {
             let credit = Arc::clone(&credit);
             let data_tx = data_tx.clone();
-            tokio::spawn(async move {
-                let mut buf = vec![0u8; protocol::CHUNK];
-                loop {
-                    let n = body.read(&mut buf).await?;
-                    if n == 0 {
-                        break;
-                    }
-                    credit.take(n as u64).await;
-                    if data_tx
-                        .send(protocol::frame(protocol::DATA, &buf[..n]))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Ok::<(), std::io::Error>(())
-            })
+            tokio::spawn(feed(body, credit, data_tx))
         });
         drop(data_tx);
 
@@ -173,6 +156,26 @@ pub async fn send(session: Session<'_>, mut on_line: impl FnMut(&Value)) -> Resu
                 () = cancel.cancelled() => {
                     let _ = channel.close().await;
                     return Err(Error::Cancelled);
+                }
+                // A body that cannot be read ends the session:
+                // the relay then fails its targets, instead of waiting for
+                // the rest until its timeout.
+                fed = async {
+                    match feeding.as_mut() {
+                        Some(task) => task.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    feeding = None;
+                    let failed = match fed {
+                        Ok(Ok(())) => continue,
+                        Ok(Err(e)) => Error::Io(e),
+                        Err(e) => Error::Io(std::io::Error::other(format!("the feeder: {e}"))),
+                    };
+                    debug!("relay: {failed}");
+                    writing.abort();
+                    let _ = channel.close().await;
+                    return Err(failed);
                 }
                 msg = channel.wait() => msg,
             };
@@ -254,4 +257,29 @@ pub async fn send(session: Session<'_>, mut on_line: impl FnMut(&Value)) -> Resu
     .await;
     disconnect(&handle).await;
     result
+}
+
+/// Cut `body` into data frames as the credit allows, until it ends.
+async fn feed(
+    mut body: ByteStream,
+    credit: Arc<Credit>,
+    data_tx: mpsc::Sender<Vec<u8>>,
+) -> std::io::Result<()> {
+    let mut buf = vec![0u8; protocol::CHUNK];
+    loop {
+        let n = body.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        credit.take(n as u64).await;
+        if data_tx
+            .send(protocol::frame(protocol::DATA, &buf[..n]))
+            .await
+            .is_err()
+        {
+            // The writer is gone: the session's end says why.
+            break;
+        }
+    }
+    Ok(())
 }

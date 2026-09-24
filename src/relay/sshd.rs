@@ -650,6 +650,53 @@ mod tests {
         f.stop().await;
     }
 
+    /// A body that yields `good` bytes and then fails.
+    struct Failing {
+        good: usize,
+    }
+
+    impl tokio::io::AsyncRead for Failing {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if self.good == 0 {
+                return std::task::Poll::Ready(Err(std::io::Error::other("disk on fire")));
+            }
+            let n = self.good.min(buf.remaining()).min(1000);
+            buf.put_slice(&vec![7u8; n]);
+            self.good -= n;
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A body that cannot be read ends the session with that error, and
+    /// the relay fails its target instead of waiting for the rest.
+    #[tokio::test]
+    async fn a_read_error_on_this_side_ends_the_session() {
+        let f = Fixture::start(1).await;
+        let out = f.dir.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let header = Header::stream("x.bin", 100_000, vec![format!("{}/", out.display())]);
+        let via = f.via("client_key");
+        let cancel = CancellationToken::new();
+        let mut s = session(&via, &header, Vec::new(), &cancel);
+        s.body = Some(Box::pin(Failing { good: 5_000 }));
+        let err = tokio::time::timeout(Duration::from_secs(20), send(s, |_| {}))
+            .await
+            .expect("the session ends")
+            .unwrap_err();
+        assert!(err.to_string().contains("disk on fire"), "{err}");
+        // The relay notices the end and cleans up.
+        let started = std::time::Instant::now();
+        while std::fs::read_dir(&out).unwrap().next().is_some() {
+            assert!(started.elapsed() < Duration::from_secs(10), "left behind");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        f.stop().await;
+    }
+
     #[tokio::test]
     async fn a_refused_header_comes_back_as_the_relays_error() {
         let f = Fixture::start(1).await;
