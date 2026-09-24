@@ -63,7 +63,7 @@ flags and `[defaults]`.
 | `atomic` | boolean | `--no-atomic` inverts it | |
 | `resume` | boolean | `--resume` | needs `atomic` |
 | `cache` | boolean | `--cache` | bounded by the server's `--cache-limit` |
-| `retries` | integer | `--retries` | needs `cache` |
+| `retries` | integer | `--retries` | needs the memory cache: `cache`, or the server's own `--cache` |
 | `timeout` | integer, seconds | `--timeout` | `0` disables it |
 | `allow_empty` | boolean | `--allow-empty` | |
 | `recursive` | boolean | `-r` | |
@@ -115,7 +115,7 @@ stable part.
 |---|---|---|
 | 400 | `invalid_body` | the JSON could not be read, or names an unknown option |
 | 400 | `invalid_url` | a URL is malformed, is not an allowed profile, or adds `?options` to one |
-| 400 | `invalid_option` | an option value that cannot work: `retries` without `cache`, `delete_source` on a server without `allow_delete` |
+| 400 | `invalid_option` | an option value that cannot work with the server's own settings: `retries` without a memory cache, `resume` where transfers are not atomic, `delete_source` on a server without `allow_delete` |
 | 400 | `too_many_transfers` | the list is longer than `[server] max_transfers` |
 | 401 | `unauthorized` | no token, or the wrong one; the answer to a wrong one is delayed by 250 ms |
 | 403 | `forbidden` | the request carries an `Origin` header |

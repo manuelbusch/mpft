@@ -53,25 +53,16 @@ pub struct JobOptions {
 }
 
 impl JobOptions {
-    /// Refuse what cannot work before the job is accepted.
+    /// Refuse what cannot work whatever the server's own settings are. What
+    /// depends on them (retries without a memory cache, resuming without
+    /// atomic transfers) is judged by [`JobOptions::apply`], on the options
+    /// that result, so a job is accepted exactly when it can run.
     pub fn validate(&self) -> Result<()> {
         if self.parallel == Some(0) {
             return Err(Error::invalid_option("parallel", "must be at least 1"));
         }
         if let Some(h) = &self.hash {
             HashAlgo::parse(h).map_err(|e| Error::invalid_option("hash", e))?;
-        }
-        if self.retries.is_some_and(|r| r > 0) && self.cache != Some(true) {
-            return Err(Error::invalid_option(
-                "retries",
-                "retries need the payload in memory: set cache = true",
-            ));
-        }
-        if self.resume == Some(true) && self.atomic == Some(false) {
-            return Err(Error::invalid_option(
-                "resume",
-                "resuming needs atomic transfers (there is no partial file otherwise)",
-            ));
         }
         Ok(())
     }
@@ -118,6 +109,12 @@ impl JobOptions {
                 "retries need the payload in memory: set cache = true",
             ));
         }
+        if out.resume && !out.atomic {
+            return Err(Error::invalid_option(
+                "resume",
+                "resuming needs atomic transfers (there is no partial file otherwise)",
+            ));
+        }
         // A signer wants a checksum; the job may not switch the hash off,
         // but the server's signer must not be left without one either.
         if out.sign.is_some() && out.hash.is_none() {
@@ -146,11 +143,37 @@ mod tests {
         assert!(copy.skip_existing);
 
         let bad: JobOptions = serde_json::from_str(r#"{"retries": 1}"#).unwrap();
-        assert!(bad.validate().is_err(), "retries without cache");
+        assert!(bad.apply(&base, 1024).is_err(), "retries without cache");
+        let bad: JobOptions = serde_json::from_str(r#"{"resume": true, "atomic": false}"#).unwrap();
+        assert!(bad.apply(&base, 1024).is_err());
         let bad: JobOptions = serde_json::from_str(r#"{"hash": "crc"}"#).unwrap();
         assert!(bad.validate().is_err());
         let bad: JobOptions = serde_json::from_str(r#"{"parallel": 0}"#).unwrap();
         assert!(bad.validate().is_err());
         assert!(serde_json::from_str::<JobOptions>(r#"{"colour": 1}"#).is_err());
+    }
+
+    /// Whether retries have their cache, and resuming its part file, is
+    /// judged on the options that result: the server's own cache counts,
+    /// and so does its own `--no-atomic`.
+    #[test]
+    fn the_effective_options_decide() {
+        let cached = CopyOptions {
+            cache: CacheMode::Memory { limit: 1024 },
+            ..CopyOptions::default()
+        };
+        let retries: JobOptions = serde_json::from_str(r#"{"retries": 2}"#).unwrap();
+        assert!(retries.validate().is_ok());
+        assert_eq!(retries.apply(&cached, 1024).unwrap().retries, 2);
+        let off: JobOptions = serde_json::from_str(r#"{"retries": 2, "cache": false}"#).unwrap();
+        assert!(off.apply(&cached, 1024).is_err());
+
+        let not_atomic = CopyOptions {
+            atomic: false,
+            ..CopyOptions::default()
+        };
+        let resume: JobOptions = serde_json::from_str(r#"{"resume": true}"#).unwrap();
+        assert!(resume.apply(&not_atomic, 1024).is_err());
+        assert!(resume.apply(&CopyOptions::default(), 1024).is_ok());
     }
 }

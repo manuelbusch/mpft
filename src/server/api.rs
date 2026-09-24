@@ -347,7 +347,11 @@ fn accept(state: &Arc<AppState>, submission: Submission) -> Result<Response, Rej
             "the server is shutting down and takes no new jobs",
         ));
     }
-    submission.options.validate()?;
+    // Judged on the options the job would run with, as the scheduler
+    // will lay them over the server's.
+    submission
+        .options
+        .apply(&state.rt.copy, state.rt.cache_limit)?;
     if submission.options.delete_source == Some(true) && !state.cfg.allow_delete {
         return Err(Reject::new(
             StatusCode::BAD_REQUEST,
