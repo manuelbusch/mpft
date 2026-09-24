@@ -291,14 +291,70 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin,
 {
+    // Lines for the client from wherever they arise: progress and the
+    // outcome here, credit from the intake, `need` from the broker. They
+    // are written alongside the session, so a client that is slow to read
+    // them holds up nothing but its own lines.
+    let (lines, lines_rx) = mpsc::unbounded_channel::<Value>();
+    let (last_tx, last_rx) = tokio::sync::oneshot::channel();
+    let running = async move {
+        let (code, last) = session(relay, reader, lines, agent).await;
+        let _ = last_tx.send(last);
+        code
+    };
+    let (code, ()) = tokio::join!(running, write_lines(&mut writer, lines_rx, last_rx));
+    code
+}
+
+/// Write the lines as they come, the session's last one after every line
+/// that came before it, and return once that is written.
+async fn write_lines<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    mut lines: mpsc::UnboundedReceiver<Value>,
+    last: tokio::sync::oneshot::Receiver<Value>,
+) {
+    tokio::pin!(last);
+    let mut reading = true;
+    loop {
+        tokio::select! {
+            biased;
+            Some(value) = lines.recv() => {
+                if reading && line(writer, &value).await.is_err() {
+                    // Nobody is listening any more: the copy still
+                    // finishes, its report goes nowhere.
+                    debug!("relay: the client stopped reading");
+                    reading = false;
+                }
+            }
+            value = &mut last => {
+                if let Ok(value) = value
+                    && reading
+                {
+                    let _ = line(writer, &value).await;
+                }
+                return;
+            }
+        }
+    }
+}
+
+/// One session: the header, the endpoints, the copy. Every line for the
+/// client goes to `lines`; the outcome — a `report` or an `error` line —
+/// comes back with the exit code.
+async fn session<R>(
+    relay: &Relay,
+    reader: R,
+    lines: mpsc::UnboundedSender<Value>,
+    agent: Option<Arc<dyn AgentSource>>,
+) -> (u8, Value)
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
     let mut reader = BufReader::new(reader);
-    // Lines for the client from wherever they arise: progress here, credit
-    // from the intake, `need` from the broker.
-    let (lines, mut lines_rx) = mpsc::unbounded_channel::<Value>();
     let cancel = relay.cancel.child_token();
     let header = match read_header(relay, &mut reader).await {
         Ok(h) => h,
-        Err(e) => return refuse(&mut writer, e).await,
+        Err(e) => return refuse(e),
     };
     let broker = match header.credentials {
         Credentials::OnDemand => Some(RemoteBroker::new(lines.clone(), cancel.clone())),
@@ -337,19 +393,6 @@ where
             (payload, Some(intake))
         }
     };
-    // The `need` lines of the logins in `prepare` go out while it runs.
-    let preparing = prepare(relay, &header, &broker, &cancel, agent);
-    tokio::pin!(preparing);
-    let prepared = loop {
-        tokio::select! {
-            r = &mut preparing => break r,
-            Some(msg) = lines_rx.recv() => {
-                if line(&mut writer, &msg).await.is_err() {
-                    debug!("relay: the client stopped reading");
-                }
-            }
-        }
-    };
     let stop = |intake: Option<tokio::task::JoinHandle<()>>| {
         if let Some(intake) = intake {
             intake.abort();
@@ -362,11 +405,11 @@ where
         copy,
         source,
         targets,
-    } = match prepared {
+    } = match prepare(relay, &header, &broker, &cancel, agent).await {
         Ok(p) => p,
         Err(e) => {
             stop(intake);
-            return refuse(&mut writer, e).await;
+            return refuse(e);
         }
     };
     info!(
@@ -389,7 +432,7 @@ where
         Ok(s) => s,
         Err(e) => {
             stop(intake);
-            return refuse(&mut writer, e).await;
+            return refuse(e);
         }
     };
     let progress = copy.progress.clone().unwrap_or_else(Progress::new);
@@ -402,44 +445,34 @@ where
     let outcome = loop {
         tokio::select! {
             r = &mut copying => break r,
-            Some(msg) = lines_rx.recv() => {
-                if line(&mut writer, &msg).await.is_err() {
-                    debug!("relay: the client stopped reading");
-                }
-            }
             _ = tick.tick() => {
                 let read = progress.read();
                 if last != Some(read) {
                     last = Some(read);
-                    let msg = json!({ "progress": { "read": read, "total": progress.total() } });
-                    if line(&mut writer, &msg).await.is_err() {
-                        // Nobody is listening any more: the copy still
-                        // finishes, its report goes nowhere.
-                        debug!("relay: the client stopped reading");
-                    }
+                    let _ = lines.send(
+                        json!({ "progress": { "read": read, "total": progress.total() } }),
+                    );
                 }
             }
         }
     };
     stop(intake);
     match outcome {
-        Ok(report) => {
-            let _ = line(
-                &mut writer,
-                &json!({ "report": crate::report::fanout_json(&report) }),
-            )
-            .await;
-            exit_code(&report)
-        }
-        Err(e) => refuse(&mut writer, e).await,
+        Ok(report) => (
+            exit_code(&report),
+            json!({ "report": crate::report::fanout_json(&report) }),
+        ),
+        Err(e) => refuse(e),
     }
 }
 
-/// Write `e` as the session's `error` line and give its exit code.
-async fn refuse<W: AsyncWrite + Unpin>(writer: &mut W, e: Error) -> u8 {
+/// The session's `error` line for `e`, with its exit code.
+fn refuse(e: Error) -> (u8, Value) {
     debug!("relay: {e}");
-    let _ = line(writer, &json!({ "error": crate::report::error_json(&e) })).await;
-    e.exit_code()
+    (
+        e.exit_code(),
+        json!({ "error": crate::report::error_json(&e) }),
+    )
 }
 
 /// Version 2: take the frames apart. Data goes to the copy through
@@ -1235,6 +1268,60 @@ mod tests {
         assert_eq!(code, 1, "{text}");
         assert!(text.contains("larger than this relay takes"), "{text}");
         assert!(!dir.path().join("f.bin").exists());
+    }
+
+    /// A client that does not read the relay's lines for a while holds up
+    /// none of the copy: the lines wait, the payload keeps flowing.
+    #[tokio::test]
+    async fn a_client_that_does_not_read_does_not_stall_the_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 241) as u8).collect();
+        let header = json!({
+            "v": 1, "name": "slow.bin", "size": payload.len(),
+            "dst": [format!("{}/", dir.path().display())]
+        });
+        let (mut client_in, server_in) = duplex(64 << 10);
+        // Room for one progress line, not for two.
+        let (server_out, mut client_out) = duplex(64);
+        let feed = {
+            let payload = payload.clone();
+            tokio::spawn(async move {
+                let mut line = header.to_string();
+                line.push('\n');
+                client_in.write_all(line.as_bytes()).await.unwrap();
+                for chunk in payload.chunks(20_000) {
+                    client_in.write_all(chunk).await.unwrap();
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            })
+        };
+        let relay = relay(0);
+        let running = run(&relay, server_in, server_out);
+        tokio::pin!(running);
+        let done = dir.path().join("slow.bin");
+        let arrived = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            loop {
+                tokio::select! {
+                    code = &mut running => panic!("the relay ended unread: {code}"),
+                    () = tokio::time::sleep(std::time::Duration::from_millis(20)) => {
+                        if std::fs::read(&done).is_ok_and(|d| d == payload) {
+                            break;
+                        }
+                    }
+                }
+            }
+        })
+        .await;
+        assert!(arrived.is_ok(), "the copy stalled behind the unread lines");
+        let read = tokio::spawn(async move {
+            let mut text = String::new();
+            client_out.read_to_string(&mut text).await.unwrap();
+            text
+        });
+        assert_eq!(running.await, 0);
+        feed.await.unwrap();
+        let text = read.await.unwrap();
+        assert!(text.contains("\"report\""), "{text}");
     }
 
     /// A version 2 client that stops before the size is reached fails the
