@@ -250,13 +250,10 @@ pub struct Relay {
 
 /// Everything `prepare` works out before a byte of payload is read.
 struct Prepared {
-    header: Header,
     copy: CopyOptions,
     /// The source the relay reads itself, when the header names one.
     source: Option<Box<dyn Endpoint>>,
     targets: Vec<Box<dyn Endpoint>>,
-    /// Set for an on-demand session: where the `need` lines come from.
-    broker: Option<Arc<RemoteBroker>>,
 }
 
 /// Run one relay: read the header and the payload from `reader`, write
@@ -287,25 +284,79 @@ where
     // from the intake, `need` from the broker.
     let (lines, mut lines_rx) = mpsc::unbounded_channel::<Value>();
     let cancel = relay.cancel.child_token();
-    let prepared = match prepare(relay, &mut reader, &lines, &cancel, agent).await {
-        Ok(p) => p,
-        Err(e) => {
-            debug!("relay refused: {e}");
-            let _ = line(
-                &mut writer,
-                &json!({ "error": crate::report::error_json(&e) }),
-            )
-            .await;
-            return e.exit_code();
+    let header = match read_header(relay, &mut reader).await {
+        Ok(h) => h,
+        Err(e) => return refuse(&mut writer, e).await,
+    };
+    let broker = match header.credentials {
+        Credentials::OnDemand => Some(RemoteBroker::new(lines.clone(), cancel.clone())),
+        Credentials::Header => None,
+    };
+    let name = header.name.clone().unwrap_or_default();
+    let size = header.size.unwrap_or(0);
+    // In version 2 the frames are taken apart from here on, before a
+    // target is opened: opening one may already ask the client for a
+    // password, and the answer comes in a control frame.
+    let (payload, intake): (Option<Box<dyn AsyncRead + Send + Unpin>>, _) = match header.v {
+        1 => (Some(Box::new(reader)), None),
+        _ => {
+            let (data_tx, data_rx) = mpsc::unbounded_channel();
+            let (consumed_tx, consumed_rx) = mpsc::unbounded_channel();
+            // With a source the relay reads itself, the client's input
+            // carries control frames only, and its end means the client
+            // is gone. A data frame then has nowhere to go and ends the
+            // session.
+            let (payload, on_end) = match header.src {
+                Some(_) => (None, Some(cancel.clone())),
+                None => (
+                    Some(Box::new(ChannelReader::new(data_rx, consumed_tx))
+                        as Box<dyn AsyncRead + Send + Unpin>),
+                    None,
+                ),
+            };
+            let intake = tokio::spawn(intake(
+                reader,
+                data_tx,
+                consumed_rx,
+                lines.clone(),
+                broker.clone(),
+                on_end,
+            ));
+            (payload, Some(intake))
+        }
+    };
+    // The `need` lines of the logins in `prepare` go out while it runs.
+    let preparing = prepare(relay, &header, &broker, &cancel, agent);
+    tokio::pin!(preparing);
+    let prepared = loop {
+        tokio::select! {
+            r = &mut preparing => break r,
+            Some(msg) = lines_rx.recv() => {
+                if line(&mut writer, &msg).await.is_err() {
+                    debug!("relay: the client stopped reading");
+                }
+            }
+        }
+    };
+    let stop = |intake: Option<tokio::task::JoinHandle<()>>| {
+        if let Some(intake) = intake {
+            intake.abort();
+        }
+        if let Some(broker) = &broker {
+            broker.close();
         }
     };
     let Prepared {
-        header,
         copy,
         source,
         targets,
-        broker,
-    } = prepared;
+    } = match prepared {
+        Ok(p) => p,
+        Err(e) => {
+            stop(intake);
+            return refuse(&mut writer, e).await;
+        }
+    };
     info!(
         what = %header.what(),
         size = header.size,
@@ -314,64 +365,19 @@ where
         credentials = header.credentials.as_str(),
         "relay"
     );
-    let name = header.name.clone().unwrap_or_default();
-    let size = header.size.unwrap_or(0);
-    let idle = copy.tee.send_timeout;
-    let (src, intake): (Result<Box<dyn Endpoint>>, _) = match source {
-        // The relay reads the source; the client's input carries control
-        // frames only, and its end means the client is gone.
-        Some(source) => {
-            let (data_tx, _data_rx) = mpsc::unbounded_channel();
-            let (_consumed_tx, consumed_rx) = mpsc::unbounded_channel();
-            let intake = tokio::spawn(intake(
-                reader,
-                data_tx,
-                consumed_rx,
-                lines.clone(),
-                broker.clone(),
-                Some(cancel.clone()),
-            ));
-            (Ok(source), Some(intake))
+    let src: Result<Box<dyn Endpoint>> = match (source, payload) {
+        (Some(source), _) => Ok(source),
+        (None, Some(payload)) => {
+            ReaderEndpoint::new(&name, size, Idle::maybe(payload, copy.tee.send_timeout))
+                .map(|r| Box::new(r) as Box<dyn Endpoint>)
         }
-        None if header.v == 1 => (
-            ReaderEndpoint::new(&name, size, Idle::maybe(reader, idle))
-                .map(|r| Box::new(r) as Box<dyn Endpoint>),
-            None,
-        ),
-        None => {
-            let (data_tx, data_rx) = mpsc::unbounded_channel();
-            let (consumed_tx, consumed_rx) = mpsc::unbounded_channel();
-            let intake = tokio::spawn(intake(
-                reader,
-                data_tx,
-                consumed_rx,
-                lines.clone(),
-                broker.clone(),
-                None,
-            ));
-            (
-                ReaderEndpoint::new(
-                    &name,
-                    size,
-                    Idle::maybe(ChannelReader::new(data_rx, consumed_tx), idle),
-                )
-                .map(|r| Box::new(r) as Box<dyn Endpoint>),
-                Some(intake),
-            )
-        }
+        (None, None) => Err(Error::invalid_option("src", "no source and no payload")),
     };
     let src = match src {
         Ok(s) => s,
         Err(e) => {
-            if let Some(intake) = intake {
-                intake.abort();
-            }
-            let _ = line(
-                &mut writer,
-                &json!({ "error": crate::report::error_json(&e) }),
-            )
-            .await;
-            return e.exit_code();
+            stop(intake);
+            return refuse(&mut writer, e).await;
         }
     };
     let progress = copy.progress.clone().unwrap_or_else(Progress::new);
@@ -403,12 +409,7 @@ where
             }
         }
     };
-    if let Some(intake) = intake {
-        intake.abort();
-    }
-    if let Some(broker) = &broker {
-        broker.close();
-    }
+    stop(intake);
     match outcome {
         Ok(report) => {
             let _ = line(
@@ -418,15 +419,15 @@ where
             .await;
             exit_code(&report)
         }
-        Err(e) => {
-            let _ = line(
-                &mut writer,
-                &json!({ "error": crate::report::error_json(&e) }),
-            )
-            .await;
-            e.exit_code()
-        }
+        Err(e) => refuse(&mut writer, e).await,
     }
+}
+
+/// Write `e` as the session's `error` line and give its exit code.
+async fn refuse<W: AsyncWrite + Unpin>(writer: &mut W, e: Error) -> u8 {
+    debug!("relay: {e}");
+    let _ = line(writer, &json!({ "error": crate::report::error_json(&e) })).await;
+    e.exit_code()
 }
 
 /// Version 2: take the frames apart. Data goes to the copy through
@@ -499,15 +500,11 @@ async fn intake<R: AsyncRead + Unpin>(
     }
 }
 
-/// Read and check the header, lay its options over the relay's, open the
-/// targets. Nothing of the payload is read.
-async fn prepare<R: AsyncRead + Unpin>(
+/// Read and check the header. Nothing of the payload is read.
+async fn read_header<R: AsyncRead + Unpin>(
     relay: &Relay,
     reader: &mut BufReader<R>,
-    lines: &mpsc::UnboundedSender<Value>,
-    cancel: &CancellationToken,
-    agent: Option<Arc<dyn AgentSource>>,
-) -> Result<Prepared> {
+) -> Result<Header> {
     let mut raw = Vec::new();
     reader
         .take(MAX_HEADER as u64 + 1)
@@ -583,6 +580,18 @@ async fn prepare<R: AsyncRead + Unpin>(
             ),
         ));
     }
+    Ok(header)
+}
+
+/// Lay the header's options over the relay's and open the endpoints.
+/// A login here may already ask the client for its password.
+async fn prepare(
+    relay: &Relay,
+    header: &Header,
+    broker: &Option<Arc<RemoteBroker>>,
+    cancel: &CancellationToken,
+    agent: Option<Arc<dyn AgentSource>>,
+) -> Result<Prepared> {
     let o = &header.options;
     for (name, set) in [
         ("check", o.check == Some(true)),
@@ -607,10 +616,6 @@ async fn prepare<R: AsyncRead + Unpin>(
     copy.delete_source = header.src.is_some() && o.delete_source == Some(true);
     copy.cancel = Some(cancel.clone());
     copy.progress = Some(Progress::new());
-    let broker = match header.credentials {
-        Credentials::OnDemand => Some(RemoteBroker::new(lines.clone(), cancel.clone())),
-        Credentials::Header => None,
-    };
     let agent = match (header.agent, agent) {
         (true, Some(agent)) => Some(agent),
         (true, None) => {
@@ -624,13 +629,13 @@ async fn prepare<R: AsyncRead + Unpin>(
         let loc = (relay.locate)(dst.url(), &header.options)?;
         match dst {
             Dst::Url(_) => {
-                let loc = with_broker(loc, &broker, Who::Dst(i))?;
+                let loc = with_broker(loc, broker, Who::Dst(i))?;
                 targets.push(crate::protocols::open(with_agent(loc, &agent))?);
             }
             // The far relay opens the target; here it is only named, and
             // its password — if one is asked for — is the client's to give.
             Dst::Via { url, via } => {
-                no_password_on_demand(&loc, &broker)?;
+                no_password_on_demand(&loc, broker)?;
                 let hop = (relay.locate)(via, &header.options)?;
                 if hop.scheme() != crate::Scheme::Ssh {
                     return Err(Error::invalid_option(
@@ -638,8 +643,8 @@ async fn prepare<R: AsyncRead + Unpin>(
                         format!("{hop}: a relay needs an ssh:// URL"),
                     ));
                 }
-                let hop = with_agent(with_broker(hop, &broker, Who::Via(i))?, &agent);
-                let answer: Arc<dyn broker::PasswordAnswerer> = match &broker {
+                let hop = with_agent(with_broker(hop, broker, Who::Via(i))?, &agent);
+                let answer: Arc<dyn broker::PasswordAnswerer> = match broker {
                     Some(broker) => Arc::new(endpoint::ChainAnswerer {
                         broker: Arc::clone(broker),
                         index: i,
@@ -668,7 +673,7 @@ async fn prepare<R: AsyncRead + Unpin>(
         None => None,
         Some(url) => {
             let loc = (relay.locate)(url, &header.options)?;
-            let loc = with_broker(loc, &broker, Who::Src)?;
+            let loc = with_broker(loc, broker, Who::Src)?;
             let source = crate::protocols::open(with_agent(loc, &agent))?;
             if relay.max_size > 0
                 && let Some(size) = source.receiver()?.size().await?
@@ -686,11 +691,9 @@ async fn prepare<R: AsyncRead + Unpin>(
         }
     };
     Ok(Prepared {
-        header,
         copy,
         source,
         targets,
-        broker,
     })
 }
 
@@ -988,6 +991,105 @@ mod tests {
         let text = read.await.unwrap();
         assert_eq!(code, 2, "{text}");
         assert!(text.contains("more than this relay takes"), "{text}");
+    }
+
+    /// An HTTP server on a free port that answers every request with
+    /// `body` and hands back the requests it saw.
+    async fn http_server(body: &'static [u8]) -> (u16, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            while let Ok(Ok((mut socket, _))) =
+                tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept()).await
+            {
+                let mut request = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match socket.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => request.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let request = String::from_utf8_lossy(&request).into_owned();
+                let mut answer = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .into_bytes();
+                if request.starts_with("GET") {
+                    answer.extend_from_slice(body);
+                }
+                let _ = socket.write_all(&answer).await;
+                seen.push(request);
+            }
+            seen
+        });
+        (port, task)
+    }
+
+    /// With `--max-size`, the relay asks a source it reads for its size
+    /// before the copy starts. In an on-demand session that login already
+    /// asks the client for the password, and the answer has to get through.
+    #[tokio::test]
+    async fn a_password_asked_for_before_the_copy_is_answered() {
+        let dir = tempfile::tempdir().unwrap();
+        let (port, server) = http_server(b"0123456789").await;
+        let header = json!({
+            "src": format!("http://u@127.0.0.1:{port}/f.bin?timeout=5"),
+            "dst": [format!("{}/", dir.path().display())],
+            "credentials": "on-demand"
+        });
+        let (mut client_in, server_in) = duplex(64 << 10);
+        let (server_out, client_out) = duplex(64 << 10);
+        let (answers_tx, mut answers_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let feed = tokio::spawn(async move {
+            let mut line = header.to_string();
+            line.push('\n');
+            client_in.write_all(line.as_bytes()).await.unwrap();
+            while let Some(frame) = answers_rx.recv().await {
+                client_in.write_all(&frame).await.unwrap();
+            }
+            std::future::pending::<()>().await;
+        });
+        let read = tokio::spawn(async move {
+            let mut lines = BufReader::new(client_out).lines();
+            let mut out = Vec::new();
+            while let Ok(Some(text)) = lines.next_line().await {
+                let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                if let Some(need) = broker::Need::parse(&value) {
+                    let answer = Ok(Some(secrecy::SecretString::from("s3cret")));
+                    let _ =
+                        answers_tx.send(protocol::control(&broker::answer_line(need.id, &answer)));
+                }
+                out.push(value);
+            }
+            out
+        });
+        let mut relay = relay(4);
+        relay.credentials = RelayCredentials::Any;
+        let code = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            run(&relay, server_in, server_out),
+        )
+        .await
+        .expect("the relay does not wait for an answer that cannot come");
+        feed.abort();
+        let lines = read.await.unwrap();
+        assert!(
+            lines.iter().any(|l| l.get("need").is_some()),
+            "no question: {lines:?}"
+        );
+        assert_eq!(code, 2, "{lines:?}");
+        let message = lines.last().unwrap()["error"]["message"].to_string();
+        assert!(message.contains("more than this relay takes"), "{message}");
+        let seen = server.await.unwrap();
+        assert!(
+            seen.iter().any(|r| r
+                .to_ascii_lowercase()
+                .contains("authorization: basic dtpzm2nyzxq=")),
+            "{seen:?}"
+        );
     }
 
     /// A version 2 client that stops before the size is reached fails the
