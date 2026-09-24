@@ -65,5 +65,7 @@ account is often the same thing.
 ## Timeouts
 
 FTP uses two connections, a control channel and a data channel, and the
-inactivity timeout covers both. A server that accepts the command and then
-never opens the data connection is the failure mode `--timeout` exists for.
+[inactivity timeout](../guide/copying.md#time-limits) covers both: every reply
+on the control channel and every pause on the data channel. A server that
+accepts the command and then never opens the data connection is the failure
+mode `--timeout` exists for.

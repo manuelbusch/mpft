@@ -32,7 +32,12 @@ pub struct FtpEndpoint {
     insecure: bool,
     passive: bool,
     nat_workaround: bool,
+    /// Deadline for connecting and logging in, and for saying goodbye:
+    /// `?timeout=`, or 30 s where that is 0.
     timeout: std::time::Duration,
+    /// Inactivity limit for the data connection and for the replies on the
+    /// control channel; `None` (`?timeout=0`) disables it.
+    idle: Option<std::time::Duration>,
     /// How many logins this endpoint has attempted, so a password broker
     /// can tell the reconnects apart.
     logins: std::sync::atomic::AtomicU32,
@@ -57,6 +62,7 @@ impl FtpEndpoint {
         let timeout = loc.timeout_or(std::time::Duration::from_secs(30))?;
         Ok(FtpEndpoint {
             timeout,
+            idle: loc.timeout()?,
             insecure: loc.opt_bool("insecure")?.unwrap_or(false),
             passive: loc.opt_bool("passive")?.unwrap_or(true),
             nat_workaround: loc.opt_bool("nat")?.unwrap_or(false),
@@ -156,7 +162,13 @@ impl FtpEndpoint {
     where
         F: std::future::Future<Output = std::result::Result<T, FtpError>>,
     {
-        ctl_timeout(self.timeout, what, fut).await
+        ctl_timeout(self.idle, what, fut).await
+    }
+
+    /// Log out, but never wait longer than the connect deadline for it: the
+    /// work is done, and a server that does not answer QUIT changes nothing.
+    async fn quit(&self, mut ftp: Ftp) {
+        quit_within(self.timeout, &mut ftp).await;
     }
 
     fn connector(&self) -> Result<AsyncRustlsConnector> {
@@ -171,15 +183,26 @@ impl FtpEndpoint {
     }
 }
 
-async fn ctl_timeout<T, F>(timeout: std::time::Duration, what: &str, fut: F) -> Result<T>
+async fn ctl_timeout<T, F>(timeout: Option<std::time::Duration>, what: &str, fut: F) -> Result<T>
 where
     F: std::future::Future<Output = std::result::Result<T, FtpError>>,
 {
+    let Some(timeout) = timeout else {
+        return fut.await.map_err(ftp_err);
+    };
     match tokio::time::timeout(timeout, fut).await {
         Ok(r) => r.map_err(ftp_err),
         Err(_) => Err(Error::Remote(format!(
             "ftp: no reply to {what} within {timeout:?}"
         ))),
+    }
+}
+
+async fn quit_within(deadline: std::time::Duration, ftp: &mut Ftp) {
+    match tokio::time::timeout(deadline, ftp.quit()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => debug!("ftp QUIT: {e}"),
+        Err(_) => debug!("ftp QUIT: no reply within {deadline:?}"),
     }
 }
 
@@ -236,6 +259,9 @@ impl Endpoint for FtpEndpoint {
 struct FtpReader {
     stream: Option<stream::Idle<TransferStream<AsyncRustlsStream>>>,
     ftp: Option<Ftp>,
+    /// For the reply that completes the transfer; `None` waits for it.
+    idle: Option<std::time::Duration>,
+    /// For QUIT.
     timeout: std::time::Duration,
     expected: Option<u64>,
     received: u64,
@@ -250,16 +276,16 @@ impl FtpReader {
         let mut ftp = self.ftp.take();
         let expected = self.expected;
         let received = self.received;
-        let timeout = self.timeout;
+        let (idle, timeout) = (self.idle, self.timeout);
         self.finishing = Some(Box::pin(async move {
             let result = match stream {
-                Some(s) => ctl_timeout(timeout, "transfer completion", s.into_inner().finish())
+                Some(s) => ctl_timeout(idle, "transfer completion", s.into_inner().finish())
                     .await
                     .map_err(|e| std::io::Error::other(e.to_string())),
                 None => Ok(()),
             };
             if let Some(mut ftp) = ftp.take() {
-                let _ = tokio::time::timeout(timeout, ftp.quit()).await;
+                quit_within(timeout, &mut ftp).await;
             }
             result?;
             if let Some(exp) = expected
@@ -277,13 +303,21 @@ impl FtpReader {
 
 impl Drop for FtpReader {
     fn drop(&mut self) {
-        // Reader dropped before EOF (e.g. the target failed): close what is left.
+        // Reader dropped before EOF (e.g. the target failed): close what is
+        // left, in a task of its own since Drop cannot wait, and bounded, so
+        // a server that does not answer cannot keep that task alive.
         if let (Some(stream), Some(mut ftp)) = (self.stream.take(), self.ftp.take()) {
-            tokio::spawn(async move {
-                if let Err(e) = stream.into_inner().finish().await {
+            let Ok(rt) = tokio::runtime::Handle::try_current() else {
+                debug!("ftp: an abandoned download is closed with its connection");
+                return;
+            };
+            let timeout = self.timeout;
+            rt.spawn(async move {
+                let finish = stream.into_inner().finish();
+                if let Err(e) = ctl_timeout(Some(timeout), "transfer completion", finish).await {
                     warn!("ftp: closing abandoned download: {e}");
                 }
-                let _ = ftp.quit().await;
+                quit_within(timeout, &mut ftp).await;
             });
         }
     }
@@ -341,8 +375,9 @@ impl Receiver for FtpEndpoint {
             .ctl("RETR", ftp.retr_as_stream(self.remote_path()))
             .await?;
         Ok(stream::boxed(FtpReader {
-            stream: Some(stream::Idle::new(stream, self.timeout)),
+            stream: Some(stream::Idle::maybe(stream, self.idle)),
             ftp: Some(ftp),
+            idle: self.idle,
             timeout: self.timeout,
             expected,
             received: 0,
@@ -378,7 +413,7 @@ impl Receiver for FtpEndpoint {
                     .collect()
             }
         };
-        let _ = ftp.quit().await;
+        self.quit(ftp).await;
 
         let mut out: Vec<Entry> = files
             .into_iter()
@@ -401,7 +436,7 @@ impl Receiver for FtpEndpoint {
     async fn size(&self) -> Result<Option<u64>> {
         let mut ftp = self.connect().await?;
         let size = self.ctl("SIZE", ftp.size(self.remote_path())).await;
-        let _ = ftp.quit().await;
+        self.quit(ftp).await;
         match size {
             Ok(n) => Ok(Some(n as u64)),
             Err(e) if refused_for_good(&e) => {
@@ -424,7 +459,7 @@ impl Sender for FtpEndpoint {
         let target = self.loc.target_path(meta.filename.as_deref())?;
         debug!(%target, "ftp upload");
         let up = self.ctl("STOR", ftp.put_with_stream(&target)).await?;
-        let mut up = stream::Idle::new(up, self.timeout);
+        let mut up = stream::Idle::maybe(up, self.idle);
         let written = stream::pipe(body, &mut up).await?;
         up.shutdown().await?;
         // Drain the server's TLS close_notify before the socket is closed. Closing
@@ -444,12 +479,12 @@ impl Sender for FtpEndpoint {
         if let Ok(remote) = self.ctl("SIZE", ftp.size(&target)).await
             && remote as u64 != written
         {
-            let _ = ftp.quit().await;
+            self.quit(ftp).await;
             return Err(Error::Remote(format!(
                 "ftp: upload incomplete: server stored {remote} of {written} bytes for {target}"
             )));
         }
-        let _ = ftp.quit().await;
+        self.quit(ftp).await;
         Ok(())
     }
 
@@ -459,7 +494,7 @@ impl Sender for FtpEndpoint {
     async fn is_dir(&self) -> Result<bool> {
         let mut ftp = self.connect().await?;
         let cwd = self.ctl("CWD", ftp.cwd(self.remote_path())).await;
-        let _ = tokio::time::timeout(self.timeout, ftp.quit()).await;
+        self.quit(ftp).await;
         match cwd {
             Ok(()) => Ok(true),
             Err(e) if refused_for_good(&e) => Ok(false),
@@ -478,10 +513,14 @@ impl Sender for FtpEndpoint {
     async fn existing_size(&self, name: &str) -> Result<Option<u64>> {
         let mut ftp = self.connect().await?;
         let path = self.loc.sibling(name)?.path().to_string();
-        // SIZE fails for a file that is not there, which is the answer.
-        let size = ftp.size(&path).await.ok().map(|n| n as u64);
-        let _ = ftp.quit().await;
-        Ok(size)
+        let size = self.ctl("SIZE", ftp.size(&path)).await;
+        self.quit(ftp).await;
+        match size {
+            Ok(n) => Ok(Some(n as u64)),
+            // SIZE fails for a file that is not there, which is the answer.
+            Err(e) if refused_for_good(&e) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     async fn append(&self, body: ByteStream, meta: &SendMeta, offset: u64) -> Result<()> {
@@ -489,7 +528,7 @@ impl Sender for FtpEndpoint {
         let target = self.loc.target_path(meta.filename.as_deref())?;
         debug!(%target, offset, "ftp resume (APPE)");
         let up = self.ctl("APPE", ftp.append_with_stream(&target)).await?;
-        let mut up = stream::Idle::new(up, self.timeout);
+        let mut up = stream::Idle::maybe(up, self.idle);
         let written = stream::pipe(body, &mut up).await?;
         up.shutdown().await?;
         let mut sink = [0u8; 1024];
@@ -504,13 +543,13 @@ impl Sender for FtpEndpoint {
         if let Ok(remote) = self.ctl("SIZE", ftp.size(&target)).await
             && remote as u64 != offset + written
         {
-            let _ = ftp.quit().await;
+            self.quit(ftp).await;
             return Err(Error::Remote(format!(
                 "ftp: resume incomplete: server holds {remote} of {} bytes for {target}",
                 offset + written
             )));
         }
-        let _ = ftp.quit().await;
+        self.quit(ftp).await;
         Ok(())
     }
 
@@ -529,7 +568,7 @@ impl Sender for FtpEndpoint {
             &to,
         )
         .await;
-        let _ = tokio::time::timeout(self.timeout, ftp.quit()).await;
+        self.quit(ftp).await;
         res
     }
 
@@ -541,7 +580,7 @@ impl Sender for FtpEndpoint {
         let path = self.loc.sibling(name)?.path().to_string();
         let mut ftp = self.connect().await?;
         let res = self.ctl("DELE", ftp.rm(path.as_str())).await;
-        let _ = tokio::time::timeout(self.timeout, ftp.quit()).await;
+        self.quit(ftp).await;
         res
     }
 
@@ -564,7 +603,37 @@ impl Sender for FtpEndpoint {
             .ctl("CWD", ftp.cwd(dir.as_str()))
             .await
             .map_err(|e| Error::Remote(format!("ftp: cannot create {dir}: {e}")));
-        let _ = tokio::time::timeout(self.timeout, ftp.quit()).await;
+        self.quit(ftp).await;
         res
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn timeout_zero_leaves_only_the_connect_deadline() {
+        let ep = FtpEndpoint::new(Location::parse("ftp://h/x?timeout=0").unwrap()).unwrap();
+        assert_eq!(ep.idle, None);
+        assert_eq!(ep.timeout, Duration::from_secs(30));
+        let ep = FtpEndpoint::new(Location::parse("ftp://h/x?timeout=5").unwrap()).unwrap();
+        assert_eq!(ep.idle, Some(Duration::from_secs(5)));
+        assert_eq!(ep.timeout, Duration::from_secs(5));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_control_reply_is_waited_for_as_long_as_the_timeout_says() {
+        let slow = || async {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            Ok::<_, FtpError>(7)
+        };
+        assert_eq!(ctl_timeout(None, "SIZE", slow()).await.unwrap(), 7);
+        let err = ctl_timeout(Some(Duration::from_secs(30)), "SIZE", slow())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no reply to SIZE"), "{err}");
+        assert!(err.is_transient());
     }
 }

@@ -87,8 +87,10 @@ mpt --timeout 120 cp big.iso sftp://srv.example.com/in/
 mpt cp big.iso "sftp://srv.example.com/in/?timeout=120"     # this endpoint only
 ```
 
-`--timeout 0` disables it. Do that only when something else will notice a
-hung process.
+`--timeout 0` disables it. Over SFTP, SCP, FTP, HTTP and WebDAV, connecting
+and logging in keep a deadline of 30 seconds even then, so a server that
+cannot be reached still fails. Disable it only when something else will notice
+a hung process.
 
 Two kinds of retry exist, and they are set differently:
 
