@@ -154,7 +154,7 @@ Settings for [`mpt relay --listen`](../server/relay-host.md#on-the-relay-host)
 | `authorized_keys` | path | `~/.config/mpt/authorized_keys` | who may relay, in OpenSSH format |
 | `parallel` | integer, at least 1 | `4` | relays running concurrently; further sessions wait |
 | `grace` | duration | `"30s"` | how long a shutdown waits for running relays |
-| `max_size` | size | `"0"` (no limit) | refuse larger uploads |
+| `max_size` | size | `"0"` (no limit) | refuse larger uploads and sources |
 | `credentials` | `"header"`, `"on-demand"`, `"any"` | `"header"` | which way a client may send the targets' passwords |
 | `agent_forwarding` | boolean | `true` | take the ssh-agent a client forwards |
 | `allow_delete` | boolean | `false` | let a client have the source deleted that the relay read for it; never a file on the relay host |

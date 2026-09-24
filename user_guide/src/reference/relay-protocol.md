@@ -30,7 +30,8 @@ there is either a `src` or a `name` with a `size`, that `dst` is not empty,
 that the credential modes of both sides match, that no endpoint brings a
 password along when `credentials` is `on-demand` (in its URL, or from a
 profile of the relay's own), and `size` or the source's size against
-`--max-size`.
+`--max-size`. A source that does not state its size is held to `--max-size`
+as it is read, and fails its targets once it passes it.
 
 ## The payload
 

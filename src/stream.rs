@@ -911,6 +911,49 @@ impl<R: AsyncRead + Unpin> AsyncRead for Exact<R> {
     }
 }
 
+/// At most `limit` bytes of a reader: one byte more is an error, with
+/// `what` as the message, so a source larger than is allowed fails the
+/// copy instead of being cut short.
+pub struct Limited<R> {
+    inner: R,
+    limit: u64,
+    got: u64,
+    what: String,
+}
+
+impl<R> Limited<R> {
+    pub fn new(inner: R, limit: u64, what: impl Into<String>) -> Limited<R> {
+        Limited {
+            inner,
+            limit,
+            got: 0,
+            what: what.into(),
+        }
+    }
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for Limited<R> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        std::task::ready!(Pin::new(&mut self.inner).poll_read(cx, buf))?;
+        let n = (buf.filled().len() - before) as u64;
+        if self.got + n > self.limit {
+            // An error hands on nothing of this read.
+            buf.set_filled(before);
+            return std::task::Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                self.what.clone(),
+            )));
+        }
+        self.got += n;
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
 #[cfg(test)]
 mod reader_endpoint_tests {
     use super::*;
@@ -935,6 +978,21 @@ mod reader_endpoint_tests {
             .unwrap();
         assert_eq!(out, b"hello");
         assert!(ep.receive().await.is_err(), "a second read is refused");
+    }
+
+    #[tokio::test]
+    async fn a_limited_reader_fails_beyond_its_limit() {
+        let mut out = Vec::new();
+        Limited::new(std::io::Cursor::new(vec![1u8; 10]), 10, "too much")
+            .read_to_end(&mut out)
+            .await
+            .unwrap();
+        assert_eq!(out.len(), 10);
+        let err = Limited::new(std::io::Cursor::new(vec![1u8; 11]), 10, "too much")
+            .read_to_end(&mut Vec::new())
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "too much");
     }
 
     #[tokio::test]

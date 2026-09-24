@@ -108,6 +108,12 @@ forwarded agent is handed on the same way — which is how the first relay logs
 in to the second without a key of its own. One SSH session per relay and job,
 and one report, in the order the targets were named.
 
+The first relay tells the second the file's size up front, as every client
+does. When the source does not state its size (an HTTP server that sends no
+`Content-Length`, say), the first relay spools the file to a temporary file
+before it passes it on, and `--max-size` bounds that file as it bounds the
+source.
+
 The checksum file of a chained target is written by the relay that writes the
 target, on that side; this side never places it, so the `sidecar` field of
 that target's [JSON report](../automation/scripting.md#the-json-report) stays

@@ -51,7 +51,7 @@ relay server's.
 | `--host-key <PATH>` | `host_key` | `~/.local/state/mpt/relay_host_key` | the host key; generated when missing |
 | `--authorized-keys <PATH>` | `authorized_keys` | `~/.config/mpt/authorized_keys` | who may relay |
 | `--parallel <N>` | `parallel` | `4` | relays running concurrently; further sessions wait |
-| `--max-size <SIZE>` | `max_size` | `0` (no limit) | refuse larger uploads |
+| `--max-size <SIZE>` | `max_size` | `0` (no limit) | refuse larger uploads, and larger sources the relay reads; a source that does not state its size fails once it passes the limit |
 | `--grace <SECONDS>` | `grace` | `30` | how long a shutdown waits for running relays |
 | `--credentials <MODE>` | `credentials` | `header` | how clients may send the targets' passwords: `header`, `on-demand` or `any` |
 | `--no-agent-forwarding` | `agent_forwarding` | `true` | take the ssh-agent a client forwards; the flag refuses it |

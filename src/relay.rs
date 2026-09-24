@@ -25,8 +25,11 @@
 //!
 //! Nothing is spooled: the targets read the payload as it arrives, so the
 //! slowest of them sets the pace, and the source ending early (the client
-//! going away) fails them all. Everything `cp` does — checksums, atomic
-//! finishing, the memory cache with retries, timeouts — applies unchanged.
+//! going away) fails them all. The one exception is a chained target of a
+//! source whose size is unknown: the protocol needs the size up front, so
+//! [`endpoint`] spools that file, as far as `--max-size` allows. Everything
+//! `cp` does — checksums, atomic finishing, the memory cache with retries,
+//! timeouts — applies unchanged.
 
 pub mod agent;
 mod authorized_keys;
@@ -672,6 +675,7 @@ async fn prepare(
                 targets.push(Box::new(endpoint::RelayEndpoint {
                     target: loc,
                     relay: hop,
+                    max_size: relay.max_size,
                     header_url: url.clone(),
                     credentials: header.credentials,
                     options,
@@ -694,19 +698,28 @@ async fn prepare(
             }
             let loc = with_broker(loc, broker, Who::Src)?;
             let source = crate::protocols::open(with_agent(loc, &agent))?;
-            if relay.max_size > 0
-                && let Some(size) = source.receiver()?.size().await?
-                && size > relay.max_size
-            {
-                return Err(Error::invalid_option(
-                    "src",
-                    format!(
-                        "{size} bytes is more than this relay takes ({})",
-                        relay.max_size
-                    ),
-                ));
+            if relay.max_size == 0 {
+                Some(source)
+            } else {
+                // Refused before the copy when the size is known; and
+                // counted as it is read, for a size that is not known or
+                // not true.
+                if let Some(size) = source.receiver()?.size().await?
+                    && size > relay.max_size
+                {
+                    return Err(Error::invalid_option(
+                        "src",
+                        format!(
+                            "{size} bytes is more than this relay takes ({})",
+                            relay.max_size
+                        ),
+                    ));
+                }
+                Some(Box::new(LimitedSource {
+                    inner: source,
+                    limit: relay.max_size,
+                }) as Box<dyn Endpoint>)
             }
-            Some(source)
         }
     };
     Ok(Prepared {
@@ -714,6 +727,48 @@ async fn prepare(
         source,
         targets,
     })
+}
+
+/// A source the relay reads, cut off with an error past `--max-size`.
+struct LimitedSource {
+    inner: Box<dyn Endpoint>,
+    limit: u64,
+}
+
+impl Endpoint for LimitedSource {
+    fn location(&self) -> &Location {
+        self.inner.location()
+    }
+    fn as_receiver(&self) -> Option<&dyn crate::Receiver> {
+        Some(self)
+    }
+    // Deleting the source goes to the source itself.
+    fn as_sender(&self) -> Option<&dyn crate::Sender> {
+        self.inner.as_sender()
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::Receiver for LimitedSource {
+    async fn receive(&self) -> Result<crate::ByteStream> {
+        let body = self.inner.receiver()?.receive().await?;
+        Ok(crate::stream::boxed(crate::stream::Limited::new(
+            body,
+            self.limit,
+            format!(
+                "the source is larger than this relay takes ({} bytes)",
+                self.limit
+            ),
+        )))
+    }
+
+    async fn list(&self) -> Result<Vec<crate::Entry>> {
+        self.inner.receiver()?.list().await
+    }
+
+    async fn size(&self) -> Result<Option<u64>> {
+        self.inner.receiver()?.size().await
+    }
 }
 
 /// An SSH target authenticates with the agent the client forwarded.
@@ -1033,8 +1088,12 @@ mod tests {
     }
 
     /// An HTTP server on a free port that answers every request with
-    /// `body` and hands back the requests it saw.
-    async fn http_server(body: &'static [u8]) -> (u16, tokio::task::JoinHandle<Vec<String>>) {
+    /// `body` — its length announced when `announce` — and hands back the
+    /// requests it saw.
+    async fn http_server(
+        body: &'static [u8],
+        announce: bool,
+    ) -> (u16, tokio::task::JoinHandle<Vec<String>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let task = tokio::spawn(async move {
@@ -1051,11 +1110,12 @@ mod tests {
                     }
                 }
                 let request = String::from_utf8_lossy(&request).into_owned();
-                let mut answer = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                )
-                .into_bytes();
+                let length = match announce {
+                    true => format!("Content-Length: {}\r\n", body.len()),
+                    false => String::new(),
+                };
+                let mut answer =
+                    format!("HTTP/1.1 200 OK\r\n{length}Connection: close\r\n\r\n").into_bytes();
                 if request.starts_with("GET") {
                     answer.extend_from_slice(body);
                 }
@@ -1073,7 +1133,7 @@ mod tests {
     #[tokio::test]
     async fn a_password_asked_for_before_the_copy_is_answered() {
         let dir = tempfile::tempdir().unwrap();
-        let (port, server) = http_server(b"0123456789").await;
+        let (port, server) = http_server(b"0123456789", true).await;
         let header = json!({
             "src": format!("http://u@127.0.0.1:{port}/f.bin?timeout=5"),
             "dst": [format!("{}/", dir.path().display())],
@@ -1129,6 +1189,37 @@ mod tests {
                 .contains("authorization: basic dtpzm2nyzxq=")),
             "{seen:?}"
         );
+    }
+
+    /// A source that does not say how large it is is held to --max-size
+    /// as it is read.
+    #[tokio::test]
+    async fn max_size_holds_for_a_source_of_unknown_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let (port, _server) = http_server(b"0123456789", false).await;
+        let header = json!({
+            "src": format!("http://127.0.0.1:{port}/f.bin?timeout=5"),
+            "dst": [format!("{}/", dir.path().display())],
+        });
+        let (mut client_in, server_in) = duplex(64 << 10);
+        let (server_out, mut client_out) = duplex(64 << 10);
+        let feed = tokio::spawn(async move {
+            let mut line = header.to_string();
+            line.push('\n');
+            client_in.write_all(line.as_bytes()).await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let read = tokio::spawn(async move {
+            let mut text = String::new();
+            client_out.read_to_string(&mut text).await.unwrap();
+            text
+        });
+        let code = run(&relay(4), server_in, server_out).await;
+        feed.abort();
+        let text = read.await.unwrap();
+        assert_eq!(code, 1, "{text}");
+        assert!(text.contains("larger than this relay takes"), "{text}");
+        assert!(!dir.path().join("f.bin").exists());
     }
 
     /// A version 2 client that stops before the size is reached fails the

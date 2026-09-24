@@ -28,6 +28,8 @@ pub struct RelayEndpoint {
     pub(super) target: Location,
     /// The relay to upload through.
     pub(super) relay: Location,
+    /// This relay's `--max-size`, which bounds what is spooled; 0 for none.
+    pub(super) max_size: u64,
     /// The far target's URL as the far relay should see it.
     pub(super) header_url: String,
     pub(super) credentials: Credentials,
@@ -68,9 +70,19 @@ impl Sender for RelayEndpoint {
             .clone()
             .or_else(|| self.target.filename().map(String::from))
             .ok_or_else(|| Error::InvalidUrl(format!("{}: no file name to relay", self.target)))?;
+        // The far relay needs the size up front: a source that does not
+        // say it is spooled here first, no further than --max-size.
         let (body, size) = match meta.size {
             Some(n) => (body, n),
             None => {
+                let body = match self.max_size {
+                    0 => body,
+                    limit => stream::boxed(stream::Limited::new(
+                        body,
+                        limit,
+                        format!("the source is larger than this relay takes ({limit} bytes)"),
+                    )),
+                };
                 let (file, n) = stream::spool_to_tempfile(body).await?;
                 (stream::boxed(file), n)
             }
