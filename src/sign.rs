@@ -15,7 +15,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use secrecy::{ExposeSecret, SecretString};
+#[cfg(any(feature = "sign-ssh", feature = "sign-pgp", test))]
+use secrecy::ExposeSecret;
+use secrecy::SecretString;
 
 use crate::{Error, Result};
 
@@ -142,6 +144,7 @@ pub trait Verifier: Send + Sync {
 
 /// Parse an OpenSSH `allowed_signers` timestamp: `YYYYMMDD`, `YYYYMMDDHHMM`
 /// or `YYYYMMDDHHMMSS`, with an optional `Z`. Always read as UTC.
+#[cfg_attr(not(feature = "sign-ssh"), allow(dead_code))] // read by allowed_signers
 fn parse_ssh_time(raw: &str) -> Result<SystemTime> {
     let v = raw.trim().trim_end_matches(['Z', 'z']);
     let bad = || {

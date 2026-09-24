@@ -1970,6 +1970,7 @@ mod tests {
         assert_eq!(std::fs::read(out.join("data.bin")).unwrap(), payload);
     }
 
+    #[cfg(feature = "sign-ssh")] // an SSH signature is made and checked
     #[tokio::test]
     async fn sign_sidecar_and_verify_on_check() {
         use crate::sign::{SignFormat, SignSpec, VerifySpec};
@@ -2132,6 +2133,7 @@ mod tests {
     /// Sign a checksum file for a fresh `data.bin` that claims `signed_at`,
     /// with a key listed in `allowed_signers` under `options`, and copy it
     /// with --check and that verifier. `None` without `ssh-keygen`.
+    #[cfg(feature = "sign-ssh")]
     async fn verify_signed_at(
         options: &str,
         signed_at: SystemTime,
@@ -2191,6 +2193,7 @@ mod tests {
     /// A key is judged as it stands at verification, not at the signing time
     /// the checksum file claims: a retired key cannot sign something now and
     /// backdate it into its validity window.
+    #[cfg(feature = "sign-ssh")] // an SSH signature is made and checked
     #[tokio::test]
     async fn a_backdated_signing_time_does_not_revive_a_retired_key() {
         let backdated = std::time::UNIX_EPOCH + Duration::from_secs(1_560_000_000); // 2019
@@ -2207,6 +2210,7 @@ mod tests {
 
     /// A signing time ahead of the clock is refused, beyond a little skew:
     /// otherwise it would never grow older than policy.max_signature_age.
+    #[cfg(feature = "sign-ssh")] // an SSH signature is made and checked
     #[tokio::test]
     async fn a_signing_time_in_the_future_is_refused() {
         let ahead = SystemTime::now() + Duration::from_secs(3600);

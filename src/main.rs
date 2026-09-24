@@ -660,6 +660,7 @@ impl std::fmt::Display for ExitWith {
 impl std::error::Error for ExitWith {}
 
 /// A wrong command line, told with exit code 2 like clap's own complaints.
+#[cfg_attr(not(feature = "relay"), allow(dead_code))] // only the relay's flags need it
 fn usage(msg: impl Into<String>) -> anyhow::Error {
     anyhow::Error::new(ExitWith {
         code: USAGE,
