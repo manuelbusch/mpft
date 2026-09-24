@@ -13,6 +13,7 @@ use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::{Credentials, Mechanism};
 use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+use secrecy::{ExposeSecret, SecretString};
 use tracing::{debug, info};
 
 use crate::{
@@ -24,8 +25,63 @@ const DEFAULT_MAX_ATTACHMENT: u64 = 25 * 1024 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SmtpTls {
     StartTls,
+    /// STARTTLS where the server offers it, the clear otherwise: port 25
+    /// without `?tls=`, where servers talk to each other and not every
+    /// one has a certificate.
+    Opportunistic,
     Implicit,
     None,
+}
+
+impl SmtpTls {
+    fn default_port(self) -> u16 {
+        match self {
+            SmtpTls::Implicit => 465,
+            SmtpTls::None | SmtpTls::Opportunistic => 25,
+            SmtpTls::StartTls => 587,
+        }
+    }
+}
+
+/// How to talk to a server: `?tls=` if given, else what its scheme and
+/// port suggest.
+fn tls_mode(server: &Location) -> Result<SmtpTls> {
+    Ok(
+        match server.opt("tls").map(|s| s.to_ascii_lowercase()).as_deref() {
+            Some("starttls") | Some("required") => SmtpTls::StartTls,
+            Some("implicit") | Some("wrapper") | Some("tls") => SmtpTls::Implicit,
+            Some("none") | Some("off") | Some("false") => SmtpTls::None,
+            None if server.scheme() == Scheme::Smtps => SmtpTls::Implicit,
+            None => match server.port() {
+                Some(465) => SmtpTls::Implicit,
+                Some(25) => SmtpTls::Opportunistic,
+                _ => SmtpTls::StartTls,
+            },
+            Some(other) => {
+                return Err(Error::invalid_option(
+                    "tls",
+                    format!("expected starttls|implicit|none, got '{other}'"),
+                ));
+            }
+        },
+    )
+}
+
+/// `[mail] password` belongs to the server `[mail] smtp` names, and to no
+/// other: a URL that names another server (`smtp://me@elsewhere/…`) must
+/// not be handed it.
+fn configured_password(server: &Location, cfg: &crate::Config) -> Option<SecretString> {
+    let pw = cfg.resolved.mail_password.as_ref()?;
+    let configured = Location::parse(cfg.mail.smtp.as_deref()?).ok()?;
+    let same_host = match (server.host(), configured.host()) {
+        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+        _ => false,
+    };
+    let port = |l: &Location| {
+        l.port()
+            .or_else(|| tls_mode(l).ok().map(SmtpTls::default_port))
+    };
+    (same_host && port(server) == port(&configured)).then(|| pw.clone())
 }
 
 pub struct MailEndpoint {
@@ -37,6 +93,8 @@ struct SmtpConfig {
     server: Location,
     tls: SmtpTls,
     insecure: bool,
+    /// `?timeout=`, of the target URL or else of the server's.
+    timeout: Option<std::time::Duration>,
     /// Which SASL mechanisms to offer; `None` leaves lettre's choice alone.
     auth: Option<Vec<Mechanism>>,
 }
@@ -99,9 +157,8 @@ impl MailEndpoint {
         };
         let cfg = crate::config::global();
         if server.password().is_none()
-            && let Some(pw) = &cfg.resolved.mail_password
+            && let Some(pw) = configured_password(&server, &cfg)
         {
-            use secrecy::ExposeSecret;
             server.set_password(pw.expose_secret());
         }
         // A recipient behind a relay asks its client for the server's
@@ -113,22 +170,10 @@ impl MailEndpoint {
         // The recipient URL was checked in `open`; the server it resolves to
         // carries the credentials, so it needs the same look.
         crate::policy::check_credentials(&server)?;
-        let tls = match server.opt("tls").map(|s| s.to_ascii_lowercase()).as_deref() {
-            Some("starttls") | Some("required") => SmtpTls::StartTls,
-            Some("implicit") | Some("wrapper") | Some("tls") => SmtpTls::Implicit,
-            Some("none") | Some("off") | Some("false") => SmtpTls::None,
-            None if server.scheme() == Scheme::Smtps => SmtpTls::Implicit,
-            None => match server.port() {
-                Some(465) => SmtpTls::Implicit,
-                Some(25) => SmtpTls::None,
-                _ => SmtpTls::StartTls,
-            },
-            Some(other) => {
-                return Err(Error::invalid_option(
-                    "tls",
-                    format!("expected starttls|implicit|none, got '{other}'"),
-                ));
-            }
+        let tls = tls_mode(&server)?;
+        let timeout = match self.loc.opt("timeout") {
+            Some(_) => self.loc.timeout()?,
+            None => server.timeout()?,
         };
         let insecure = self
             .loc
@@ -145,6 +190,7 @@ impl MailEndpoint {
             server,
             tls,
             insecure,
+            timeout,
             auth,
         })
     }
@@ -166,11 +212,7 @@ impl MailEndpoint {
     /// The password is fetched here, for this transport only.
     async fn transport(&self, cfg: &SmtpConfig) -> Result<AsyncSmtpTransport<Tokio1Executor>> {
         let host = cfg.server.host_required()?;
-        let port = cfg.server.port().unwrap_or(match cfg.tls {
-            SmtpTls::Implicit => 465,
-            SmtpTls::None => 25,
-            SmtpTls::StartTls => 587,
-        });
+        let port = cfg.server.port().unwrap_or(cfg.tls.default_port());
         let tls = match cfg.tls {
             SmtpTls::None => Tls::None,
             mode => {
@@ -178,20 +220,20 @@ impl MailEndpoint {
                     .dangerous_accept_invalid_certs(cfg.insecure)
                     .build()
                     .map_err(|e| Error::transport("smtp", e))?;
-                if mode == SmtpTls::Implicit {
-                    Tls::Wrapper(params)
-                } else {
-                    Tls::Required(params)
+                match mode {
+                    SmtpTls::Implicit => Tls::Wrapper(params),
+                    SmtpTls::Opportunistic => Tls::Opportunistic(params),
+                    _ => Tls::Required(params),
                 }
             }
         };
         let mut b = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host)
             .port(port)
-            .tls(tls);
+            .tls(tls)
+            .timeout(cfg.timeout);
         if let Some(user) = cfg.server.username() {
             // For XOAUTH2 the "password" is the access token; lettre wraps it
             // in the user=…\x01auth=Bearer …\x01\x01 string itself.
-            use secrecy::ExposeSecret;
             let secret = cfg.server.login_password(1).await?;
             let secret = secret.as_ref().map(|p| p.expose_secret()).unwrap_or("");
             b = b.credentials(Credentials::new(user.to_string(), secret.to_string()));
@@ -385,6 +427,56 @@ mod tests {
             .smtp_config()
             .unwrap()
             .tls
+    }
+
+    /// Port 25 without `?tls=` upgrades where the server offers it, and
+    /// `?timeout=` of the target wins over the server's.
+    #[test]
+    fn port_25_tries_starttls_and_the_timeout_is_honoured() {
+        assert_eq!(
+            tls_of("smtp://relay.example.com:25/a@b.c"),
+            SmtpTls::Opportunistic
+        );
+        assert_eq!(
+            tls_of("smtp://relay.example.com:25/a@b.c?tls=none"),
+            SmtpTls::None
+        );
+        let timeout = |url: &str| {
+            MailEndpoint::new(Location::parse(url).unwrap())
+                .unwrap()
+                .smtp_config()
+                .unwrap()
+                .timeout
+        };
+        let secs = |n| Some(std::time::Duration::from_secs(n));
+        assert_eq!(timeout("smtp://h/a@b.c"), secs(30));
+        assert_eq!(timeout("smtp://h/a@b.c?timeout=5"), secs(5));
+        assert_eq!(timeout("smtp://h/a@b.c?timeout=0"), None);
+    }
+
+    /// `[mail] password` goes to the server `[mail] smtp` names only.
+    #[test]
+    fn the_configured_password_stays_with_its_server() {
+        let mut cfg =
+            crate::Config::parse("[mail]\nsmtp = \"smtp://me@Mail.Example.com/?tls=starttls\"\n")
+                .unwrap();
+        cfg.resolved.mail_password = Some(SecretString::from("pw"));
+        let pw = |url: &str, cfg: &crate::Config| {
+            configured_password(&Location::parse(url).unwrap(), cfg).is_some()
+        };
+        assert!(pw("smtp://me@mail.example.com/a@b.c", &cfg));
+        assert!(pw("smtp://other@mail.example.com:587/a@b.c", &cfg));
+        assert!(!pw("smtp://me@attacker.example:25/a@b.c", &cfg));
+        assert!(
+            !pw("smtp://me@mail.example.com:25/a@b.c", &cfg),
+            "another port"
+        );
+        assert!(
+            !pw("smtps://me@mail.example.com/a@b.c", &cfg),
+            "465 is another port"
+        );
+        cfg.mail.smtp = None;
+        assert!(!pw("smtp://me@mail.example.com/a@b.c", &cfg));
     }
 
     /// `smtps://` is implicit TLS, on 465 unless the URL names a port.

@@ -29,6 +29,10 @@ password = { keyring = "mpt/smtp" }
 from     = "reports@example.com"
 ```
 
+`password` belongs to the server `smtp` names: it is used for that host and
+port, whether `mailto:`, `$MPT_SMTP_URL` or an `smtp://` URL reaches it, and
+never sent to another server.
+
 ```
 mpt cp report.pdf "mailto:boss@example.com"
 ```
@@ -113,6 +117,14 @@ the fourth rule is usually the one that applies.
 | `starttls` | connect in the clear, upgrade before logging in | 587 |
 | `implicit` | TLS from the first byte | 465 |
 | `none` | no encryption; for a local relay only | 25 |
+
+Without `?tls=` the port decides: 465 is `implicit`, 25 upgrades with
+STARTTLS where the server offers it and stays in the clear where it does not,
+and every other port is `starttls`. A password on port 25 still
+[warns](../trust/connections.md#credentials-in-the-clear), since whoever sits
+in between can hide the offer; `tls=starttls` insists on it. `?timeout=` limits
+how long a step of the conversation may take, 30 seconds by default, as for
+every scheme.
 
 `smtps://` is `smtp://` with `tls=implicit` and port 465 by default, the way
 other programs read that prefix:

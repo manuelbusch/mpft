@@ -96,7 +96,7 @@ Defaults for `mailto:` and `smtp://`.
 | Key | Type | Meaning |
 |---|---|---|
 | `smtp` | `smtp://` URL | the server `mailto:` targets use |
-| `password` | secret | SMTP password, or the access token with `auth = "xoauth2"` |
+| `password` | secret | SMTP password for the `smtp` server (and no other), or the access token with `auth = "xoauth2"` |
 | `auth` | `"auto"`, `"xoauth2"`, `"plain"`, `"login"` | SASL mechanism |
 | `from` | address | sender address |
 | `max_attachment` | size | attachment limit; default 25 MiB |
