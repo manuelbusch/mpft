@@ -66,7 +66,10 @@ WARN … holds a secret and lies outside your profile directory; check who else 
 
 That is a weaker check than the Unix one. A file inside `%USERPROFILE%` is
 assumed to be as private as the profile itself; an ACL check is not
-implemented. `[policy] strict_permissions` applies to the Unix check only.
+implemented. `[policy] strict_permissions` turns the check of a [secret
+file](../configuration/credentials.md#files-with-secrets-in-them) into a
+refusal here too; for the configuration file itself it applies to the Unix
+check only.
 
 ## Paths
 
@@ -79,9 +82,10 @@ mpt cp \\fileserver\share\report.pdf "s3://bucket/in/"
 
 - **A drive letter is not a scheme.** `C:\data\x.bin` is recognised as a local
   path rather than mistaken for a URL, and so is a UNC path.
-- **`\` is a path separator.** That matters for the files `mpt` writes beside
-  yours: a checksum file and a `.mpt-part` land next to their file rather than
-  in the working directory.
+- **`\` is a path separator** in a local path, and only there: in a URL's
+  path it is part of a name, as the server sees it. That matters for the files
+  `mpt` writes beside yours: a checksum file and a `.mpt-part` land next to
+  their file rather than in the working directory.
 - **A trailing `\` marks a directory target**, as `/` does.
 
 Remote paths are unaffected: an `sftp://` path is the server's, and the server

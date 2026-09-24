@@ -621,8 +621,8 @@ impl Location {
         if self.scheme.is_mail() {
             return None;
         }
-        let p = trim_end_separators(&self.path);
-        let name = match last_separator(p) {
+        let p = trim_end_separators(&self.path, self.backslash_separates());
+        let name = match last_separator(p, self.backslash_separates()) {
             Some(i) => &p[i + 1..],
             None => p,
         };
@@ -761,8 +761,8 @@ impl Location {
             loc.path = percent_decode(dir);
             loc.wire_path = Some(dir.to_string());
         } else if !self.is_dir_target() {
-            let p = trim_end_separators(&self.path);
-            loc.path = match last_separator(p) {
+            let p = trim_end_separators(&self.path, self.backslash_separates());
+            loc.path = match last_separator(p, self.backslash_separates()) {
                 Some(idx) => p[..=idx].to_string(),
                 // Nothing in front of the name. Only a bare local path
                 // (`report.pdf`) and an s3 path that is just a bucket can get
@@ -800,7 +800,7 @@ impl Location {
         } else {
             // Keep the separator that is already in use, so a Windows path
             // stays a Windows path.
-            match last_separator(&self.path) {
+            match last_separator(&self.path, self.backslash_separates()) {
                 Some(idx) => format!("{}{}{}", &self.path[..idx + 1], name, ""),
                 None => name.to_string(),
             }
@@ -1164,13 +1164,22 @@ fn mask_option<'a>(key: &str, value: &'a str) -> std::borrow::Cow<'a, str> {
     }
 }
 
-/// Index of the last path separator: `/` everywhere, and `\` on Windows,
-/// where both are separators and a bare path may use either.
-fn last_separator(path: &str) -> Option<usize> {
+impl Location {
+    /// Whether `\` is a separator in this path: in a local path on Windows,
+    /// and nowhere else. On a server, and anywhere on Unix, it is a
+    /// character of a name.
+    fn backslash_separates(&self) -> bool {
+        self.scheme == Scheme::File && cfg!(windows)
+    }
+}
+
+/// Index of the last path separator: `/`, and `\` where `backslash` says
+/// it is one too.
+fn last_separator(path: &str, backslash: bool) -> Option<usize> {
     let slash = path.rfind('/');
-    if cfg!(windows) {
-        let backslash = path.rfind('\\');
-        return match (slash, backslash) {
+    if backslash {
+        let bs = path.rfind('\\');
+        return match (slash, bs) {
             (Some(a), Some(b)) => Some(a.max(b)),
             (a, b) => a.or(b),
         };
@@ -1178,9 +1187,9 @@ fn last_separator(path: &str) -> Option<usize> {
     slash
 }
 
-/// Drop trailing separators, `\` included on Windows.
-fn trim_end_separators(path: &str) -> &str {
-    if cfg!(windows) {
+/// Drop trailing separators, `\` included where `backslash` says so.
+fn trim_end_separators(path: &str, backslash: bool) -> &str {
+    if backslash {
         path.trim_end_matches(['/', '\\'])
     } else {
         path.trim_end_matches('/')
@@ -1417,6 +1426,17 @@ mod tests {
         assert_eq!(l.scheme(), Scheme::File);
         assert!(l.is_dir_target());
         assert_eq!(l.path_joined("x.bin").unwrap(), "D:/data/x.bin");
+    }
+
+    /// A `\` in a server's path is part of a name, on every platform.
+    #[test]
+    fn a_backslash_on_a_server_is_part_of_the_name() {
+        let l = Location::parse("sftp://h/in/a%5Cb.txt").unwrap();
+        assert_eq!(l.filename(), Some("a\\b.txt"));
+        assert_eq!(l.parent().unwrap().path(), "/in/");
+        assert_eq!(l.sibling("x").unwrap().path(), "/in/x");
+        let s3 = Location::parse("s3://b/k%5C").unwrap();
+        assert_eq!(s3.filename(), Some("k\\"));
     }
 
     #[cfg(windows)]
