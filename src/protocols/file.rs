@@ -84,6 +84,10 @@ impl FileEndpoint {
 
 #[async_trait]
 impl Sender for FileEndpoint {
+    fn scheme_name(&self) -> String {
+        self.loc.scheme().to_string()
+    }
+
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()> {
         let target = self.target(meta).await?;
         if let Some(parent) = target.parent()

@@ -405,6 +405,10 @@ impl Receiver for FtpEndpoint {
 
 #[async_trait]
 impl Sender for FtpEndpoint {
+    fn scheme_name(&self) -> String {
+        self.loc.scheme().to_string()
+    }
+
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()> {
         let mut ftp = self.connect().await?;
         let target = self.loc.target_path(meta.filename.as_deref())?;

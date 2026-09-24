@@ -18,14 +18,21 @@ wrong", and none of them will come right on a retry.
 | Kind of failure | Code |
 |---|---|
 | checksum mismatch; signature missing, invalid, untrusted or too old | 3 |
-| authentication rejected: wrong password, no accepted key, host key not trusted | 4 |
-| unusable configuration or trust file (`allowed_signers`, keyring), unknown profile, unsupported scheme or operation, bad URL or option | 2 |
+| authentication rejected: wrong password, no accepted key, host key not trusted; access refused (HTTP and WebDAV 401 or 403, S3 access denied or a signature that does not match) | 4 |
+| unusable configuration or trust file (`allowed_signers`, keyring), unknown profile, unsupported scheme or operation, bad URL or option, `insecure=true` where the policy forbids it, `mailto:` without an SMTP server | 2 |
 | cancelled | 130 |
 | everything else: I/O, remote errors, timeouts, transport failures | 1 |
 
 A host-key refusal counts as authentication (4), because that is the stage it
 happens at and because the answer is the same: something about how you are
 identifying the other side needs attention before a retry can help.
+
+A file that is not there is kind `io` with code 1 on every protocol: a local
+path, HTTP and WebDAV 404 or 410, a missing S3 object, SFTP's "no such file"
+and the message `scp` gives for it. So is a file the server refuses to open
+(SFTP's and `scp`'s "permission denied"), which is about the file rather than
+the login. FTP says both with the same reply, 550, and its reply is kept as
+kind `remote`.
 
 ## Several failures
 

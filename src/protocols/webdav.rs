@@ -57,9 +57,22 @@ impl WebDavEndpoint {
 }
 
 fn dav_err(e: reqwest_dav::Error) -> Error {
+    use reqwest_dav::DecodeError as D;
     match e {
         reqwest_dav::Error::Reqwest(e) => super::http::http_err(e),
         reqwest_dav::Error::ReqwestDecode(e) => Error::Remote(format!("webdav: {e:?}")),
+        // A status other than the one expected comes back decoded; it
+        // means what it means over plain HTTP.
+        reqwest_dav::Error::Decode(D::Server(reqwest_dav::ServerError {
+            response_code, ..
+        }))
+        | reqwest_dav::Error::Decode(D::StatusMismatched(reqwest_dav::StatusMismatchedError {
+            response_code,
+            ..
+        })) => match reqwest::StatusCode::from_u16(response_code) {
+            Ok(status) => super::http::status_err(status),
+            Err(_) => Error::Remote(format!("webdav: status {response_code}")),
+        },
         reqwest_dav::Error::Decode(e) => Error::Remote(format!("webdav: {e:?}")),
         reqwest_dav::Error::MissingAuthContext => {
             Error::Auth("webdav: server requires authentication".into())
@@ -156,6 +169,10 @@ impl Receiver for WebDavEndpoint {
 
 #[async_trait]
 impl Sender for WebDavEndpoint {
+    fn scheme_name(&self) -> String {
+        self.loc.scheme().to_string()
+    }
+
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()> {
         let target = self.loc.encoded_target_path(meta.filename.as_deref())?;
         debug!(%target, "webdav PUT");

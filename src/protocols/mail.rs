@@ -138,7 +138,7 @@ impl MailEndpoint {
                     .ok()
                     .or_else(|| crate::config::global().mail.smtp.clone())
                     .ok_or_else(|| {
-                        Error::Auth(
+                        Error::Config(
                             "mailto: requires MPT_SMTP_URL or [mail] smtp in the configuration \
                              (e.g. smtp://user@mail.example.com:587?tls=starttls)"
                                 .into(),
@@ -296,6 +296,10 @@ impl Endpoint for MailEndpoint {
 
 #[async_trait]
 impl Sender for MailEndpoint {
+    fn scheme_name(&self) -> String {
+        self.loc.scheme().to_string()
+    }
+
     fn places_sidecar(&self) -> bool {
         false
     }

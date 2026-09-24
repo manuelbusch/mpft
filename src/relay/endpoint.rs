@@ -53,6 +53,10 @@ impl Endpoint for RelayEndpoint {
 
 #[async_trait]
 impl Sender for RelayEndpoint {
+    fn scheme_name(&self) -> String {
+        self.target.scheme().to_string()
+    }
+
     /// The far relay writes its own checksum file on the far side.
     fn places_sidecar(&self) -> bool {
         false

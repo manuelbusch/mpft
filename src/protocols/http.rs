@@ -164,13 +164,22 @@ fn bearer_token(loc: &Location) -> Option<String> {
 }
 
 pub(crate) fn http_err(e: reqwest::Error) -> Error {
-    if let Some(status) = e.status() {
-        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            return Error::Auth(format!("http {status}"));
-        }
-        return Error::Remote(format!("http {status}"));
+    match e.status() {
+        Some(status) => status_err(status),
+        None => Error::transport("http", e),
     }
-    Error::transport("http", e)
+}
+
+/// The error for a status the server answered with, shared with WebDAV:
+/// refused credentials are [`Error::Auth`], a missing resource is
+/// [`Error::not_found`], and the rest is the server's word as it stands.
+pub(crate) fn status_err(status: reqwest::StatusCode) -> Error {
+    use reqwest::StatusCode as S;
+    match status {
+        S::UNAUTHORIZED | S::FORBIDDEN => Error::Auth(format!("http {status}")),
+        S::NOT_FOUND | S::GONE => Error::not_found(format!("http {status}")),
+        _ => Error::Remote(format!("http {status}")),
+    }
 }
 
 impl Endpoint for HttpEndpoint {
@@ -224,6 +233,10 @@ impl Receiver for HttpEndpoint {
 
 #[async_trait]
 impl Sender for HttpEndpoint {
+    fn scheme_name(&self) -> String {
+        self.loc.scheme().to_string()
+    }
+
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()> {
         let url = self.url(meta.filename.as_deref())?;
         debug!(%url, method = %self.method, "http upload");
@@ -293,6 +306,27 @@ mod tests {
             "https://h/x?format=json"
         );
         assert_eq!(url("http://[::1]:8080/x", None), "http://[::1]:8080/x");
+    }
+
+    #[test]
+    fn statuses_map_to_the_same_kinds_everywhere() {
+        use reqwest::StatusCode as S;
+        for s in [S::UNAUTHORIZED, S::FORBIDDEN] {
+            assert!(matches!(status_err(s), Error::Auth(_)), "{s}");
+        }
+        for s in [S::NOT_FOUND, S::GONE] {
+            let e = status_err(s);
+            assert!(e.is_not_found() && !e.is_transient(), "{s}: {e}");
+        }
+        assert!(status_err(S::SERVICE_UNAVAILABLE).is_transient());
+        assert!(!status_err(S::CONFLICT).is_transient());
+    }
+
+    #[tokio::test]
+    async fn an_unsupported_operation_names_the_scheme() {
+        let ep = HttpEndpoint::new(Location::parse("https://h/x").unwrap()).unwrap();
+        let err = ep.rename("a", "b").await.unwrap_err().to_string();
+        assert_eq!(err, "scheme 'https' cannot rename");
     }
 
     #[test]

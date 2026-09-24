@@ -155,16 +155,32 @@ async fn read_ack<S: AsyncRead + Unpin>(s: &mut S) -> Result<()> {
         0 => Ok(()),
         code @ (1 | 2) => {
             let msg = read_line(s).await?;
-            let msg = msg.trim().to_string();
-            if code == 1 {
-                Err(Error::Remote(format!("scp: {msg}")))
-            } else {
-                Err(Error::Remote(format!("scp fatal: {msg}")))
-            }
+            Err(remote_message(msg.trim(), code == 2))
         }
         other => Err(Error::Remote(format!(
             "scp: unexpected response byte {other:#x}"
         ))),
+    }
+}
+
+/// What the remote scp reported, as an error. It only sends text, so a
+/// missing file and a refusal are told by the text `strerror` gives them,
+/// and are then reported the way every protocol reports them.
+fn remote_message(msg: &str, fatal: bool) -> Error {
+    let msg = if fatal {
+        format!("scp fatal: {msg}")
+    } else {
+        format!("scp: {msg}")
+    };
+    if msg.ends_with("No such file or directory") {
+        Error::not_found(msg)
+    } else if msg.ends_with("Permission denied") {
+        Error::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            msg,
+        ))
+    } else {
+        Error::Remote(msg)
     }
 }
 
@@ -234,9 +250,9 @@ impl Receiver for ScpEndpoint {
                     stream.write_all(b"\0").await?;
                 }
                 b'D' => return Err(Error::Remote("scp: remote path is a directory".into())),
-                1 | 2 => {
+                code @ (1 | 2) => {
                     let msg = read_line(&mut stream).await?;
-                    return Err(Error::Remote(format!("scp: {}", msg.trim())));
+                    return Err(remote_message(msg.trim(), code == 2));
                 }
                 other => {
                     return Err(Error::Remote(format!(
@@ -387,6 +403,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for ScpReader<S> {
 
 #[async_trait]
 impl Sender for ScpEndpoint {
+    fn scheme_name(&self) -> String {
+        self.loc.scheme().to_string()
+    }
+
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()> {
         let name = meta.filename_or("payload").to_string();
         // SCP needs the size up front.
@@ -519,6 +539,20 @@ mod tests {
 
         // The stream ends without a status.
         assert!(download(&data, b"").await.0.is_err());
+    }
+
+    #[test]
+    fn remote_messages_say_what_kind_of_failure() {
+        let e = remote_message("scp: /x/a.txt: No such file or directory", false);
+        assert!(e.is_not_found(), "{e}");
+        let e = remote_message("scp: /x/a.txt: Permission denied", true);
+        assert!(
+            matches!(&e, Error::Io(io) if io.kind() == std::io::ErrorKind::PermissionDenied),
+            "{e}"
+        );
+        assert!(!e.is_transient());
+        let e = remote_message("scp: /x: Is a directory", false);
+        assert!(matches!(e, Error::Remote(_)), "{e}");
     }
 
     #[test]

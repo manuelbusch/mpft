@@ -98,7 +98,8 @@ impl S3Endpoint {
             // The store signs every request itself and is built once, so
             // a key that is only handed out per login has nowhere to go.
             return Err(Error::Auth(
-                "s3: the secret key cannot be asked for on demand; send it in the header                  (--via-credentials header) or let the relay use its own AWS credentials"
+                "s3: the secret key cannot be asked for on demand; send it in the header \
+                 (--via-credentials header) or let the relay use its own AWS credentials"
                     .into(),
             ));
         } else if let (Some(id), Some(key)) = (
@@ -254,11 +255,24 @@ mod chain {
     }
 }
 
+/// The store's error as one of ours: a missing object and refused
+/// credentials the way every protocol reports them, the store's own word
+/// for what another attempt would meet again, and the rest as transport
+/// trouble. (object_store retries what it can itself first.)
 fn s3_err(e: object_store::Error) -> Error {
+    use object_store::Error as E;
     match e {
-        object_store::Error::NotFound { path, .. } => {
-            Error::Remote(format!("s3: not found: {path}"))
-        }
+        E::NotFound { path, .. } => Error::not_found(format!("s3: not found: {path}")),
+        // 403 is also what S3 says for a missing key to someone who may
+        // not list the bucket, and for a signature that does not match.
+        E::PermissionDenied { path, .. } => Error::Auth(format!("s3: access denied: {path}")),
+        E::Unauthenticated { path, .. } => Error::Auth(format!("s3: not authenticated: {path}")),
+        e @ (E::AlreadyExists { .. }
+        | E::Precondition { .. }
+        | E::NotModified { .. }
+        | E::NotSupported { .. }
+        | E::NotImplemented { .. }
+        | E::InvalidPath { .. }) => Error::Remote(format!("s3: {e}")),
         other => Error::transport("s3", other),
     }
 }
@@ -330,6 +344,10 @@ impl Receiver for S3Endpoint {
 
 #[async_trait]
 impl Sender for S3Endpoint {
+    fn scheme_name(&self) -> String {
+        self.loc.scheme().to_string()
+    }
+
     async fn send(&self, mut body: ByteStream, meta: &SendMeta) -> Result<()> {
         let path = self.obj_path(meta.filename.as_deref())?;
         debug!(bucket = %self.bucket, %path, "s3 put");
@@ -612,6 +630,30 @@ mod tests {
         let mut got = Vec::new();
         body.read_to_end(&mut got).await.expect("a steady trickle");
         assert_eq!(got, b"zzzzzzzzzzzzzzz");
+    }
+
+    #[test]
+    fn a_missing_object_and_a_refusal_are_told_apart() {
+        let src = || -> Box<dyn std::error::Error + Send + Sync> { "x".into() };
+        let e = s3_err(object_store::Error::NotFound {
+            path: "b/k".into(),
+            source: src(),
+        });
+        assert!(e.is_not_found() && !e.is_transient(), "{e}");
+        for e in [
+            object_store::Error::PermissionDenied {
+                path: "b/k".into(),
+                source: src(),
+            },
+            object_store::Error::Unauthenticated {
+                path: "b/k".into(),
+                source: src(),
+            },
+        ] {
+            let e = s3_err(e);
+            assert!(matches!(e, Error::Auth(_)), "{e}");
+            assert_eq!(e.exit_code(), 4);
+        }
     }
 
     #[test]

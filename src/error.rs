@@ -175,6 +175,20 @@ impl Error {
         }
     }
 
+    /// A file or object that is not there, the same way on every protocol:
+    /// an I/O error of kind `NotFound`, as a local file gives.
+    pub fn not_found(what: impl fmt::Display) -> Self {
+        Error::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            what.to_string(),
+        ))
+    }
+
+    /// Whether this says that the file or object is not there.
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound)
+    }
+
     pub fn invalid_option(name: impl Into<String>, reason: impl fmt::Display) -> Self {
         Error::InvalidOption {
             name: name.into(),

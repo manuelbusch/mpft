@@ -48,8 +48,33 @@ fn strip_home(p: &str) -> String {
         .unwrap_or_else(|| p.to_string())
 }
 
+/// The server's status the way every protocol reports it: a missing file
+/// as [`Error::not_found`], a refusal as a permission error, any other
+/// answer as the server's word; only a session that broke off is transport
+/// trouble worth another attempt.
 fn sftp_err(e: russh_sftp::client::error::Error) -> Error {
-    Error::transport("sftp", e)
+    use russh_sftp::client::error::Error as E;
+    match e {
+        E::Status(s) => {
+            // OpenSSH's message is the code's name again; others say more.
+            let msg = match s.error_message.trim() {
+                "" => format!("sftp: {}", s.status_code),
+                m => format!("sftp: {m}"),
+            };
+            match s.status_code {
+                StatusCode::NoSuchFile => Error::not_found(msg),
+                StatusCode::PermissionDenied => Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    msg,
+                )),
+                StatusCode::NoConnection | StatusCode::ConnectionLost => {
+                    Error::transport("sftp", E::Status(s))
+                }
+                _ => Error::Remote(msg),
+            }
+        }
+        other => Error::transport("sftp", other),
+    }
 }
 
 /// The OpenSSH extension that renames the way rename(2) does.
@@ -144,6 +169,10 @@ impl Receiver for SftpEndpoint {
 
 #[async_trait]
 impl Sender for SftpEndpoint {
+    fn scheme_name(&self) -> String {
+        self.loc.scheme().to_string()
+    }
+
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()> {
         let (handle, sftp) = self.session().await?;
         let mut target = strip_home(&self.loc.target_path(meta.filename.as_deref())?);
@@ -306,5 +335,39 @@ impl Sender for SftpEndpoint {
         let _ = sftp.close().await;
         super::disconnect(&handle).await;
         res
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use russh_sftp::protocol::Status;
+
+    fn status(code: StatusCode, msg: &str) -> Error {
+        sftp_err(
+            Status {
+                id: 1,
+                status_code: code,
+                error_message: msg.into(),
+                language_tag: "en".into(),
+            }
+            .into(),
+        )
+    }
+
+    #[test]
+    fn statuses_map_to_the_same_kinds_everywhere() {
+        let e = status(StatusCode::NoSuchFile, "No such file");
+        assert!(e.is_not_found() && !e.is_transient(), "{e}");
+        assert_eq!(e.to_string(), "I/O error: sftp: No such file");
+        let e = status(StatusCode::PermissionDenied, "Permission denied");
+        assert!(!e.is_transient() && e.exit_code() == 1, "{e}");
+        let e = status(StatusCode::Failure, "");
+        assert!(
+            matches!(&e, Error::Remote(m) if m == "sftp: Failure"),
+            "{e}"
+        );
+        assert!(!e.is_transient());
+        assert!(status(StatusCode::ConnectionLost, "").is_transient());
     }
 }

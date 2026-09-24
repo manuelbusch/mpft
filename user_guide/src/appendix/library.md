@@ -261,7 +261,8 @@ codes](../reference/exit-codes.md) are a match on it — `Auth`, `Signature`,
 do the same rather than matching on message text; `Error::exit_code()` is
 that match, and `Error::kind()` the stable name (`auth`, `io`, …) the API
 puts in its error objects. `Error::is_transient()` says whether retrying
-could help.
+could help, and `Error::is_not_found()` whether the file was not there, on
+whichever protocol.
 
 ## Features
 

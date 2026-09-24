@@ -43,7 +43,7 @@ default keys are **not** tried. See
 Wrong credentials, or the account cannot log in at all. `-vv` shows the
 server's own reply, which is usually more specific.
 
-**`mailto: requires MPT_SMTP_URL or [mail] smtp in the configuration`** [4]
+**`mailto: requires MPT_SMTP_URL or [mail] smtp in the configuration`** [2]
 
 `mailto:` names recipients but no server. Set `[mail] smtp`, or use an
 `smtp://` URL that carries the server itself.
@@ -63,7 +63,7 @@ The server's TLS certificate does not check out. Install the internal CA in the
 system trust store, or — for one endpoint only — add `?insecure=true`. Note
 that this switches off the hostname check too.
 
-**`insecure=true would switch off certificate verification, which policy.refuse_insecure_tls forbids`** [4]
+**`insecure=true would switch off certificate verification, which policy.refuse_insecure_tls forbids`** [2]
 
 A policy forbids it, which is what the policy is for. If it is your machine,
 `[policy] refuse_insecure_tls` is where it is set.
@@ -76,7 +76,7 @@ plus `refuse_plaintext_auth`. Usually one character fixes it: `ftps://`,
 
 ## The transfer itself
 
-**`sftp: No such file: No such file`** [1]
+**`I/O error: sftp: No such file`** [1]
 
 The remote directory does not exist. Unlike a local target, a remote one is not
 created for you. Use `-r`, which creates directories as part of copying a tree,

@@ -105,6 +105,21 @@ pub trait Sender: Send + Sync {
     /// Write the payload to the endpoint's path (or deliver it, for mail).
     async fn send(&self, body: ByteStream, meta: &SendMeta) -> Result<()>;
 
+    /// The scheme this sender writes to, named by the error of an optional
+    /// method it does not implement. Every sender of this crate says it;
+    /// one that does not is named `unknown`.
+    fn scheme_name(&self) -> String {
+        "unknown".into()
+    }
+
+    /// The error of an optional method this sender does not implement.
+    fn unsupported(&self, op: &'static str) -> crate::Error {
+        crate::Error::UnsupportedOperation {
+            scheme: self.scheme_name(),
+            op,
+        }
+    }
+
     /// Whether a checksum file can be put next to the file. Not for mail,
     /// which attaches it instead, and not for a relay hop, which writes
     /// its own on the far side.
@@ -122,10 +137,7 @@ pub trait Sender: Send + Sync {
     /// this endpoint's location (see [`Location::sibling`]).
     async fn rename(&self, from: &str, to: &str) -> Result<()> {
         let _ = (from, to);
-        Err(crate::Error::UnsupportedOperation {
-            scheme: String::new(),
-            op: "rename",
-        })
+        Err(self.unsupported("rename"))
     }
 
     /// Whether [`Sender::remove`] is implemented.
@@ -136,10 +148,7 @@ pub trait Sender: Send + Sync {
     /// Delete the file `name` in the directory of this endpoint's location.
     async fn remove(&self, name: &str) -> Result<()> {
         let _ = name;
-        Err(crate::Error::UnsupportedOperation {
-            scheme: String::new(),
-            op: "remove",
-        })
+        Err(self.unsupported("remove"))
     }
 
     /// Whether the target can be written to from a given offset, which is
@@ -163,10 +172,7 @@ pub trait Sender: Send + Sync {
     /// size instead, so a repeated append fails rather than corrupts.
     async fn append(&self, body: ByteStream, meta: &SendMeta, offset: u64) -> Result<()> {
         let _ = (body, meta, offset);
-        Err(crate::Error::UnsupportedOperation {
-            scheme: String::new(),
-            op: "append",
-        })
+        Err(self.unsupported("append"))
     }
 
     /// Whether the target has directories that must exist before a file can
@@ -179,10 +185,7 @@ pub trait Sender: Send + Sync {
     /// it and its parents as needed. Nothing to do on a store without
     /// directories (S3).
     async fn mkdir_all(&self) -> Result<()> {
-        Err(crate::Error::UnsupportedOperation {
-            scheme: String::new(),
-            op: "create directories",
-        })
+        Err(self.unsupported("create directories"))
     }
 }
 

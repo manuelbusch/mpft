@@ -194,7 +194,7 @@ pub fn check_credentials(loc: &Location) -> Result<()> {
         );
     }
     if policy.refuse_insecure_tls && loc.opt_bool("insecure")?.unwrap_or(false) {
-        return Err(Error::Auth(format!(
+        return Err(Error::Config(format!(
             "{}: insecure=true would switch off certificate verification, \
              which policy.refuse_insecure_tls forbids",
             loc.masked()
@@ -331,8 +331,9 @@ mod tests {
             refuse_insecure_tls: true,
             ..Policy::default()
         });
-        let err = check_credentials(&l).unwrap_err().to_string();
-        assert!(err.contains("refuse_insecure_tls"), "{err}");
+        let err = check_credentials(&l).unwrap_err();
+        assert!(matches!(err, Error::Config(_)), "a usage error: {err}");
+        assert!(err.to_string().contains("refuse_insecure_tls"), "{err}");
         assert!(
             check_credentials(&loc("ftps://u@h/x")).is_ok(),
             "an endpoint that does not ask for it is unaffected"
