@@ -64,6 +64,11 @@ pub const VERSION: u32 = 2;
 /// The longest header line a relay reads.
 pub const MAX_HEADER: usize = 64 * 1024;
 
+/// How long a relay waits for the header line. A client writes it right
+/// after the command starts; one that does not would hold a `--parallel`
+/// slot for as long as its connection lives.
+pub const HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The first line on stdin: what to call the file, how many bytes follow,
 /// where they go and how.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -513,10 +518,17 @@ async fn read_header<R: AsyncRead + Unpin>(
     reader: &mut BufReader<R>,
 ) -> Result<Header> {
     let mut raw = Vec::new();
-    reader
-        .take(MAX_HEADER as u64 + 1)
-        .read_until(b'\n', &mut raw)
-        .await?;
+    let mut limited = reader.take(MAX_HEADER as u64 + 1);
+    let reading = limited.read_until(b'\n', &mut raw);
+    match tokio::time::timeout(HEADER_TIMEOUT, reading).await {
+        Ok(read) => read?,
+        Err(_) => {
+            return Err(Error::invalid_option(
+                "header",
+                format!("no header line within {}s", HEADER_TIMEOUT.as_secs()),
+            ));
+        }
+    };
     if raw.last() != Some(&b'\n') {
         return Err(Error::invalid_option(
             "header",
@@ -1328,6 +1340,19 @@ mod tests {
             let message = line["error"]["message"].as_str().unwrap();
             assert!(message.contains(what), "{message}");
         }
+    }
+
+    /// A client that sends nothing is refused after a while, and gives
+    /// its slot back.
+    #[tokio::test(start_paused = true)]
+    async fn a_header_that_never_comes_is_refused() {
+        let (_client_in, server_in) = duplex(1024);
+        let mut out = Vec::new();
+        let code = run(&relay(0), server_in, &mut out).await;
+        assert_eq!(code, 2);
+        let line: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let message = line["error"]["message"].as_str().unwrap();
+        assert!(message.contains("no header line within 30s"), "{message}");
     }
 
     #[tokio::test]

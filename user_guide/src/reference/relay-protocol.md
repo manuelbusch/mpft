@@ -5,7 +5,8 @@ the standard input and output of `mpt relay` run directly.
 
 ## The header
 
-The client writes one JSON line, at most 64 KiB:
+The client writes one JSON line, at most 64 KiB, within 30 seconds of the
+start; a relay that has no complete line by then refuses the session:
 
 ```json
 {"v": 2, "name": "report.pdf", "size": 40000,
