@@ -115,8 +115,10 @@ pub(crate) fn build_client(loc: &Location) -> Result<Client> {
 pub(crate) fn base_url(loc: &Location, schemes: &[&str; 2]) -> Result<Url> {
     let tls = matches!(loc.scheme(), Scheme::Https | Scheme::WebDavs);
     let scheme = if tls { schemes[1] } else { schemes[0] };
-    let mut url = Url::parse(&format!("{scheme}://{}/", loc.host_required()?))
-        .map_err(|e| Error::InvalidUrl(e.to_string()))?;
+    loc.host_required()?;
+    let host = loc.url_host().unwrap_or_default();
+    let mut url =
+        Url::parse(&format!("{scheme}://{host}/")).map_err(|e| Error::InvalidUrl(e.to_string()))?;
     if let Some(p) = loc.port() {
         url.set_port(Some(p))
             .map_err(|_| Error::InvalidUrl("cannot set port".into()))?;
@@ -290,6 +292,7 @@ mod tests {
             url("https://h/x?format=json", None),
             "https://h/x?format=json"
         );
+        assert_eq!(url("http://[::1]:8080/x", None), "http://[::1]:8080/x");
     }
 
     #[test]

@@ -181,7 +181,7 @@ fn smtp_without_tls(loc: &Location) -> bool {
 pub fn check_credentials(loc: &Location) -> Result<()> {
     let policy = policy();
     if let Some(why) = plaintext_exposure(loc) {
-        let where_ = format!("{}://{}", loc.scheme(), loc.host().unwrap_or(""));
+        let where_ = format!("{}://{}", loc.scheme(), loc.url_host().unwrap_or_default());
         if policy.refuse_plaintext_auth {
             return Err(Error::Auth(format!(
                 "{where_}: {why} (refused by policy; switch to the TLS variant of the \

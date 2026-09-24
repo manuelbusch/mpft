@@ -491,6 +491,12 @@ impl Location {
     pub fn host(&self) -> Option<&str> {
         self.host.as_deref()
     }
+    /// The host as it goes into a URL or a `host:port` pair: an IPv6
+    /// address in brackets (`[::1]`), every other host as it is.
+    pub fn url_host(&self) -> Option<String> {
+        self.host.as_deref().map(bracket_host)
+    }
+
     /// Host or error for schemes that require one.
     pub fn host_required(&self) -> Result<&str> {
         self.host()
@@ -895,11 +901,7 @@ impl Location {
                     out.push('@');
                 }
                 if let Some(h) = &self.host {
-                    if h.contains(':') {
-                        out.push_str(&format!("[{h}]"));
-                    } else {
-                        out.push_str(h);
-                    }
+                    out.push_str(&bracket_host(h));
                 }
                 if let Some(p) = self.port {
                     out.push_str(&format!(":{p}"));
@@ -1033,7 +1035,7 @@ impl fmt::Display for Location {
                     f.write_str("@")?;
                 }
                 if let Some(h) = &self.host {
-                    f.write_str(h)?;
+                    f.write_str(&bracket_host(h))?;
                 }
                 if let Some(p) = self.port {
                     write!(f, ":{p}")?;
@@ -1148,6 +1150,15 @@ fn trim_end_separators(path: &str) -> &str {
         path.trim_end_matches(['/', '\\'])
     } else {
         path.trim_end_matches('/')
+    }
+}
+
+/// `[::1]` for an IPv6 address, which [`Location`] keeps without brackets.
+pub fn bracket_host(host: &str) -> String {
+    if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
     }
 }
 
@@ -1574,6 +1585,13 @@ mod tests {
     fn ipv6_host() {
         let l = Location::parse("sftp://u@[::1]:22/x").unwrap();
         assert_eq!(l.host(), Some("::1"));
+        assert_eq!(l.url_host().as_deref(), Some("[::1]"));
+        assert_eq!(l.to_string(), "sftp://u@[::1]:22/x");
+        assert_eq!(Location::parse(&l.to_string()).unwrap().host(), Some("::1"));
+        assert_eq!(
+            Location::parse("sftp://h/x").unwrap().url_host().as_deref(),
+            Some("h")
+        );
     }
 
     #[test]

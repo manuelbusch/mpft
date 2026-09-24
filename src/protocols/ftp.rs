@@ -92,7 +92,8 @@ impl FtpEndpoint {
                 Error::Io(std::io::Error::new(
                     std::io::ErrorKind::TimedOut,
                     format!(
-                        "ftp: connecting to {host}:{} timed out after {:?}",
+                        "ftp: connecting to {}:{} timed out after {:?}",
+                        crate::location::bracket_host(host),
                         self.port(),
                         self.timeout
                     ),

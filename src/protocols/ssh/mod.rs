@@ -237,7 +237,11 @@ impl SshConfig {
             // Io/TimedOut rather than Remote: a timeout is worth retrying.
             Error::Io(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
-                format!("connection to {}:{} timed out", self.host, self.port),
+                format!(
+                    "connection to {}:{} timed out",
+                    crate::location::bracket_host(&self.host),
+                    self.port
+                ),
             ))
         })?
         .map_err(|e| match rejection.lock().ok().and_then(|mut r| r.take()) {
