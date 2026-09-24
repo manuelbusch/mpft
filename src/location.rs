@@ -887,19 +887,18 @@ impl Location {
                 out.push_str(&enc(&self.path, PATH_SET).to_string());
             }
             Scheme::S3 => {
+                // The key id and the secret key ride in the user info.
                 out.push_str("s3://");
+                out.push_str(&self.unmasked_userinfo());
                 out.push_str(&enc(&self.path, PATH_SET).to_string());
+                // A bucket's root is a directory only by its slash.
+                if self.dir_hint && !self.path.ends_with('/') {
+                    out.push('/');
+                }
             }
             _ => {
                 out.push_str(&format!("{}://", self.scheme));
-                if let Some(u) = &self.username {
-                    out.push_str(&enc(u, USERINFO_SET).to_string());
-                    if let Some(p) = &self.password {
-                        out.push(':');
-                        out.push_str(&enc(p.expose_secret(), USERINFO_SET).to_string());
-                    }
-                    out.push('@');
-                }
+                out.push_str(&self.unmasked_userinfo());
                 if let Some(h) = &self.host {
                     out.push_str(&bracket_host(h));
                 }
@@ -924,6 +923,27 @@ impl Location {
             out.push('?');
             out.push_str(&q.join("&"));
         }
+        out
+    }
+}
+
+impl Location {
+    /// `user:password@`, encoded, for [`Location::unmasked`]: a password
+    /// without a user name is `:password@`, so it is not lost.
+    fn unmasked_userinfo(&self) -> String {
+        use percent_encoding::utf8_percent_encode as enc;
+        if self.username.is_none() && self.password.is_none() {
+            return String::new();
+        }
+        let mut out = String::new();
+        if let Some(u) = &self.username {
+            out.push_str(&enc(u, USERINFO_SET).to_string());
+        }
+        if let Some(p) = &self.password {
+            out.push(':');
+            out.push_str(&enc(p.expose_secret(), USERINFO_SET).to_string());
+        }
+        out.push('@');
         out
     }
 }
@@ -1024,6 +1044,9 @@ impl fmt::Display for Location {
             }
             Scheme::S3 => {
                 write!(f, "s3://{}", self.path)?;
+                if self.dir_hint && !self.path.ends_with('/') {
+                    f.write_str("/")?;
+                }
             }
             _ => {
                 write!(f, "{}://", self.scheme)?;
@@ -1791,6 +1814,11 @@ mod tests {
             "sftp://u%40x:p%25%3Ass@h:2222/a%20b/c%3Fd?key=/x/y&hostkey=SHA256:ab%2Bc%3D",
             "ftps://u@[::1]:21/in/",
             "s3://bucket/some%20key?endpoint=https://minio:9000",
+            "s3://bucket/",
+            "s3://bucket",
+            "s3://KEYID:se%2Fcret@bucket/in/",
+            "ftp://:only-a-password@h/x",
+            "http://h/",
             "smtp://u:pw@mail/a@x.y,b@x.y?tls=starttls",
             "mailto:a@x.y?subject=hi%20there",
             "/tmp/plain path",
