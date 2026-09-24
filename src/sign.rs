@@ -396,14 +396,17 @@ pub mod ssh {
                 }));
             }
         }
-        Err(Error::Auth(
+        Err(Error::Config(
             "no signing key: give --sign ssh:<key>, set MPT_SSH_KEY or run an ssh-agent".into(),
         ))
     }
 
+    /// A key file that cannot be read or is no key is a configuration
+    /// error, like an unusable trust file; a passphrase that is missing or
+    /// wrong is one of authentication.
     fn read_key(path: &std::path::Path, passphrase: Option<&str>) -> Result<PrivateKey> {
         let key = PrivateKey::read_openssh_file(path)
-            .map_err(|e| Error::Auth(format!("cannot read {}: {e}", path.display())))?;
+            .map_err(|e| Error::Config(format!("cannot read {}: {e}", path.display())))?;
         if key.is_encrypted() {
             let pw = passphrase.ok_or_else(|| {
                 Error::Auth(format!(
@@ -785,10 +788,12 @@ pub mod pgp {
             .key
             .as_ref()
             .ok_or_else(|| Error::invalid_option("sign", "pgp needs a key file"))?;
+        // The file as a configuration error, like an unusable keyring; the
+        // passphrase below as one of authentication.
         let file = std::fs::File::open(path)
-            .map_err(|e| Error::Auth(format!("cannot read {}: {e}", path.display())))?;
+            .map_err(|e| Error::Config(format!("cannot read {}: {e}", path.display())))?;
         let (key, _) = SignedSecretKey::from_armor_single(file).map_err(|e| {
-            Error::Auth(format!(
+            Error::Config(format!(
                 "{} is not an armored OpenPGP secret key: {e}",
                 path.display()
             ))
@@ -1073,6 +1078,25 @@ mod pgp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An unreadable or broken key file is a configuration error (exit 2),
+    /// as an unusable trust file is.
+    #[cfg(all(feature = "sign-ssh", feature = "sign-pgp"))]
+    #[tokio::test]
+    async fn an_unusable_key_file_is_a_configuration_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let junk = dir.path().join("junk");
+        std::fs::write(&junk, "not a key").unwrap();
+        for format in ["ssh", "pgp"] {
+            for path in [dir.path().join("missing"), junk.clone()] {
+                let spec = SignSpec::parse(&format!("{format}:{}", path.display())).unwrap();
+                match load_signer(&spec).await {
+                    Err(e) => assert!(matches!(e, Error::Config(_)), "{format} {path:?}: {e}"),
+                    Ok(_) => panic!("{format} {path:?} loaded"),
+                }
+            }
+        }
+    }
 
     #[test]
     fn parse_specs() {

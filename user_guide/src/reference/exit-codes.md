@@ -18,8 +18,8 @@ wrong", and none of them will come right on a retry.
 | Kind of failure | Code |
 |---|---|
 | checksum mismatch; signature missing, invalid, untrusted or too old | 3 |
-| authentication rejected: wrong password, no accepted key, host key not trusted; access refused (HTTP and WebDAV 401 or 403, S3 access denied or a signature that does not match) | 4 |
-| unusable configuration or trust file (`allowed_signers`, keyring), unknown profile, unsupported scheme or operation, bad URL or option, `insecure=true` where the policy forbids it, `mailto:` without an SMTP server | 2 |
+| authentication rejected: wrong password, no accepted key, host key not trusted, a signing key's passphrase missing or wrong; access refused (HTTP and WebDAV 401 or 403, S3 access denied or a signature that does not match) | 4 |
+| unusable configuration or trust file (`allowed_signers`, keyring), a signing key file that cannot be read or is no key, no signing key at all, unknown profile, unsupported scheme or operation, bad URL or option, `insecure=true` where the policy forbids it, `mailto:` without an SMTP server | 2 |
 | cancelled | 130 |
 | everything else: I/O, remote errors, timeouts, transport failures | 1 |
 
