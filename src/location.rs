@@ -649,9 +649,13 @@ impl Location {
         }
     }
 
-    /// Append a relative path to a directory location: `a/b/c.pdf`, one safe
+    /// Append a relative path to a directory location: `a/b/c.pdf`, one
     /// component at a time, so nothing can climb out of the directory. A
     /// trailing `/` marks the result as a directory target again.
+    ///
+    /// The components are taken as they are, never rewritten: a name from a
+    /// listing (` report.pdf`, `a\b.txt` on a Unix server) either names that
+    /// very file or is refused, so two names never end up as one.
     pub fn join(&self, rel: &str) -> Result<Location> {
         if self.scheme.is_mail() {
             return Err(Error::UnsupportedOperation {
@@ -661,7 +665,14 @@ impl Location {
         }
         let mut loc = self.clone();
         for part in rel.split('/').filter(|p| !p.is_empty()) {
-            loc.push_segment(&safe_name(part)?);
+            check_segment(part)?;
+            // Where `\` separates, a name must not contain one.
+            if self.scheme == Scheme::File && cfg!(windows) && part.contains('\\') {
+                return Err(Error::InvalidUrl(format!(
+                    "unsafe file name '{part}': contains a path separator"
+                )));
+            }
+            loc.push_segment(part);
         }
         loc.finish_join(rel.ends_with('/'), rel.is_empty() && self.dir_hint);
         Ok(loc)
@@ -1016,11 +1027,11 @@ fn normalize_wire_path(raw: &str) -> String {
 }
 
 /// A segment of a path that came from outside, taken as it is: no `.`,
-/// `..`, empty name or control characters. Unlike [`safe_name`] it rewrites
+/// `..`, blank name or control characters. Unlike [`safe_name`] it rewrites
 /// nothing.
 fn check_segment(seg: &str) -> Result<()> {
     let bad = |why: &str| Error::InvalidUrl(format!("unsafe file name '{seg}': {why}"));
-    if seg.is_empty() {
+    if seg.trim().is_empty() {
         return Err(bad("empty"));
     }
     if seg == "." || seg == ".." {
@@ -1203,26 +1214,32 @@ fn looks_like_url(s: &str) -> bool {
     false
 }
 
-/// Reduce a file name that came from somewhere else (a remote listing, an SCP
-/// header, a `Content-Disposition`, a URL) to a single safe path component.
+/// Reduce a file name that came from somewhere else (an SCP header, a
+/// `Content-Disposition`, a URL) to a single safe path component.
 ///
-/// Keeps only the last segment, so `../../etc/passwd` becomes `passwd`, and
-/// rejects names that cannot denote a file: empty, `.`, `..`, or containing
-/// control characters.
+/// Keeps only the last segment, so `../../etc/passwd` becomes `passwd` (`\`
+/// counts as a separator only on Windows, where it is one), and rejects
+/// names that cannot denote a file: empty or blank, `.`, `..`, or containing
+/// control characters. A name that is already one component comes back as
+/// it is, spaces included.
 pub fn safe_name(name: &str) -> Result<String> {
-    let last = name.rsplit(['/', '\\']).next().unwrap_or("");
-    let trimmed = last.trim();
+    let last = if cfg!(windows) {
+        name.rsplit(['/', '\\']).next()
+    } else {
+        name.rsplit('/').next()
+    }
+    .unwrap_or("");
     let bad = |why: &str| Error::InvalidUrl(format!("unsafe file name '{name}': {why}"));
-    if trimmed.is_empty() {
+    if last.trim().is_empty() {
         return Err(bad("empty"));
     }
-    if trimmed == "." || trimmed == ".." {
+    if last == "." || last == ".." {
         return Err(bad("refers to a directory"));
     }
-    if trimmed.chars().any(|c| c.is_control()) {
+    if last.chars().any(|c| c.is_control()) {
         return Err(bad("contains control characters"));
     }
-    Ok(trimmed.to_string())
+    Ok(last.to_string())
 }
 
 /// The options of a query string: `&`-separated `key=value` pairs, both
@@ -1751,8 +1768,12 @@ mod tests {
         assert_eq!(safe_name("../x").unwrap(), "x");
         assert_eq!(safe_name("a/../../b").unwrap(), "b");
         assert_eq!(safe_name("/etc/passwd").unwrap(), "passwd");
-        assert_eq!(safe_name("C:\\tmp\\x.bin").unwrap(), "x.bin");
-        assert_eq!(safe_name("  spaced.txt  ").unwrap(), "spaced.txt");
+        if cfg!(windows) {
+            assert_eq!(safe_name("C:\\tmp\\x.bin").unwrap(), "x.bin");
+        } else {
+            assert_eq!(safe_name("a\\b.txt").unwrap(), "a\\b.txt");
+        }
+        assert_eq!(safe_name("  spaced.txt  ").unwrap(), "  spaced.txt  ");
         for bad in [
             "",
             "   ",
@@ -1765,6 +1786,19 @@ mod tests {
             "/",
         ] {
             assert!(safe_name(bad).is_err(), "{bad:?} should be rejected");
+        }
+    }
+
+    /// A name from a listing is joined as it is or refused, never made into
+    /// another name.
+    #[test]
+    fn a_listed_name_is_joined_as_it_is() {
+        let dir = Location::parse("sftp://h/in/").unwrap();
+        assert_eq!(dir.join(" report.pdf").unwrap().path(), "/in/ report.pdf");
+        assert_eq!(dir.join("report.pdf ").unwrap().path(), "/in/report.pdf ");
+        assert_eq!(dir.join("a\\b.txt").unwrap().path(), "/in/a\\b.txt");
+        for bad in ["..", ".", " ", "a\nb"] {
+            assert!(dir.join(bad).is_err(), "{bad:?}");
         }
     }
 

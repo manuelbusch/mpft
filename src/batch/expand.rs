@@ -99,7 +99,9 @@ async fn matching_files(
         }
         match dir.join(&e.name) {
             Ok(loc) => found.push(loc),
-            Err(err) => debug!(name = %e.name, "skipping unsafe name: {err}"),
+            Err(err) => {
+                warn!(name = %e.name, "skipping a listed name that cannot be copied: {err}")
+            }
         }
     }
     info!(matches = found.len(), "pattern expanded");
@@ -191,7 +193,9 @@ pub async fn recursive(
                             check_limit(tree.dirs.len(), limit, src)?;
                             subdirs.push((sub, sub_rel, depth + 1));
                         }
-                        Err(err) => debug!(name = %e.name, "skipping unsafe name: {err}"),
+                        Err(err) => {
+                            warn!(name = %e.name, "skipping a listed name that cannot be copied: {err}")
+                        }
                     }
                     continue;
                 }
@@ -213,7 +217,9 @@ pub async fn recursive(
                         });
                         check_limit(tree.jobs.len(), limit, src)?;
                     }
-                    Err(err) => debug!(name = %e.name, "skipping unsafe name: {err}"),
+                    Err(err) => {
+                        warn!(name = %e.name, "skipping a listed name that cannot be copied: {err}")
+                    }
                 }
             }
             // Pushed in reverse so the listing order comes back out.

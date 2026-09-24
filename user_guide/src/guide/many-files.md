@@ -118,6 +118,16 @@ looks like a file has its content copied, a link that looks like a directory is
 descended into. Nothing follows a link back up, and there is a depth limit of
 64 as a backstop.
 
+A name in a listing, of a pattern or a tree, is copied under exactly that name,
+leading spaces and all. A name that cannot be one file on the target — `.`,
+`..`, a blank one, one with control characters — is skipped with a warning
+rather than renamed:
+
+```
+WARN mpt::batch::expand: skipping a listed name that cannot be copied: invalid URL:
+     unsafe file name '..': refers to a directory name=..
+```
+
 ## Skipping existing files and deleting the source
 
 Two flags turn a copy into something you can run on a schedule.
