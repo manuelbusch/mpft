@@ -156,9 +156,11 @@ impl Receiver for WebDavEndpoint {
             .await?
             .list(&self.loc.encoded_path(), Depth::Number(0))
             .await
+            .map_err(dav_err)
         {
             Ok(e) => e,
-            Err(_) => return Ok(None),
+            Err(e) if e.is_not_found() => return Ok(None),
+            Err(e) => return Err(e),
         };
         Ok(entities.into_iter().find_map(|e| match e {
             ListEntity::File(f) => Some(f.content_length.max(0) as u64),

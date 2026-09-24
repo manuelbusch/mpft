@@ -335,9 +335,10 @@ impl Receiver for S3Endpoint {
     }
 
     async fn size(&self) -> Result<Option<u64>> {
-        match self.store.head(&self.obj_path(None)?).await {
+        match self.store.head(&self.obj_path(None)?).await.map_err(s3_err) {
             Ok(meta) => Ok(Some(meta.size)),
-            Err(_) => Ok(None),
+            Err(e) if e.is_not_found() => Ok(None),
+            Err(e) => Err(e),
         }
     }
 }

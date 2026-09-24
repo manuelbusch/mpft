@@ -194,6 +194,13 @@ fn ftp_err(e: FtpError) -> Error {
     }
 }
 
+/// Whether the server refused a command with a permanent (5xx) reply. For
+/// SIZE that means "no such file", "not a plain file" or "not supported",
+/// which one being up to the server: in each case the size is unknown.
+fn refused_for_good(e: &Error) -> bool {
+    matches!(e, Error::Remote(m) if m.starts_with("ftp: 5"))
+}
+
 /// RNFR/RNTO and DELE on one control connection.
 struct FtpRenamer<'a> {
     ep: &'a FtpEndpoint,
@@ -393,13 +400,16 @@ impl Receiver for FtpEndpoint {
 
     async fn size(&self) -> Result<Option<u64>> {
         let mut ftp = self.connect().await?;
-        let size = self
-            .ctl("SIZE", ftp.size(self.remote_path()))
-            .await
-            .ok()
-            .map(|s| s as u64);
+        let size = self.ctl("SIZE", ftp.size(self.remote_path())).await;
         let _ = ftp.quit().await;
-        Ok(size)
+        match size {
+            Ok(n) => Ok(Some(n as u64)),
+            Err(e) if refused_for_good(&e) => {
+                debug!("ftp SIZE: size unknown ({e})");
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 

@@ -230,37 +230,9 @@ impl Receiver for ScpEndpoint {
         let (handle, mut stream) = self
             .exec(&format!("scp -f {}", shell_quote(&self.remote_path())))
             .await?;
-        // We are the sink: kick off with an ACK, then parse the header.
-        stream.write_all(b"\0").await?;
-        let size = loop {
-            let mut kind = [0u8; 1];
-            if stream.read(&mut kind).await? == 0 {
-                return Err(Error::Remote(
-                    "scp: no response from remote (file not found or scp missing?)".into(),
-                ));
-            }
-            match kind[0] {
-                b'C' => {
-                    let hdr = read_line(&mut stream).await?;
-                    break parse_c_header(&hdr)?.0;
-                }
-                b'T' => {
-                    // timestamps (only with -p); acknowledge and continue
-                    let _ = read_line(&mut stream).await?;
-                    stream.write_all(b"\0").await?;
-                }
-                b'D' => return Err(Error::Remote("scp: remote path is a directory".into())),
-                code @ (1 | 2) => {
-                    let msg = read_line(&mut stream).await?;
-                    return Err(remote_message(msg.trim(), code == 2));
-                }
-                other => {
-                    return Err(Error::Remote(format!(
-                        "scp: unexpected header byte {other:#x}"
-                    )));
-                }
-            }
-        };
+        let size = read_header(&mut stream)
+            .await?
+            .ok_or_else(|| Error::Remote("scp: remote path is a directory".into()))?;
         stream.write_all(b"\0").await?;
         debug!(size, "scp download");
         Ok(stream::boxed(stream::Guarded::new(
@@ -269,11 +241,64 @@ impl Receiver for ScpEndpoint {
         )))
     }
 
+    /// From the header of an `scp -f` that is then abandoned: a login of
+    /// its own, as SFTP's stat costs one.
+    async fn size(&self) -> Result<Option<u64>> {
+        let (handle, mut stream) = self
+            .exec(&format!("scp -f {}", shell_quote(&self.remote_path())))
+            .await?;
+        let header = read_header(&mut stream).await;
+        super::disconnect(&handle).await;
+        match header {
+            Ok(size) => Ok(size),
+            Err(e) if e.is_not_found() => Ok(None),
+            // What OpenSSH's scp says for a directory without -r.
+            Err(Error::Remote(m)) if m.ends_with("not a regular file") => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     async fn list(&self) -> Result<Vec<Entry>> {
         Err(Error::UnsupportedOperation {
             scheme: "scp".into(),
             op: "list (use sftp:// instead)",
         })
+    }
+}
+
+/// Start an `scp -f` as its sink and read up to its file header: the size
+/// the remote announces, or `None` for a directory.
+async fn read_header<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S) -> Result<Option<u64>> {
+    // We are the sink: kick off with an ACK, then parse the header.
+    stream.write_all(b"\0").await?;
+    loop {
+        let mut kind = [0u8; 1];
+        if stream.read(&mut kind).await? == 0 {
+            return Err(Error::Remote(
+                "scp: no response from remote (file not found or scp missing?)".into(),
+            ));
+        }
+        match kind[0] {
+            b'C' => {
+                let hdr = read_line(stream).await?;
+                return Ok(Some(parse_c_header(&hdr)?.0));
+            }
+            b'T' => {
+                // timestamps (only with -p); acknowledge and continue
+                let _ = read_line(stream).await?;
+                stream.write_all(b"\0").await?;
+            }
+            b'D' => return Ok(None),
+            code @ (1 | 2) => {
+                let msg = read_line(stream).await?;
+                return Err(remote_message(msg.trim(), code == 2));
+            }
+            other => {
+                return Err(Error::Remote(format!(
+                    "scp: unexpected header byte {other:#x}"
+                )));
+            }
+        }
     }
 }
 
@@ -539,6 +564,41 @@ mod tests {
 
         // The stream ends without a status.
         assert!(download(&data, b"").await.0.is_err());
+    }
+
+    /// What the sink reads when the remote answers `reply`, and what it
+    /// sent in the meantime.
+    async fn header(reply: &[u8]) -> (Result<Option<u64>>, Vec<u8>) {
+        let (mut ours, mut theirs) = tokio::io::duplex(64);
+        let reply = reply.to_vec();
+        let remote = tokio::spawn(async move {
+            let mut ack = [0u8; 1];
+            theirs.read_exact(&mut ack).await.unwrap();
+            theirs.write_all(&reply).await.unwrap();
+            theirs.shutdown().await.unwrap();
+            let mut rest = Vec::new();
+            let _ = theirs.read_to_end(&mut rest).await;
+            [&ack[..], &rest].concat()
+        });
+        let res = read_header(&mut ours).await;
+        drop(ours);
+        (res, remote.await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn the_size_comes_from_the_header() {
+        let (size, sent) = header(b"C0644 1234 report.pdf\n").await;
+        assert_eq!(size.unwrap(), Some(1234));
+        assert_eq!(sent, b"\0", "only the opening ACK");
+        let (size, sent) = header(b"T1 0 1 0\nC0600 7 a\n").await;
+        assert_eq!(size.unwrap(), Some(7));
+        assert_eq!(sent, b"\0\0", "timestamps are acknowledged");
+        assert_eq!(header(b"D0755 0 dir\n").await.0.unwrap(), None);
+        let err = header(b"\x01scp: /x: No such file or directory\n")
+            .await
+            .0
+            .unwrap_err();
+        assert!(err.is_not_found(), "{err}");
     }
 
     #[test]

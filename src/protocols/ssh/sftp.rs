@@ -160,10 +160,14 @@ impl Receiver for SftpEndpoint {
 
     async fn size(&self) -> Result<Option<u64>> {
         let (handle, sftp) = self.session().await?;
-        let md = sftp.metadata(self.remote_path()).await.map_err(sftp_err)?;
+        let md = sftp.metadata(self.remote_path()).await.map_err(sftp_err);
         let _ = sftp.close().await;
         super::disconnect(&handle).await;
-        Ok(if md.is_dir() { None } else { md.size })
+        match md {
+            Ok(md) => Ok(if md.is_dir() { None } else { md.size }),
+            Err(e) if e.is_not_found() => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 }
 

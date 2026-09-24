@@ -92,8 +92,11 @@ pub trait Receiver: Send + Sync {
     /// List the directory at the endpoint's path.
     async fn list(&self) -> Result<Vec<Entry>>;
 
-    /// Size of the resource if cheaply available (used for progress and for
-    /// senders that need the length up front). Default: unknown.
+    /// Size of the resource, for progress and for senders that need the
+    /// length up front. `None` means the size is unknown: the protocol does
+    /// not say it, the path is a directory, or nothing is there, in which
+    /// case [`Receiver::receive`] is the call that reports it. Every other
+    /// failure (credentials, the connection) is an error. Default: unknown.
     async fn size(&self) -> Result<Option<u64>> {
         Ok(None)
     }

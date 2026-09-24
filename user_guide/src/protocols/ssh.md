@@ -28,9 +28,12 @@ situation where SCP is the right choice.
 
 ### SCP and the source size
 
-The SCP protocol announces the length of a file before sending it. When the
-source cannot say how large it is (a `scp://` source, an HTTP server without a
-`Content-Length`), the payload has to be spooled first:
+The SCP protocol announces the length of a file before sending it. An
+`scp://` source says its size the same way: `mpt` reads it from the header of
+an `scp -f` it then abandons, one extra login, as asking an SFTP server for the
+size costs one. When the source cannot say how large it is (an HTTP server
+that answers `HEAD` without a `Content-Length`, or refuses it), the payload has
+to be spooled first:
 
 ```
 WARN scp: source size unknown, spooling to a temporary file

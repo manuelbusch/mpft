@@ -221,12 +221,22 @@ impl Receiver for HttpEndpoint {
         })
     }
 
+    /// From a HEAD request. Whatever status it gets means "unknown": a
+    /// server may answer HEAD differently from GET (a presigned URL is
+    /// signed for GET alone and refuses HEAD with 403), and the GET that
+    /// follows says what is true. A connection that fails is an error.
     async fn size(&self) -> Result<Option<u64>> {
         let url = self.url(None)?;
-        let resp = match self.request(Method::HEAD, url).await?.send().await {
-            Ok(r) if r.status().is_success() => r,
-            _ => return Ok(None),
-        };
+        let resp = self
+            .request(Method::HEAD, url)
+            .await?
+            .send()
+            .await
+            .map_err(http_err)?;
+        if !resp.status().is_success() {
+            debug!(status = %resp.status(), "http HEAD: size unknown");
+            return Ok(None);
+        }
         Ok(resp.content_length())
     }
 }

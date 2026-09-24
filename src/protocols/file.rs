@@ -70,8 +70,11 @@ impl Receiver for FileEndpoint {
     }
 
     async fn size(&self) -> Result<Option<u64>> {
-        let md = fs::metadata(self.path()).await?;
-        Ok(md.is_file().then_some(md.len()))
+        match fs::metadata(self.path()).await {
+            Ok(md) => Ok(md.is_file().then_some(md.len())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 }
 
@@ -233,6 +236,22 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("cannot resume"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn the_size_of_nothing_is_unknown() {
+        use crate::Receiver;
+        let dir = tempfile::tempdir().unwrap();
+        let ep = |p: &std::path::Path| {
+            super::FileEndpoint::new(crate::Location::parse(p.to_str().unwrap()).unwrap())
+        };
+        assert_eq!(ep(&dir.path().join("missing")).size().await.unwrap(), None);
+        assert_eq!(ep(dir.path()).size().await.unwrap(), None, "a directory");
+        std::fs::write(dir.path().join("f"), b"abc").unwrap();
+        assert_eq!(ep(&dir.path().join("f")).size().await.unwrap(), Some(3));
+        // Something other than "not there" is still an error.
+        std::fs::write(dir.path().join("file"), b"").unwrap();
+        assert!(ep(&dir.path().join("file/below")).size().await.is_err());
     }
 
     #[tokio::test]
