@@ -118,6 +118,10 @@ def describe(event: Json) -> str:
     if kind == "snapshot":
         job = event["job"]
         return f"{job['id']} snapshot {job['state']}"
+    if kind == "lagged":
+        # Snapshots of the open jobs follow; the ones that ended meanwhile
+        # are in `mpt-client list`.
+        return f"fell behind, {event['missed']} events missed"
     job_id = event["id"]
     match kind:
         case "started":

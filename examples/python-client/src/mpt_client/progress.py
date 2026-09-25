@@ -109,6 +109,8 @@ class JobView:
         match event["event"]:
             case "queued":
                 self.state = "queued"
+            case "preparing":
+                self.state = "preparing"
             case "started":
                 self.state = "running"
                 self.expected = event["transfers"]

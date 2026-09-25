@@ -64,7 +64,9 @@ something a browser page can do). One JSON object comes per text frame:
 | event | carries | meaning |
 |---|---|---|
 | `snapshot` | `job` with `transfers` | where the job stands right now; always the first frame |
-| `queued`, `started` | `id`, `transfers` (count) | preparation is over (URLs resolved, patterns expanded) |
+| `queued` | `id` | the job was accepted |
+| `preparing` | `id` | the job has a slot; URLs are resolved, patterns expanded |
+| `started` | `id`, `transfers` (count) | preparation is over; this many transfers will run |
 | `transfer_started` | `id`, `index` | |
 | `progress` | `id`, `bytes`, `transfers: [{index, read, total}]` | at most four times a second, only while bytes move |
 | `transfer_done` | `id`, `index`, `state`, `transfer` | with the transfer's `report` (as `mpt --json` prints it) or `error` |
@@ -79,9 +81,11 @@ gets a fresh `snapshot` instead of the events it missed, which
 `MptApi.wait` polls the job until its state is `done`, `failed` or
 `cancelled`.
 
-`GET /v1/events` streams every job's events and never closes on its own;
-`mpt-client watch --all` prints them one per line (`--json` for the raw
-frames).
+`GET /v1/events` starts with a `snapshot` (without transfers) of every job
+not yet over, then streams every job's events and never closes on its own;
+a client that falls behind there gets a `lagged` frame and the snapshots
+again. `mpt-client watch --all` prints them one per line (`--json` for the
+raw frames).
 
 **Errors** come as `{"error": {"kind", "message"}}`; `ApiError` carries
 the status, the kind and, for a `429`, the server's `Retry-After`. A

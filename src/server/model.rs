@@ -325,17 +325,28 @@ pub struct TransferProgress {
     pub total: Option<u64>,
 }
 
-/// What a WebSocket client sees. Every event names its job, so one stream
-/// can carry every job's events.
+/// What a WebSocket client sees. Every event but `lagged` names its job,
+/// so one stream can carry every job's events.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
-    /// Sent once when a client connects: where things stand.
+    /// Where a job stands: sent when a client connects, and in place of
+    /// the events a client that fell behind missed.
     Snapshot {
         job: Box<JobSnapshot>,
     },
     Queued {
         id: JobId,
+    },
+    /// The job has a slot and is being prepared: URLs resolved, patterns
+    /// and trees expanded, targets claimed.
+    Preparing {
+        id: JobId,
+    },
+    /// On `/v1/events` only: the client fell behind and `missed` events
+    /// were dropped; a snapshot of every job not yet over follows.
+    Lagged {
+        missed: u64,
     },
     /// Preparation is over; this many transfers will run.
     Started {
@@ -368,16 +379,18 @@ pub enum Event {
 }
 
 impl Event {
-    /// The job the event is about.
-    pub fn job_id(&self) -> &JobId {
+    /// The job the event is about; `None` for `lagged`.
+    pub fn job_id(&self) -> Option<&JobId> {
         match self {
-            Event::Snapshot { job } => &job.id,
+            Event::Snapshot { job } => Some(&job.id),
+            Event::Lagged { .. } => None,
             Event::Queued { id }
+            | Event::Preparing { id }
             | Event::Started { id, .. }
             | Event::TransferStarted { id, .. }
             | Event::Progress { id, .. }
             | Event::TransferDone { id, .. }
-            | Event::Done { id, .. } => id,
+            | Event::Done { id, .. } => Some(id),
         }
     }
 }

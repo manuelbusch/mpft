@@ -137,14 +137,17 @@ that a fault in the server itself ended (the server's log has the details).
 
 ## WebSocket events
 
-One JSON object per text frame, tagged by `event`. Every event names its job,
-so `/v1/events` can carry all of them on one connection. Nothing a client
-sends is read, and frames from the client are capped at 4 KiB.
+One JSON object per text frame, tagged by `event`. Every event but `lagged`
+names its job, so `/v1/events` can carry all of them on one connection.
+Nothing a client sends is read, and frames from the client are capped at
+4 KiB.
 
 | `event` | Fields | When |
 |---|---|---|
-| `snapshot` | `job`, with `transfers` | first frame on every connection, and again in place of events a slow client missed |
+| `snapshot` | `job`, with `transfers` | on `/v1/jobs/{id}/events`: the first frame, and again in place of events a slow client missed. On `/v1/events`: one per job not yet over, without `transfers`, when the client connects and after `lagged` |
+| `lagged` | `missed` (a count) | on `/v1/events` only: the client fell behind and that many events were dropped; snapshots of the open jobs follow, and `GET /v1/jobs` shows the ones that ended meanwhile |
 | `queued` | `id` | the job was accepted |
+| `preparing` | `id` | the job has a slot; URLs are resolved, patterns and trees expanded, targets claimed |
 | `started` | `id`, `transfers` (a count) | preparation is over; this many transfers will run |
 | `transfer_started` | `id`, `index` | |
 | `progress` | `id`, `bytes`, `transfers: [{index, read, total}]` | at most four times a second, only while bytes move |

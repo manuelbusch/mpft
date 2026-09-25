@@ -518,6 +518,28 @@ async fn a_job_cancelled_while_it_is_prepared_stops_there() {
         assert!(started.elapsed() < Duration::from_secs(10), "{job}");
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+    // A client of every job's events is told first where the open ones are.
+    let mut request = format!("ws://127.0.0.1:{}/v1/events", server.port)
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("authorization", format!("Bearer {TOKEN}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    let mut next = async || loop {
+        let msg = tokio::time::timeout(Duration::from_secs(20), ws.next())
+            .await
+            .expect("the server stopped talking")
+            .unwrap()
+            .unwrap();
+        if let Message::Text(text) = msg {
+            return serde_json::from_str::<Value>(&text).unwrap();
+        }
+    };
+    let first = next().await;
+    assert_eq!(first["event"], "snapshot", "{first}");
+    assert_eq!(first["job"]["id"], body["id"], "{first}");
+    assert_eq!(first["job"]["state"], "preparing", "{first}");
     let resp = server
         .client()
         .delete(server.url(&url))
@@ -534,6 +556,9 @@ async fn a_job_cancelled_while_it_is_prepared_stops_there() {
         "the preparation ran on: {:?}",
         cancelled.elapsed()
     );
+    let done = next().await;
+    assert_eq!(done["event"], "done", "{done}");
+    assert_eq!(done["state"], "cancelled", "{done}");
 }
 
 #[test]

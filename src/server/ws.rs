@@ -2,10 +2,12 @@
 //! `progress` events while somebody is watching.
 //!
 //! `GET /v1/jobs/{id}/events` sends the job's snapshot first, then every
-//! event of that job, and closes after `done`. `GET /v1/events` streams
-//! every job's events and stays open. Both are one JSON object per text
-//! frame. A client that falls behind gets a fresh snapshot instead of the
-//! events it missed.
+//! event of that job, and closes after `done`; a client that falls behind
+//! gets a fresh snapshot instead of the events it missed. `GET /v1/events`
+//! sends a snapshot (without transfers) of every job not yet over, then
+//! every job's events, and stays open; a client that falls behind gets a
+//! `lagged` frame and those snapshots again. Both are one JSON object per
+//! text frame.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -81,6 +83,18 @@ async fn send(socket: &mut WebSocket, event: &Event) -> bool {
     )
 }
 
+/// A snapshot of every job not yet over, without its transfers: what a
+/// client of `/v1/events` starts from, and starts again from after it fell
+/// behind.
+async fn send_open_jobs(state: &AppState, socket: &mut WebSocket) -> bool {
+    for job in state.store.open_jobs() {
+        if !send(socket, &Event::Snapshot { job: Box::new(job) }).await {
+            return false;
+        }
+    }
+    true
+}
+
 async fn watch(state: Arc<AppState>, mut socket: WebSocket, filter: Option<JobId>) {
     let _watching = Watching::new(Arc::clone(&state));
     // Subscribed before the snapshot is taken, so nothing falls between.
@@ -103,6 +117,8 @@ async fn watch(state: Arc<AppState>, mut socket: WebSocket, filter: Option<JobId
             let _ = socket.send(Message::Close(None)).await;
             return;
         }
+    } else if !send_open_jobs(&state, &mut socket).await {
+        return;
     }
     debug!(job = ?filter, "websocket client connected");
     loop {
@@ -115,7 +131,7 @@ async fn watch(state: Arc<AppState>, mut socket: WebSocket, filter: Option<JobId
             },
             ev = rx.recv() => match ev {
                 Ok(ev) => {
-                    if filter.as_ref().is_some_and(|id| ev.job_id() != id) {
+                    if filter.as_ref().is_some_and(|id| ev.job_id() != Some(id)) {
                         continue;
                     }
                     if !send(&mut socket, &ev).await {
@@ -137,6 +153,10 @@ async fn watch(state: Arc<AppState>, mut socket: WebSocket, filter: Option<JobId
                         {
                             break;
                         }
+                    } else if !send(&mut socket, &Event::Lagged { missed: n }).await
+                        || !send_open_jobs(&state, &mut socket).await
+                    {
+                        return;
                     }
                 }
                 Err(RecvError::Closed) => break,

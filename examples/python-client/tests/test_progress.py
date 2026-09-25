@@ -2,6 +2,7 @@
 
 import io
 
+from mpt_client.cli import describe
 from mpt_client.progress import JobView, Screen, human_size, render
 
 JOB = "0123456789abcdef0123456789abcdef"
@@ -51,6 +52,10 @@ def test_a_queued_job_fills_in_as_the_events_come():
     view = JobView(JOB)
     assert view.apply(snapshot())
     assert view.state == "queued" and view.transfers == {}
+
+    view.apply({"event": "preparing", "id": JOB})
+    assert view.state == "preparing"
+    assert render(view)[0].startswith(f"job {JOB}  preparing 0 transfers")
 
     view.apply({"event": "started", "id": JOB, "transfers": 2})
     assert view.state == "running" and sorted(view.transfers) == [0, 1]
@@ -159,3 +164,9 @@ def test_on_a_terminal_the_block_is_redrawn_in_place():
     screen.finish()
     screen.update(["d"])
     assert text + "\x1b[2Kd\n" == out.getvalue(), "after finish nothing is moved over"
+
+
+def test_the_all_jobs_stream_is_described_line_by_line():
+    assert describe({"event": "preparing", "id": JOB}) == f"{JOB} preparing"
+    assert describe({"event": "lagged", "missed": 7}) == "fell behind, 7 events missed"
+    assert describe(snapshot("preparing")) == f"{JOB} snapshot preparing"

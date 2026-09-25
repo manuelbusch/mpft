@@ -277,11 +277,12 @@ impl Store {
 
     pub fn set_preparing(&self, id: &JobId) {
         let mut inner = self.lock();
-        if let Some(j) = inner.jobs.get_mut(id)
-            && !j.state.is_final()
-        {
-            j.state = JobState::Preparing;
-        }
+        let Some(j) = inner.jobs.get_mut(id).filter(|j| !j.state.is_final()) else {
+            return;
+        };
+        j.state = JobState::Preparing;
+        drop(inner);
+        self.emit(Event::Preparing { id: id.clone() });
     }
 
     /// Preparation is over: these are the transfers. Their progress
@@ -546,6 +547,18 @@ impl Store {
             .filter_map(|id| inner.jobs.get(id).map(|j| (id, j)))
             .filter(|(_, j)| state.is_none_or(|s| j.state == s))
             .take(limit)
+            .map(|(id, j)| j.snapshot(id, false))
+            .collect()
+    }
+
+    /// Summaries of the jobs not yet over, oldest first.
+    pub fn open_jobs(&self) -> Vec<JobSnapshot> {
+        let inner = self.lock();
+        inner
+            .order
+            .iter()
+            .filter_map(|id| inner.jobs.get(id).map(|j| (id, j)))
+            .filter(|(_, j)| !j.state.is_final())
             .map(|(id, j)| j.snapshot(id, false))
             .collect()
     }
@@ -1037,6 +1050,7 @@ mod tests {
             kinds,
             [
                 "queued",
+                "preparing",
                 "started",
                 "transfer_started",
                 "transfer_done",
