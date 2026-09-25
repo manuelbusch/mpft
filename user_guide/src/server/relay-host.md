@@ -102,7 +102,9 @@ its server. In an on-demand session no endpoint may bring a password along,
 not even from a profile of the relay's; such a header is refused.
 
 With `--via-credentials on-demand` and the forwarded agent, what the relay
-holds is one password for the length of one login and no key at all. A relay
+holds is one password for the length of one login and no key at all; while
+the session runs it can have SSH logins signed with the client's keys, and
+nothing else ([the forwarded agent](relay.md#keys-stay-here-the-forwarded-agent)). A relay
 that is compromised while nothing is running on it has nothing of yours; one
 that is compromised *during* a transfer still sees the file and the passwords
 that transfer uses.

@@ -136,9 +136,12 @@ The agent this side runs for the relay holds the keys those targets name —
 `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa` — and passes every other request on
 to your own `SSH_AUTH_SOCK`, so a key that only your own agent holds works
 too. A **certificate** is offered as a certificate, so a CA-signed login works
-through a relay exactly as it does from here. The agent answers signature
-requests and nothing else: it never adds, removes or locks a key, whatever
-the relay asks.
+through a relay exactly as it does from here. The agent signs SSH logins and
+nothing else: data that is not a public-key authentication request — a file
+signature for `--sign` or `ssh-keygen -Y sign`, a git commit — is refused,
+and it never adds, removes or locks a key, whatever the relay asks. It does
+list every key of your own agent, so while a session runs the relay can log
+in with any of them wherever they are accepted.
 
 `--no-via-agent` switches the forwarding off. A target whose key file is on
 this machine is then refused, because nothing can stand in for it:

@@ -338,6 +338,12 @@ struct BatchArgs {
     #[cfg(feature = "relay")]
     #[arg(long)]
     no_via_agent: bool,
+    /// Let a relay forward the agent on to the second relay of a chained
+    /// target, for the SSH targets behind it (by default it only logs in
+    /// to that relay with it)
+    #[cfg(feature = "relay")]
+    #[arg(long, conflicts_with = "no_via_agent")]
+    via_agent_onward: bool,
 }
 
 impl BatchArgs {
@@ -525,6 +531,9 @@ struct Settings {
     /// Whether that relay gets this side's ssh-agent forwarded.
     #[cfg(feature = "relay")]
     via_agent: bool,
+    /// Whether it may forward that agent on to a second relay.
+    #[cfg(feature = "relay")]
+    via_agent_onward: bool,
 }
 
 impl Settings {
@@ -580,6 +589,8 @@ impl Settings {
             #[cfg(feature = "relay")]
             via_agent: !cli.cmd.batch_args().is_some_and(|b| b.no_via_agent)
                 && d.via_agent.unwrap_or(true),
+            #[cfg(feature = "relay")]
+            via_agent_onward: cli.cmd.batch_args().is_some_and(|b| b.via_agent_onward),
             parallel: match cli
                 .cmd
                 .batch_args()
@@ -2141,6 +2152,8 @@ struct Via {
     credentials: mpt::relay::Credentials,
     /// Forward an ssh-agent serving this side's keys for the SSH targets.
     agent: bool,
+    /// Let the relay forward it on to the relay of a chained target.
+    agent_onward: bool,
 }
 
 #[cfg(feature = "relay")]
@@ -2199,6 +2212,7 @@ impl Via {
             table,
             credentials: settings.via_credentials,
             agent: settings.via_agent,
+            agent_onward: settings.via_agent_onward,
             options: mpt::options::JobOptions {
                 hash: opts.hash.map(|h| h.name().to_string()),
                 atomic: (!opts.atomic).then_some(false),
@@ -2367,6 +2381,9 @@ impl Via {
             dst,
             credentials: self.credentials,
             agent: responder.is_some(),
+            agent_onward: responder.is_some()
+                && self.agent_onward
+                && hops.iter().any(|(_, via)| via.is_some()),
             options,
         };
         let cancel = copy.cancel.clone().unwrap_or_default();
@@ -2677,6 +2694,7 @@ mod tests {
             options: Default::default(),
             credentials,
             agent: false,
+            agent_onward: false,
         };
         let dsts = vec![
             mpt::Location::parse("ftp://u:s3cret@h/in/").unwrap(),

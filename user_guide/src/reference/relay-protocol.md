@@ -24,6 +24,7 @@ start; a relay that has no complete line by then refuses the session:
 | `dst` | the targets: a URL string, or `{"url": …, "via": …}` for one the relay hands on to a second relay (v2) |
 | `credentials` | `"header"` (the default) or `"on-demand"` (v2) |
 | `agent` | `true` when the client forwards an ssh-agent for the SSH endpoints (v2) |
+| `agent_onward` | `true` lets the relay forward that agent on to the relays of chained targets; otherwise it only logs in to them with it (v2) |
 | `options` | the [job options](api.md#job-options) the relay honours; may be omitted |
 
 Everything is checked before a byte of the payload is read: the version, that
@@ -98,6 +99,7 @@ A `dst` entry of the form `{"url": …, "via": …}` tells the relay to write th
 target through a second relay: it opens an SSH session of its own, sends the
 same protocol with a one-target header, and reports what comes back as that
 target's result. Questions from the second relay reach the client through the
-first, translated to the original target's index, and a forwarded agent is
-offered on. See [A target behind another
+first, translated to the original target's index. The relay logs in to the
+second relay with a forwarded agent, and forwards the agent on only when the
+header says `agent_onward`. See [A target behind another
 relay](../server/relay-topologies.md#a-target-behind-another-relay).

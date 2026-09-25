@@ -103,10 +103,13 @@ $ mpt cp --hash sha256 mpt://incoming mpt://prod/ mpt://dc2/
 ```
 
 The second relay's questions travel back through the first: an on-demand
-password is still answered from here, neither relay keeps it, and the
-forwarded agent is handed on the same way — which is how the first relay logs
-in to the second without a key of its own. One SSH session per relay and job,
-and one report, in the order the targets were named.
+password is still answered from here, and neither relay keeps it. The first
+relay logs in to the second with the forwarded agent, so it needs no key of
+its own, but it hands the agent on only with `--via-agent-onward`: then an
+SSH target behind the second relay can log in with this side's keys too.
+Without the flag such a target needs a password or a key on the second
+relay. One SSH session per relay and job, and one report, in the order the
+targets were named.
 
 The first relay tells the second the file's size up front, as every client
 does. When the source does not state its size (an HTTP server that sends no

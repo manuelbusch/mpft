@@ -93,6 +93,10 @@ pub struct Header {
     /// The client forwards its ssh-agent for the SSH targets.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub agent: bool,
+    /// The relay may forward that agent on to the relays of its chained
+    /// targets. Without it, it only logs in to them with it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent_onward: bool,
     #[serde(default, skip_serializing_if = "is_default")]
     pub options: JobOptions,
 }
@@ -108,6 +112,7 @@ impl Header {
             dst: dst.into_iter().map(Dst::Url).collect(),
             credentials: Credentials::Header,
             agent: false,
+            agent_onward: false,
             options: JobOptions::default(),
         }
     }
@@ -591,6 +596,7 @@ async fn read_header<R: AsyncRead + Unpin>(
             ("src", header.src.is_some()),
             ("credentials", header.credentials != Credentials::Header),
             ("agent", header.agent),
+            ("agent_onward", header.agent_onward),
             (
                 "via",
                 header.dst.iter().any(|d| matches!(d, Dst::Via { .. })),
@@ -727,7 +733,9 @@ async fn prepare(
                     header_url: url.clone(),
                     credentials: header.credentials,
                     options,
-                    agent: agent.clone(),
+                    // The relay logs in to the far relay with the agent
+                    // (`hop`); the far relay gets it only when asked for.
+                    agent: agent.clone().filter(|_| header.agent_onward),
                     answerer: answer,
                     cancel: cancel.clone(),
                 }));

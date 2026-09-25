@@ -6,9 +6,12 @@
 //! the keys the client would have used for the targets — the target's own
 //! `?key=` (with its certificate), `[ssh] key`, `MPT_SSH_KEY`, the default
 //! files in `~/.ssh` — plus whatever the client's real agent holds, and it
-//! signs with the former and hands signing for the latter on. Nothing else
-//! is served: a relay that asks to add, remove or lock a key gets a
-//! failure.
+//! signs with the former and hands signing for the latter on. It signs
+//! SSH logins only: data that is not a public-key authentication request
+//! (an SSHSIG file signature, a git commit) is refused, so the relay can
+//! log in with the keys while the session runs but sign nothing else with
+//! them. Nothing else is served: a relay that asks to add, remove or lock
+//! a key gets a failure.
 //!
 //! The bundled agent server of russh cannot be given keys up front and
 //! ignores the RSA hash flags, so this is written out.
@@ -34,6 +37,9 @@ const IDENTITIES_ANSWER: u8 = 12;
 const SIGN_REQUEST: u8 = 13;
 const SIGN_RESPONSE: u8 = 14;
 const FAILURE: u8 = 5;
+/// `SSH_MSG_USERAUTH_REQUEST`, which the data of a login's signature
+/// starts with (after the session id).
+const USERAUTH_REQUEST: u8 = 50;
 const RSA_SHA2_256: u32 = 2;
 const RSA_SHA2_512: u32 = 4;
 /// The longest agent message taken in.
@@ -146,6 +152,10 @@ impl Responder {
     async fn reply(&self, message: &[u8]) -> Vec<u8> {
         match message.first() {
             Some(&REQUEST_IDENTITIES) => self.identities_answer().await,
+            Some(&SIGN_REQUEST) if !is_login(&message[1..]) => {
+                debug!("ssh-agent: refused to sign what is not an SSH login");
+                vec![FAILURE]
+            }
             Some(&SIGN_REQUEST) => match self.sign(&message[1..]).await {
                 Ok(Some(response)) => response,
                 Ok(None) if self.upstream => forward(message).await.unwrap_or_else(|e| {
@@ -294,6 +304,38 @@ async fn forward(message: &[u8]) -> Result<Vec<u8>> {
     Ok(reply)
 }
 
+/// Whether a `SIGN_REQUEST` body asks for the signature of an SSH login
+/// with the key it names (RFC 4252, section 7): the session id, then
+/// `SSH_MSG_USERAUTH_REQUEST`, the user, the service, `publickey` (or
+/// OpenSSH's host-bound variant), TRUE, the algorithm and that key.
+fn is_login(body: &[u8]) -> bool {
+    fn parse(body: &[u8]) -> Option<bool> {
+        let mut r = body;
+        let blob = Vec::<u8>::decode(&mut r).ok()?;
+        let data = Vec::<u8>::decode(&mut r).ok()?;
+        let mut d = data.as_slice();
+        let session = Vec::<u8>::decode(&mut d).ok()?;
+        let kind = u8::decode(&mut d).ok()?;
+        let _user = Vec::<u8>::decode(&mut d).ok()?;
+        let _service = Vec::<u8>::decode(&mut d).ok()?;
+        let method = Vec::<u8>::decode(&mut d).ok()?;
+        let signed = u8::decode(&mut d).ok()?;
+        let _algorithm = Vec::<u8>::decode(&mut d).ok()?;
+        let key = Vec::<u8>::decode(&mut d).ok()?;
+        Some(
+            !session.is_empty()
+                && kind == USERAUTH_REQUEST
+                && matches!(
+                    method.as_slice(),
+                    b"publickey" | b"publickey-hostbound-v00@openssh.com"
+                )
+                && signed != 0
+                && key == blob,
+        )
+    }
+    parse(body).unwrap_or(false)
+}
+
 /// The entries of an `IDENTITIES_ANSWER`.
 fn parse_identities(answer: &[u8]) -> Result<Vec<(Vec<u8>, String)>> {
     let Some((&IDENTITIES_ANSWER, mut r)) = answer.split_first() else {
@@ -335,8 +377,23 @@ mod tests {
         responder
     }
 
-    /// Identities are listed, a signature verifies against the key, and
-    /// anything that would change the agent is refused.
+    /// What a client signs to log in with `key`.
+    fn login(key: &russh::keys::PublicKey) -> Vec<u8> {
+        let mut data = Vec::new();
+        vec![9u8; 32].encode(&mut data).unwrap();
+        data.push(USERAUTH_REQUEST);
+        "relay".encode(&mut data).unwrap();
+        "ssh-connection".encode(&mut data).unwrap();
+        "publickey".encode(&mut data).unwrap();
+        data.push(1);
+        key.algorithm().as_str().encode(&mut data).unwrap();
+        key.to_bytes().unwrap().encode(&mut data).unwrap();
+        data
+    }
+
+    /// Identities are listed, a login's signature verifies against the
+    /// key, anything else is not signed, and anything that would change
+    /// the agent is refused.
     #[tokio::test]
     async fn serves_identities_and_signatures_only() {
         let dir = tempfile::tempdir().unwrap();
@@ -350,15 +407,35 @@ mod tests {
         let key = identities[0].public_key().into_owned();
         assert_eq!(key.algorithm(), Algorithm::Ed25519);
 
-        // A signature over some bytes, checked with the public key.
+        // A login's signature, checked with the public key.
+        let data = login(&key);
         let signed = client
-            .sign_request(&identities[0], None, b"to sign".to_vec())
+            .sign_request(&identities[0], None, data.clone())
             .await
             .unwrap();
         // sign_request appends the signature to the data, length-prefixed.
-        let mut r = &signed[b"to sign".len() + 4..];
+        let mut r = &signed[data.len() + 4..];
         let sig = Signature::decode(&mut r).unwrap();
-        russh::keys::signature::Verifier::verify(&key, b"to sign", &sig).unwrap();
+        russh::keys::signature::Verifier::verify(&key, &data, &sig).unwrap();
+
+        // Anything else is not signed: arbitrary bytes, a file signature,
+        // a login with another key.
+        let mut sshsig = b"SSHSIG".to_vec();
+        "file".encode(&mut sshsig).unwrap();
+        let other =
+            PrivateKey::random(&mut super::super::sshd::OsRandom, Algorithm::Ed25519).unwrap();
+        for data in [
+            b"to sign".to_vec(),
+            sshsig,
+            login(other.public_key()),
+            login(&key)[..40].to_vec(),
+        ] {
+            let err = client
+                .sign_request(&identities[0], None, data)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("failure"), "{err}");
+        }
 
         // Adding a key is not served.
         let stray =
@@ -380,15 +457,16 @@ mod tests {
         let mut client = AgentClient::connect(responder.open().await.unwrap());
         let identities = client.request_identities().await.unwrap();
         let key = identities[0].public_key().into_owned();
+        let data = login(&key);
         for hash in [HashAlg::Sha256, HashAlg::Sha512] {
             let signed = client
-                .sign_request(&identities[0], Some(hash), b"data".to_vec())
+                .sign_request(&identities[0], Some(hash), data.clone())
                 .await
                 .unwrap();
-            let mut r = &signed[b"data".len() + 4..];
+            let mut r = &signed[data.len() + 4..];
             let sig = Signature::decode(&mut r).unwrap();
             assert_eq!(sig.algorithm(), Algorithm::Rsa { hash: Some(hash) });
-            russh::keys::signature::Verifier::verify(&key, b"data", &sig).unwrap();
+            russh::keys::signature::Verifier::verify(&key, &data, &sig).unwrap();
         }
     }
 }

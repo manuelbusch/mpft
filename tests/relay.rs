@@ -1153,3 +1153,59 @@ fn the_relays_own_password_stays_off_the_clients_urls() {
         "Basic b3duZXI6ZnJvbS10aGUtZW52aXJvbm1lbnQ="
     );
 }
+
+/// The first relay of a chain logs in to the second with the forwarded
+/// agent, but hands the agent on only with --via-agent-onward: an SSH
+/// target behind the second relay needs it, and gets it only then.
+#[test]
+fn the_agent_goes_on_to_a_second_relay_only_when_asked() {
+    let Some(sftp) = it_env("MPT_IT_SFTP") else {
+        eprintln!("skipping: MPT_IT_SFTP not set");
+        return;
+    };
+    let bare_home = tempfile::tempdir().unwrap();
+    let env = [("SSH_AUTH_SOCK", None), ("HOME", bare_home.path().to_str())];
+    let r1 = Relay::start_env(&[], &env);
+    let r2 = Relay::start_env(&[], &env);
+    std::fs::create_dir_all(r1.path("in")).unwrap();
+    let name = format!("onward_{}.bin", std::process::id());
+    let payload: Vec<u8> = (0..100_000u32).map(|i| (i % 199) as u8).collect();
+    std::fs::write(r1.path("in").join(&name), &payload).unwrap();
+    std::fs::write(
+        r1.path("onward.toml"),
+        format!(
+            "[profiles.r1]\nurl = \"{}\"\n\
+             [profiles.r2]\nurl = \"{}\"\n\
+             [profiles.src]\nurl = \"in/{name}\"\nvia = \"mpt://r1\"\n\
+             [profiles.far]\nurl = \"{sftp}\"\nvia = \"mpt://r2\"\n",
+            r1.via("client"),
+            r2.via("client"),
+        ),
+    )
+    .unwrap();
+    let run = |flags: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
+            .env_remove("MPT_CONFIG")
+            .arg("--config")
+            .arg(r1.path("onward.toml"))
+            .args(["--color", "never", "cp"])
+            .args(flags)
+            .args(["mpt://src", "mpt://far"])
+            .output()
+            .unwrap();
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let (code, err) = run(&[]);
+    assert_eq!(code, 4, "{err}");
+    let (code, err) = run(&["--via-agent-onward"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        r2.log()
+            .contains("authenticated via the forwarded ssh-agent"),
+        "{}",
+        r2.log()
+    );
+}

@@ -156,6 +156,7 @@ These belong to `cp` and `batch` and must come **after** the subcommand.
 | `--no-via` | off | copy from here even though `[defaults] via` or a profile names a relay |
 | `--via-credentials <MODE>` | `[defaults] via_credentials`, else `header` | how the relay gets the targets' passwords: `header` (in the URLs it is sent) or `on-demand` (asked of this side at every login; the relay has to allow it) |
 | `--no-via-agent` | off | do not forward an ssh-agent to the relay; SSH targets then need a password or a key on the relay |
+| `--via-agent-onward` | off | let the relay hand the forwarded agent on to the second relay of a chained target, for the SSH targets behind that one ([see the relay chapter](../server/relay-topologies.md#a-target-behind-another-relay)) |
 
 ```
 mpt cp -r --parallel 8 /data/export/ sftp://srv/in/     # right
