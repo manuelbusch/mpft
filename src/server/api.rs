@@ -3,7 +3,8 @@
 //! Every error is `{"error": {"kind": …, "message": …}}` with a status
 //! that says whose fault it is: 400 for a request the server cannot act
 //! on, 401 without the token, 404 for a job it does not know, 409 for a
-//! job that would write what another writes, 413 for a body over the
+//! job that would write what another writes (a job with a pattern or a
+//! tree is checked once it is expanded, after the 202), 413 for a body over the
 //! limit, 415 for a body in a form it does not read, 503 while it shuts
 //! down.
 
@@ -406,12 +407,30 @@ async fn accept(state: &Arc<AppState>, submission: Submission) -> Result<Respons
         || jobs
             .iter()
             .any(|j| crate::batch::expand::has_pattern(&j.src));
-    if !expands && let Err(e) = crate::batch::check_collisions(&jobs) {
-        let error = ApiError::new("conflict", scheduler::conflict_text(&e));
-        return Err(Reject {
-            status: StatusCode::CONFLICT,
-            error: scheduler::redact(error, &refs),
-        });
+    if !expands {
+        if let Err(e) = crate::batch::check_collisions(&jobs) {
+            let error = ApiError::new("conflict", scheduler::conflict_text(&e));
+            return Err(Reject {
+                status: StatusCode::CONFLICT,
+                error: scheduler::redact(error, &refs),
+            });
+        }
+        // And against what the jobs running now write. Only a hint: the
+        // claim itself is made when the job is prepared, and a job that
+        // loses a race to it fails there with the same kind.
+        let taken = state
+            .targets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .check_all(&jobs, 1)
+            .err();
+        if let Some(e) = taken {
+            let error = ApiError::new("conflict", scheduler::conflict_text(&e));
+            return Err(Reject {
+                status: StatusCode::CONFLICT,
+                error: scheduler::redact(error, &refs),
+            });
+        }
     }
     let transfers = submission.specs.len();
     let id = state.submit(submission).await.map_err(|e| {
@@ -816,6 +835,61 @@ mod tests {
         assert!(!dir.path().join("a").exists());
         let (status, _) = call(&app, Method::POST, "/v1/jobs", t, None, &body_a).await;
         assert_eq!(status, StatusCode::ACCEPTED, "the queue is free again");
+    }
+
+    #[tokio::test]
+    async fn a_target_a_running_job_writes_is_a_conflict_at_once() {
+        let state = AppState::new(
+            with_token(UrlRule::Any),
+            Runtime::new(CopyOptions::default()),
+        )
+        .unwrap();
+        // What a job being run holds.
+        let running = crate::batch::Job {
+            src: crate::Location::parse("/tmp/a/x.bin").unwrap(),
+            dsts: vec![crate::Location::parse("/tmp/out/").unwrap()],
+        };
+        state.targets.lock().unwrap().note(&running, 1).unwrap();
+        let app = router(Arc::clone(&state));
+        let t = Some("s3cret");
+        let (status, body) = call(
+            &app,
+            Method::POST,
+            "/v1/jobs",
+            t,
+            None,
+            r#"{"src": "/tmp/b/x.bin", "dst": "/tmp/out/"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"]["kind"], "conflict");
+        assert_eq!(
+            body["error"]["message"],
+            "job 1 writes the target /tmp/out/x.bin, which another job is writing now"
+        );
+        // A pattern is expanded first, so its conflicts show up later.
+        let (status, body) = call(
+            &app,
+            Method::POST,
+            "/v1/jobs",
+            t,
+            None,
+            r#"{"src": "/tmp/nothing-here/*.bin", "dst": "/tmp/out/"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        // Another file in the same directory is free.
+        state.targets.lock().unwrap().release(&running);
+        let (status, body) = call(
+            &app,
+            Method::POST,
+            "/v1/jobs",
+            t,
+            None,
+            r#"{"src": "/tmp/b/x.bin", "dst": "/tmp/out/"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     }
 
     #[tokio::test]

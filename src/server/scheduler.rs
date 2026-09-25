@@ -304,13 +304,7 @@ async fn prepare(
         .unwrap_or_else(|e| e.into_inner())
         .note_all(&jobs, 1);
     if let Err(e) = noted {
-        return Err(fail(
-            ApiError::new(
-                "conflict",
-                format!("a target is already being written: {}", conflict_text(&e)),
-            ),
-            &refs,
-        ));
+        return Err(fail(ApiError::new("conflict", conflict_text(&e)), &refs));
     }
     let prepared = jobs
         .into_iter()

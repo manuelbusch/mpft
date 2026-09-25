@@ -249,7 +249,7 @@ impl AppState {
             cfg,
             rt,
             store,
-            targets: Mutex::new(Targets::default()),
+            targets: Mutex::new(Targets::shared()),
             work,
             closing: CancellationToken::new(),
             accepting: AtomicBool::new(true),

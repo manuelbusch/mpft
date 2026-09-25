@@ -120,7 +120,7 @@ stable part.
 | 401 | `unauthorized` | no token, or the wrong one; the answer to a wrong one is delayed by 250 ms |
 | 403 | `forbidden` | the request carries an `Origin` header |
 | 404 | `not_found` | no such job or transfer |
-| 409 | `conflict` | two transfers of the job, or of this and a running job, write the same target |
+| 409 | `conflict` | two transfers of the job write the same target, or one writes a target a running job is writing. A pattern or a `recursive` job is checked only once it is expanded, and such a conflict fails it in `preparing` with the same kind |
 | 413 | `too_large` | the body exceeds `[server] max_body` |
 | 415 | `unsupported_media_type` | a body type the route does not take |
 | 429 | `too_many_jobs` | `[server] max_queued` jobs are open; the `Retry-After` header says when to try again |

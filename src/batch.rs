@@ -142,9 +142,21 @@ impl BatchReport {
 #[derive(Debug, Default)]
 pub struct Targets {
     seen: std::collections::HashMap<String, usize>,
+    /// The jobs noted come from different lists (a server's jobs), so the
+    /// number of the job that holds a target means nothing to the next.
+    shared: bool,
 }
 
 impl Targets {
+    /// Targets noted by many lists of jobs, each numbered from 1: a
+    /// refusal does not name the job that holds the target.
+    pub fn shared() -> Targets {
+        Targets {
+            shared: true,
+            ..Default::default()
+        }
+    }
+
     /// Note the targets of job number `index` (1-based, for the message),
     /// or say which earlier job already writes one of them. See
     /// [`Targets::note_all`].
@@ -157,6 +169,18 @@ impl Targets {
     /// them write the same file, the error says which and nothing is noted,
     /// so the caller has nothing to undo.
     pub fn note_all(&mut self, jobs: &[Job], first: usize) -> Result<()> {
+        let new = self.check_all(jobs, first)?;
+        self.seen.extend(new);
+        Ok(())
+    }
+
+    /// What [`Targets::note_all`] would refuse, without noting anything:
+    /// the keys `jobs` would claim, or the collision.
+    pub fn check_all(
+        &self,
+        jobs: &[Job],
+        first: usize,
+    ) -> Result<std::collections::HashMap<String, usize>> {
         let mut new: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         for (i, job) in jobs.iter().enumerate() {
             let index = first + i;
@@ -164,15 +188,17 @@ impl Targets {
                 let Some(key) = key(dst, &job.src)? else {
                     continue;
                 };
-                let taken = self.seen.get(&key).or_else(|| new.get(&key)).copied();
-                if let Some(owner) = taken {
+                if let Some(owner) = new.get(&key) {
+                    return Err(collision(Some(*owner), index, job, dst));
+                }
+                if let Some(owner) = self.seen.get(&key) {
+                    let owner = (!self.shared).then_some(*owner);
                     return Err(collision(owner, index, job, dst));
                 }
                 new.insert(key, index);
             }
         }
-        self.seen.extend(new);
-        Ok(())
+        Ok(new)
     }
 
     /// Forget the targets of a job that is over, so a later job may write
@@ -186,9 +212,10 @@ impl Targets {
     }
 }
 
-/// Two jobs on one file. The file itself: under a directory target, the
-/// source's name; a file target is the file.
-fn collision(first: usize, index: usize, job: &Job, dst: &Location) -> Error {
+/// Two jobs on one file: job `index` and job `first`, or a job of another
+/// list when `first` is `None`. The file itself: under a directory target,
+/// the source's name; a file target is the file.
+fn collision(first: Option<usize>, index: usize, job: &Job, dst: &Location) -> Error {
     let file = if dst.is_dir_target() {
         dst.sibling(job.src.filename().unwrap_or(""))
             .map(|l| l.to_string())
@@ -196,12 +223,11 @@ fn collision(first: usize, index: usize, job: &Job, dst: &Location) -> Error {
     } else {
         dst.to_string()
     };
-    if first == index {
-        return Error::InvalidUrl(format!("job {index} writes the target {file} twice"));
-    }
-    Error::InvalidUrl(format!(
-        "jobs {first} and {index} write the same target {file}"
-    ))
+    Error::InvalidUrl(match first {
+        Some(first) if first == index => format!("job {index} writes the target {file} twice"),
+        Some(first) => format!("jobs {first} and {index} write the same target {file}"),
+        None => format!("job {index} writes the target {file}, which another job is writing now"),
+    })
 }
 
 /// What identifies the file a target writes: scheme, host, port and the
