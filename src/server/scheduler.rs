@@ -24,9 +24,72 @@ pub(crate) fn spawn_job(state: Arc<AppState>, id: JobId) {
     tokio::spawn(run(state, id));
 }
 
+/// The kind of error for a job or a transfer that a panic ended: a bug in
+/// the server, described in its log.
+const INTERNAL: &str = "internal";
+
+/// Closes a job that its task left open because it panicked, so the job
+/// does not stay `queued` or `preparing` for ever (counting against
+/// `max_queued`, and holding up a shutdown for its whole grace period).
+struct CloseOnPanic {
+    state: Arc<AppState>,
+    id: JobId,
+}
+
+impl Drop for CloseOnPanic {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        warn!(id = %self.id, "the job's task panicked; closing the job as failed");
+        let error = ApiError::new(INTERNAL, "the job ended unexpectedly; see the server log");
+        self.state.store.fail(&self.id, error, journal(&self.state));
+    }
+}
+
+/// A job's claim on its targets, given up when it is dropped: when the
+/// transfer is over, when it never starts, and when its task panics.
+struct Claim {
+    state: Arc<AppState>,
+    job: Job,
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        release(&self.state, std::slice::from_ref(&self.job));
+    }
+}
+
+/// Marks a transfer failed when its task panics before it could say how
+/// the transfer ended, so the job is not taken for `done`. A transfer
+/// already over is left as it is.
+struct ReportOnPanic {
+    state: Arc<AppState>,
+    id: JobId,
+    index: usize,
+}
+
+impl Drop for ReportOnPanic {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        warn!(id = %self.id, index = self.index, "a transfer task panicked");
+        let error = ApiError::new(
+            INTERNAL,
+            "the transfer ended unexpectedly; see the server log",
+        );
+        self.state.store.transfer_lost(&self.id, self.index, error);
+    }
+}
+
 async fn run(state: Arc<AppState>, id: JobId) {
     let Some((submission, token)) = state.store.submission(&id) else {
         return;
+    };
+    let _close = CloseOnPanic {
+        state: Arc::clone(&state),
+        id: id.clone(),
     };
     // Queued until a slot is free for the preparation, which lists
     // directories and may fetch credentials.
@@ -66,19 +129,21 @@ async fn run(state: Arc<AppState>, id: JobId) {
             return;
         }
     };
+    let claims: Vec<Claim> = jobs
+        .iter()
+        .map(|p| Claim {
+            state: Arc::clone(&state),
+            job: p.job.clone(),
+        })
+        .collect();
     if token.is_cancelled() {
-        release(
-            &state,
-            &jobs.iter().map(|p| p.job.clone()).collect::<Vec<_>>(),
-        );
+        drop(claims);
         state.store.finish(&id, journal(&state));
         return;
     }
     let n = jobs.len();
     info!(%id, transfers = n, "running");
-    let plain: Vec<Job> = jobs.iter().map(|p| p.job.clone()).collect();
     let counters = state.store.start(&id, jobs);
-    let jobs = plain;
     let per_job = submission
         .options
         .parallel
@@ -87,7 +152,7 @@ async fn run(state: Arc<AppState>, id: JobId) {
     let job_slots = Arc::new(Semaphore::new(per_job));
     let fail_fast = submission.options.fail_fast.unwrap_or(false);
     let mut tasks = JoinSet::new();
-    for (index, (job, progress)) in jobs.into_iter().zip(counters).enumerate() {
+    for (index, (claim, progress)) in claims.into_iter().zip(counters).enumerate() {
         let state = Arc::clone(&state);
         let id = id.clone();
         let token = token.clone();
@@ -95,6 +160,12 @@ async fn run(state: Arc<AppState>, id: JobId) {
         let options = submission.options.clone();
         let refs = Arc::clone(&refs);
         tasks.spawn(async move {
+            let _reporter = ReportOnPanic {
+                state: Arc::clone(&state),
+                id: id.clone(),
+                index,
+            };
+            let job = claim.job.clone();
             // The job's own slot first, then one of the server's: a big
             // batch must not hold server slots while waiting on its own.
             let permits = tokio::select! {
@@ -141,13 +212,15 @@ async fn run(state: Arc<AppState>, id: JobId) {
                 state.store.set_stopped_early(&id);
                 token.cancel();
             }
-            report.job
+            // The claim goes with the task: here, or while a panic unwinds.
+            drop(claim);
         });
     }
+    // A task that panicked has released its claim and marked its transfer
+    // failed on the way out; see `Claim` and `ReportOnPanic`.
     while let Some(done) = tasks.join_next().await {
-        match done {
-            Ok(job) => release(&state, std::slice::from_ref(&job)),
-            Err(e) => warn!(%id, "a transfer task ended badly: {e}"),
+        if let Err(e) = done {
+            warn!(%id, "a transfer task ended badly: {e}");
         }
     }
     let state_after = state.store.finish(&id, journal(&state));
@@ -716,6 +789,64 @@ mod tests {
         // Closed for good: a further restart has nothing to run.
         let (_, open) = crate::server::store::Journal::open(&journal).unwrap();
         assert!(open.is_empty(), "{open:?}");
+    }
+
+    #[tokio::test]
+    async fn a_panic_fails_the_transfer_and_the_job_and_frees_the_target() {
+        let state = state(2);
+        let id = state
+            .store
+            .submit(
+                batch(
+                    vec![("/tmp/a".into(), "/tmp/out/".into())],
+                    JobOptions::default(),
+                ),
+                CancellationToken::new(),
+            )
+            .unwrap();
+        let job = Job {
+            src: Location::parse("/tmp/a").unwrap(),
+            dsts: vec![Location::parse("/tmp/out/").unwrap()],
+        };
+        state.targets.lock().unwrap().note(&job, 1).unwrap();
+        state.store.start(
+            &id,
+            vec![Prepared {
+                job: job.clone(),
+                src: "/tmp/a".into(),
+                dsts: vec!["/tmp/out/".into()],
+            }],
+        );
+        let task = {
+            let state = Arc::clone(&state);
+            let id = id.clone();
+            let job = job.clone();
+            tokio::spawn(async move {
+                let _close = CloseOnPanic {
+                    state: Arc::clone(&state),
+                    id: id.clone(),
+                };
+                let _claim = Claim {
+                    state: Arc::clone(&state),
+                    job,
+                };
+                let _reporter = ReportOnPanic {
+                    state: Arc::clone(&state),
+                    id,
+                    index: 0,
+                };
+                panic!("a bug");
+            })
+        };
+        assert!(task.await.unwrap_err().is_panic());
+        let snap = state.store.snapshot(&id, true).unwrap();
+        assert_eq!(snap.state, JobState::Failed);
+        assert_eq!(snap.error.unwrap().kind, INTERNAL);
+        let t = &snap.transfers.unwrap()[0];
+        assert_eq!(t.state, TransferState::Failed);
+        assert_eq!(t.error.as_ref().unwrap().kind, INTERNAL);
+        assert_eq!(state.store.unfinished(), 0);
+        state.targets.lock().unwrap().note(&job, 2).unwrap();
     }
 
     #[tokio::test]

@@ -131,8 +131,9 @@ field, with the kinds of the [exit-code table](exit-codes.md#error-kinds-and-the
 `io`, `remote`, `transport`, `auth`, `checksum_mismatch`, `signature`,
 `config`, `invalid_url`, `invalid_option`, `unsupported_scheme`,
 `unsupported_operation`, `cancelled`, plus `too_many_transfers` when a pattern
-or a tree expanded beyond the limit and `conflict` when the expansion produced
-a target another job is writing.
+or a tree expanded beyond the limit, `conflict` when the expansion produced
+a target another job is writing, and `internal` for a job or a transfer
+that a fault in the server itself ended (the server's log has the details).
 
 ## WebSocket events
 

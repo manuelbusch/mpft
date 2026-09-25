@@ -356,6 +356,31 @@ impl Store {
         state
     }
 
+    /// A transfer ended without a report (its task panicked): failed, with
+    /// `error`, unless it is over already.
+    pub fn transfer_lost(&self, id: &JobId, index: usize, error: ApiError) {
+        let mut inner = self.lock();
+        let Some(t) = inner
+            .jobs
+            .get_mut(id)
+            .and_then(|j| j.transfers.get_mut(index))
+            .filter(|t| !t.state.is_final())
+        else {
+            return;
+        };
+        t.state = TransferState::Failed;
+        t.finished_at = Some(SystemTime::now());
+        t.error = Some(error);
+        let snapshot = t.snapshot(id, index);
+        drop(inner);
+        self.emit(Event::TransferDone {
+            id: id.clone(),
+            index,
+            state: TransferState::Failed,
+            transfer: Box::new(snapshot),
+        });
+    }
+
     pub fn set_stopped_early(&self, id: &JobId) {
         if let Some(j) = self.lock().jobs.get_mut(id) {
             j.stopped_early = true;
@@ -576,7 +601,9 @@ pub fn transfer_error(report: &JobReport) -> Option<ApiError> {
             } else {
                 r.failures().next().map(|t| match &t.result {
                     Err(e) => ApiError::new(e.kind(), format!("{}: {e}", t.target)),
-                    Ok(()) => unreachable!("a failure has an error"),
+                    // Not expected: a failure has an error. Said rather
+                    // than panicked over.
+                    Ok(()) => ApiError::new("internal", format!("{}: not delivered", t.target)),
                 })
             }
         }
