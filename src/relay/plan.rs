@@ -333,6 +333,38 @@ mod tests {
         );
     }
 
+    /// Two relays that differ only in a secret — the password, or an
+    /// option that is masked when shown — are two relays, not one.
+    #[test]
+    fn relays_that_differ_only_in_a_secret_are_not_merged() {
+        let job = Job {
+            src: loc("/in/x", None),
+            dsts: vec![
+                loc("sftp://h/a/", Some("a")),
+                loc("sftp://h/b/", Some("b")),
+                loc("sftp://h/c/", Some("c")),
+            ],
+        };
+        let t = table(
+            None,
+            &[
+                ("a", "r:one@h"),
+                ("b", "r:two@h"),
+                ("c", "r@h/?passphrase=three"),
+            ],
+        );
+        assert_eq!(t.by_profile["a"].to_string(), t.by_profile["b"].to_string());
+        let parts = plan(&job, &t);
+        assert_eq!(parts.len(), 3, "{parts:?}");
+        assert_eq!(
+            parts[1],
+            Part::Upload {
+                relay: relay("r:two@h"),
+                dsts: vec![1]
+            }
+        );
+    }
+
     #[test]
     fn a_source_behind_a_relay_is_pulled_and_chained() {
         // src via r1; a via r1 (direct), b via r2 (a hop from r1), c plain
