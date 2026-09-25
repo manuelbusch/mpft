@@ -349,27 +349,10 @@ fn accept(state: &Arc<AppState>, submission: Submission) -> Result<Response, Rej
     }
     // Judged on the options the job would run with, as the scheduler
     // will lay them over the server's.
-    submission
-        .options
-        .apply(&state.rt.copy, state.rt.cache_limit)?;
-    if submission.options.delete_source == Some(true) && !state.cfg.allow_delete {
-        return Err(Reject::new(
-            StatusCode::BAD_REQUEST,
-            "invalid_option",
-            "delete_source is not allowed on this server ([server] allow_delete)",
-        ));
-    }
-    if submission.specs.len() > state.cfg.max_transfers {
-        return Err(Reject::new(
-            StatusCode::BAD_REQUEST,
-            "too_many_transfers",
-            format!(
-                "{} transfers in one job; the limit is {} ([server] max_transfers)",
-                submission.specs.len(),
-                state.cfg.max_transfers
-            ),
-        ));
-    }
+    state.admit(&submission).map_err(|error| Reject {
+        status: StatusCode::BAD_REQUEST,
+        error,
+    })?;
     if state.store.unfinished() >= state.cfg.max_queued {
         let mut resp = Reject::new(
             StatusCode::TOO_MANY_REQUESTS,
@@ -391,7 +374,6 @@ fn accept(state: &Arc<AppState>, submission: Submission) -> Result<Response, Rej
     let mut refs: Vec<(String, crate::Location)> = Vec::new();
     for spec in &submission.specs {
         let locate = |url: &str| -> Result<crate::Location, Reject> {
-            state.cfg.allow_url(url)?;
             crate::config::locate(url).map_err(|e| Reject {
                 status: StatusCode::BAD_REQUEST,
                 error: ApiError::client_safe(&e, url),

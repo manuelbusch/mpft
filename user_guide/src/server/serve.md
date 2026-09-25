@@ -256,6 +256,12 @@ transfer either finished or left only a `.mpt-part`; a mail target may
 deliver twice, and a `delete_source` job whose source is already gone fails
 the second time. Finished jobs do not survive a restart.
 
+A job from the journal is judged by the settings the server has now, as a
+new submission would be: its URLs against `urls` and `profiles`,
+`delete_source` against `allow_delete`, its length against `max_transfers`
+and its options. One they no longer allow is not run; it is closed as
+`failed` with an error that begins `not run again after the restart:`.
+
 `retention` says how long finished jobs stay available over the API, 24 hours
 by default; `"0"` keeps them until the server stops.
 

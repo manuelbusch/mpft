@@ -356,6 +356,7 @@ mod tests {
     use crate::server::model::{JobKind, JobState, Submission};
     use crate::server::{Runtime, ServerConfig};
     use crate::transfer::CopyOptions;
+    use tokio_util::sync::CancellationToken;
 
     fn state(parallel: usize) -> Arc<AppState> {
         let cfg = ServerConfig {
@@ -652,6 +653,55 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(wait_final(&state, &next).await, JobState::Done);
+    }
+
+    #[tokio::test]
+    async fn a_journalled_job_the_settings_no_longer_allow_is_failed_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = dir.path().join("jobs.jsonl");
+        std::fs::write(dir.path().join("a"), "a").unwrap();
+        std::fs::write(dir.path().join("b"), "b").unwrap();
+        let out = format!("{}/out/", dir.path().display());
+        std::fs::create_dir(dir.path().join("out")).unwrap();
+        let cfg = |allow_delete| ServerConfig {
+            urls: UrlRule::Any,
+            journal: Some(journal.clone()),
+            allow_delete,
+            ..Default::default()
+        };
+        // Taken while deleting was allowed, never run.
+        let (deleting, plain) = {
+            let state = AppState::new(cfg(true), Runtime::new(CopyOptions::default())).unwrap();
+            let one = |src: &str, delete| {
+                state.store.submit(
+                    batch(
+                        vec![(format!("{}/{src}", dir.path().display()), out.clone())],
+                        JobOptions {
+                            delete_source: delete,
+                            ..Default::default()
+                        },
+                    ),
+                    CancellationToken::new(),
+                )
+            };
+            (one("a", Some(true)).unwrap(), one("b", None).unwrap())
+        };
+        let state = AppState::new(cfg(false), Runtime::new(CopyOptions::default())).unwrap();
+        state.run();
+        assert_eq!(wait_final(&state, &deleting).await, JobState::Failed);
+        let error = state
+            .store
+            .snapshot(&deleting, false)
+            .unwrap()
+            .error
+            .unwrap();
+        assert!(error.message.contains("allow_delete"), "{}", error.message);
+        assert!(dir.path().join("a").exists());
+        assert_eq!(wait_final(&state, &plain).await, JobState::Done);
+        drop(state);
+        // Closed for good: a further restart has nothing to run.
+        let (_, open) = crate::server::store::Journal::open(&journal).unwrap();
+        assert!(open.is_empty(), "{open:?}");
     }
 
     #[tokio::test]

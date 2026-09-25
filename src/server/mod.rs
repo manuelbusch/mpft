@@ -31,7 +31,7 @@ use crate::batch::Targets;
 use crate::config::UrlRule;
 use crate::transfer::CopyOptions;
 use crate::{Error, Result};
-use model::{Event, JobId};
+use model::{ApiError, Event, JobId};
 use store::{Journal, Store};
 
 pub use api::router;
@@ -265,6 +265,21 @@ impl AppState {
         let recovered =
             std::mem::take(&mut *self.recovered.lock().unwrap_or_else(|e| e.into_inner()));
         for id in recovered {
+            // The configuration may have changed since the job was taken:
+            // it runs again only if it would be accepted now.
+            let refused = self
+                .store
+                .submission(&id)
+                .and_then(|(s, _)| self.admit(&s).err());
+            if let Some(e) = refused {
+                warn!(%id, "not re-running a job the journal left open: {}", e.message);
+                let e = ApiError::new(
+                    e.kind,
+                    format!("not run again after the restart: {}", e.message),
+                );
+                self.store.fail(&id, e, true);
+                continue;
+            }
             info!(%id, "re-running a job the journal left open");
             scheduler::spawn_job(Arc::clone(self), id);
         }
@@ -299,6 +314,36 @@ impl AppState {
         let id = self.store.submit(submission, self.work.child_token())?;
         scheduler::spawn_job(Arc::clone(self), id.clone());
         Ok(id)
+    }
+
+    /// What the server's settings say about a submission, before anything
+    /// is resolved: the options it would run with, `delete_source`, the
+    /// number of transfers and every URL. Checked when a job is taken and
+    /// again when the journal hands one over after a restart.
+    pub fn admit(&self, submission: &model::Submission) -> std::result::Result<(), ApiError> {
+        submission
+            .options
+            .apply(&self.rt.copy, self.rt.cache_limit)?;
+        if submission.options.delete_source == Some(true) && !self.cfg.allow_delete {
+            return Err(ApiError::new(
+                "invalid_option",
+                "delete_source is not allowed on this server ([server] allow_delete)",
+            ));
+        }
+        if submission.specs.len() > self.cfg.max_transfers {
+            return Err(ApiError::new(
+                "too_many_transfers",
+                format!(
+                    "{} transfers in one job; the limit is {} ([server] max_transfers)",
+                    submission.specs.len(),
+                    self.cfg.max_transfers
+                ),
+            ));
+        }
+        for url in submission.urls() {
+            self.cfg.allow_url(url)?;
+        }
+        Ok(())
     }
 
     pub fn accepting(&self) -> bool {
