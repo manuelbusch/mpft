@@ -22,8 +22,9 @@ INFO mpt::relay::sshd: relay host key fingerprint=SHA256:5X2qOkD53WE80U+4jq5ZaV1
 INFO mpt::relay::sshd: relay listening bound=0.0.0.0:2222 parallel=4
 ```
 
-The server answers `exec "mpt relay"` and the subsystem `mpt`, and nothing
-else: no shell, no pty, no port forwarding, no sftp. The one channel it opens
+The server answers `exec "mpt relay"` (the program may be given by its path,
+`/usr/local/bin/mpt relay`, but no argument is taken) and the subsystem
+`mpt`, and nothing else: no shell, no pty, no port forwarding, no sftp. The one channel it opens
 back to the client is the agent channel, and only when the client forwards an
 agent and `--no-agent-forwarding` is not set. `authorized_keys` is in OpenSSH
 format and is re-read whenever its content changes, so adding a client needs
@@ -63,7 +64,8 @@ server: a relay started with `--timeout 120 --cache` delivers every upload
 that way unless the client's header says otherwise, and `[defaults]` and
 `[policy]` of the relay's configuration are in force. Ctrl-C or `SIGTERM`
 stops accepting sessions, waits `--grace` for the running relays and then
-cancels them.
+cancels them. A connection that was already open cannot start a relay once
+the shutdown has begun.
 
 ### Through an existing sshd
 

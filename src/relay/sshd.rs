@@ -81,6 +81,7 @@ pub async fn serve(
         slots: Semaphore::new(cfg.parallel.max(1)),
         running: AtomicUsize::new(0),
         idle: Notify::new(),
+        stopping: cancel.clone(),
         abort: abort.clone(),
         agent_forwarding: cfg.agent_forwarding,
     });
@@ -118,12 +119,22 @@ pub async fn serve(
         });
     }
     drop(listener);
+    // A relay starting from here on sees `stopping` and is refused, or it
+    // was counted before this load (see `Connection::start`).
     let running = shared.running.load(Ordering::SeqCst);
     if running > 0 {
         info!(running, grace = ?cfg.grace, "no longer accepting, waiting for the running relays");
         let wait = async {
-            while shared.running.load(Ordering::SeqCst) > 0 {
-                shared.idle.notified().await;
+            loop {
+                // Registered before the count is read, so the last relay
+                // ending in between still wakes it.
+                let idle = shared.idle.notified();
+                tokio::pin!(idle);
+                idle.as_mut().enable();
+                if shared.running.load(Ordering::SeqCst) == 0 {
+                    break;
+                }
+                idle.await;
             }
         };
         tokio::select! {
@@ -145,6 +156,8 @@ struct Shared {
     slots: Semaphore,
     running: AtomicUsize,
     idle: Notify,
+    /// No new sessions: the server is shutting down.
+    stopping: CancellationToken,
     abort: CancellationToken,
     agent_forwarding: bool,
 }
@@ -221,11 +234,14 @@ impl Handler for Connection {
         data: &[u8],
         session: &mut Session,
     ) -> std::result::Result<(), Self::Error> {
-        // `mpt relay` with or without arguments; nothing else runs here.
+        // `mpt relay`, the program possibly by its path; nothing else runs
+        // here, and no argument is taken.
         let command = String::from_utf8_lossy(data);
-        let mut words = command.split_whitespace();
-        let is_relay =
-            words.next().is_some_and(|w| w.ends_with("mpt")) && words.next() == Some("relay");
+        let words: Vec<&str> = command.split_whitespace().collect();
+        let is_relay = matches!(
+            words.as_slice(),
+            [program, "relay"] if *program == "mpt" || program.ends_with("/mpt")
+        );
         if is_relay {
             self.start(channel, session)
         } else {
@@ -301,6 +317,14 @@ impl Connection {
         let Some(channel) = self.channel.take() else {
             return session.channel_failure(id);
         };
+        // Counted before the check, so a shutdown either waits for this
+        // relay or has it refused (see `serve`).
+        self.shared.running.fetch_add(1, Ordering::SeqCst);
+        if self.shared.stopping.is_cancelled() {
+            debug!(peer = %self.peer, "relay refused: shutting down");
+            self.shared.finished();
+            return session.channel_failure(id);
+        }
         session.channel_success(id)?;
         let handle = session.handle();
         let shared = Arc::clone(&self.shared);
@@ -318,7 +342,16 @@ impl Connection {
     }
 }
 
-/// The relay itself, counted for the shutdown, one slot at a time.
+impl Shared {
+    /// One relay less; the shutdown is told when it was the last.
+    fn finished(&self) {
+        if self.running.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.idle.notify_waiters();
+        }
+    }
+}
+
+/// The relay itself, one slot at a time; counted in [`Connection::start`].
 async fn relay_on(
     shared: &Shared,
     channel: Channel<Msg>,
@@ -326,7 +359,6 @@ async fn relay_on(
     id: ChannelId,
     agent: Option<Arc<dyn crate::broker::AgentSource>>,
 ) -> u8 {
-    shared.running.fetch_add(1, Ordering::SeqCst);
     let code = {
         let permit = tokio::select! {
             biased;
@@ -355,9 +387,7 @@ async fn relay_on(
     let _ = handle.exit_status_request(id, u32::from(code)).await;
     let _ = handle.eof(id).await;
     let _ = handle.close(id).await;
-    if shared.running.fetch_sub(1, Ordering::SeqCst) == 1 {
-        shared.idle.notify_waiters();
-    }
+    shared.finished();
     code
 }
 
@@ -593,10 +623,56 @@ mod tests {
         assert!(matches!(err, Error::Auth(_)), "{err}");
 
         // The right key, but something other than the relay.
+        for (command, runs) in [
+            ("ls", false),
+            ("xmpt relay", false),
+            ("mpt relay --allow-delete", false),
+            ("mpt relay; ls", false),
+            ("mpt", false),
+            ("/usr/local/bin/mpt relay", true),
+            ("mpt relay", true),
+        ] {
+            assert_eq!(exec(&f, command).await, runs, "{command}");
+        }
+        f.stop().await;
+    }
+
+    /// Whether the relay's server takes `command` on a new session.
+    async fn exec(f: &Fixture, command: &str) -> bool {
         let cfg = SshConfig::from_location(&f.via("client_key")).unwrap();
         let handle = cfg.connect().await.unwrap();
         let mut channel = handle.channel_open_session().await.unwrap();
-        channel.exec(true, "ls").await.unwrap();
+        channel.exec(true, command).await.unwrap();
+        let mut runs = None;
+        while let Some(msg) = channel.wait().await {
+            match msg {
+                russh::ChannelMsg::Failure => {
+                    runs = Some(false);
+                    break;
+                }
+                russh::ChannelMsg::Success => {
+                    runs = Some(true);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        disconnect(&handle).await;
+        runs.expect("an answer to the command")
+    }
+
+    /// A connection that was open before the shutdown cannot start a
+    /// relay after it, which the shutdown would not wait for.
+    #[tokio::test]
+    async fn no_relay_starts_once_the_server_stops() {
+        let f = Fixture::start(1).await;
+        let cfg = SshConfig::from_location(&f.via("client_key")).unwrap();
+        let handle = cfg.connect().await.unwrap();
+        let mut channel = handle.channel_open_session().await.unwrap();
+        f.cancel.cancel();
+        let Fixture { task, dir, .. } = f;
+        task.await.unwrap().unwrap();
+        channel.exec(true, "mpt relay").await.unwrap();
         let mut refused = false;
         while let Some(msg) = channel.wait().await {
             match msg {
@@ -608,9 +684,9 @@ mod tests {
                 _ => {}
             }
         }
-        assert!(refused, "a shell command must be refused");
+        assert!(refused, "a relay started after the shutdown");
         disconnect(&handle).await;
-        f.stop().await;
+        drop(dir);
     }
 
     /// `from=` in authorized_keys holds for the relay's own server: the
