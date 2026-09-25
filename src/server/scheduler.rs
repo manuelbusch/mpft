@@ -40,10 +40,24 @@ async fn run(state: Arc<AppState>, id: JobId) {
         return;
     }
     state.store.set_preparing(&id);
-    let prepared = prepare(&state, &submission).await;
+    // A cancellation (a request, or the server giving up at shutdown) drops
+    // the preparation wherever it is: a listing, a credential command (it
+    // is killed with it) or a directory being created. The targets are
+    // claimed in its last step, which has nothing left to wait for, so a
+    // preparation dropped earlier has claimed none.
+    let prepared = tokio::select! {
+        biased;
+        () = token.cancelled() => None,
+        p = prepare(&state, &submission) => Some(p),
+    };
+    drop(permit);
+    let Some(prepared) = prepared else {
+        info!(%id, "cancelled while being prepared");
+        state.store.finish(&id, journal(&state));
+        return;
+    };
     // Whatever went wrong is told in terms of what was submitted.
     let prepared = prepared.map_err(|(e, refs)| redact(e, &refs));
-    drop(permit);
     let (jobs, refs) = match prepared {
         Ok(p) => p,
         Err(e) => {

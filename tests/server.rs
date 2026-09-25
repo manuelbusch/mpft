@@ -491,6 +491,51 @@ async fn a_misconfigured_profile_is_not_described_to_the_client() {
     );
 }
 
+#[tokio::test]
+async fn a_job_cancelled_while_it_is_prepared_stops_there() {
+    // The credential command would hold the preparation for a minute.
+    let server = Server::start_with_profiles(
+        tempfile::tempdir().unwrap(),
+        &[],
+        "[profiles.slow]\nurl = \"sftp://nobody@127.0.0.1:1/x/\"\n\
+         password = { cmd = \"sleep 60\" }\n",
+    );
+    let (status, body) = server
+        .post(
+            "/v1/jobs",
+            "application/json",
+            r#"{"src": "mpt://slow/a", "dst": "mpt://dst/"}"#.into(),
+        )
+        .await;
+    assert_eq!(status, 202, "{body}");
+    let url = body["url"].as_str().unwrap().to_string();
+    let started = Instant::now();
+    loop {
+        let (_, job) = server.get(&url).await;
+        if job["state"] == "preparing" {
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(10), "{job}");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let resp = server
+        .client()
+        .delete(server.url(&url))
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 202);
+    let cancelled = Instant::now();
+    let job = server.wait(&url).await;
+    assert_eq!(job["state"], "cancelled", "{job}");
+    assert!(
+        cancelled.elapsed() < Duration::from_secs(10),
+        "the preparation ran on: {:?}",
+        cancelled.elapsed()
+    );
+}
+
 #[test]
 fn delete_source_needs_allow_delete() {
     let dir = tempfile::tempdir().unwrap();

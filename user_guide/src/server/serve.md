@@ -144,7 +144,9 @@ reference](../reference/api.md#websocket-events) has the frames.
 
 `GET /v1/jobs?state=running` lists jobs, newest first. `DELETE /v1/jobs/{id}`
 cancels one: running transfers stop and their partial files are removed, as
-with [Ctrl-C](../guide/reliability.md#ctrl-c).
+with [Ctrl-C](../guide/reliability.md#ctrl-c). A job still `preparing` stops
+where it is, in a listing, a credential command (which is killed) or the
+creation of a tree's directories.
 
 ## What a job may set
 

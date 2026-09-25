@@ -274,6 +274,9 @@ async fn from_cmd(cmd: &str) -> Fetched {
         .arg(flag)
         .arg(cmd)
         .stdin(std::process::Stdio::null())
+        // A caller that stops waiting (a server job that is cancelled)
+        // takes the command down with it.
+        .kill_on_drop(true)
         .output()
         .await
         .map_err(|e| format!("running `{cmd}`: {e}"))?;
