@@ -50,11 +50,14 @@ are expanded on the client, where the source is.
 
 The report comes back and is printed as `cp` prints its own; `--json` gives
 the [same object](../automation/scripting.md#the-json-report) per job, and the
-exit code is what `cp` would have given. A target the relay could not write
-is reported against the job, prefixed with `relay:`:
+exit code is what `cp` would have given. A target's failure keeps its
+[kind](../reference/exit-codes.md#error-kinds-and-their-codes) — an authentication failure is one here
+too, a checksum that did not hold is exit 3 — and one of the transfer itself
+(I/O, the remote side, the connection) says `relay:` before the relay's
+message:
 
 ```
-[1/1] FAILED copy report.pdf -> sftp://deploy@srv.example.com/data/incoming/: relay: I/O error: File exists (os error 17)
+[1/1] FAILED copy report.pdf -> sftp://deploy@srv.example.com/data/incoming/: I/O error: relay: File exists (os error 17)
 ```
 
 ### What travels with the job

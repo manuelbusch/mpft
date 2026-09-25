@@ -61,9 +61,7 @@ pub fn fanout_json(report: &FanoutReport) -> Value {
 }
 
 /// A report back from its JSON, as a relay hands it over. A target's
-/// failure comes back with its kind where that matters for the exit code
-/// (see [`error_from_json`]), otherwise as a `relay` transport error
-/// carrying the message.
+/// failure comes back as an error of its kind (see [`error_from_json`]).
 pub fn fanout_from_json(v: &Value) -> Result<FanoutReport> {
     let bad = |what: &str| Error::Remote(format!("report: {what}"));
     let str_of = |v: &Value| v.as_str().map(String::from);
@@ -136,10 +134,11 @@ pub fn error_json(err: &Error) -> Value {
     json!({ "kind": err.kind(), "message": err.to_string() })
 }
 
-/// The error back from its JSON, close enough to keep its exit code: a
-/// relay's refusal is a usage error here too, its authentication failure
-/// one of ours. Everything else is a `relay` transport error carrying the
-/// message.
+/// The error back from its JSON, of the same kind, so it keeps its exit
+/// code and its `kind`: a relay's refusal is a usage error here too, its
+/// authentication failure one of ours, a checksum that did not hold one as
+/// well. What failed over there on the wire or on a disk says `relay:` in
+/// its message, since it is not this side's.
 pub fn error_from_json(v: &Value) -> Error {
     let message = v["message"].as_str().unwrap_or("refused");
     let after = |prefix: &str| message.strip_prefix(prefix).unwrap_or(message).to_string();
@@ -162,9 +161,75 @@ pub fn error_from_json(v: &Value) -> Error {
         }
         "invalid_url" => Error::InvalidUrl(after("invalid URL: ")),
         "config" => Error::Config(after("configuration: ")),
+        "signature" => Error::Signature(after("signature: ")),
+        "checksum_mismatch" => checksum_mismatch(message),
+        "unsupported_scheme" => {
+            let rest = after("unsupported scheme '");
+            Error::UnsupportedScheme(rest.strip_suffix('\'').unwrap_or(&rest).to_string())
+        }
+        "unsupported_operation" => {
+            // "scheme 'name' cannot op"
+            let rest = after("scheme '");
+            let (scheme, op) = rest.split_once("' cannot ").unwrap_or(("relay", &rest));
+            Error::UnsupportedOperation {
+                scheme: scheme.to_string(),
+                op: KNOWN_OPS
+                    .iter()
+                    .find(|known| **known == op)
+                    .copied()
+                    .unwrap_or("do what was asked"),
+            }
+        }
+        "io" => Error::Io(std::io::Error::other(format!(
+            "relay: {}",
+            after("I/O error: ")
+        ))),
+        "remote" => Error::Remote(format!("relay: {}", after("remote error: "))),
         _ => Error::Transport {
             protocol: "relay",
             source: message.into(),
+        },
+    }
+}
+
+/// What an unsupported operation may say it cannot do: the texts of this
+/// crate, so a relay's comes back with its words.
+const KNOWN_OPS: &[&str] = &[
+    "receive",
+    "send",
+    "list",
+    "append",
+    "remove",
+    "rename",
+    "create directories",
+    "delete its source after the copy",
+    "address a sibling file",
+    "have a parent directory",
+    "have a path appended",
+    "create directories (copy a tree elsewhere, or files one by one)",
+    "hold files (it names a relay for `cp --via`; sftp:// or scp:// reach its files)",
+    "list (use sftp:// instead)",
+    "list (use webdav:// for PROPFIND)",
+];
+
+/// "`algo` checksum mismatch: expected `x`, got `y`" back as the error.
+fn checksum_mismatch(message: &str) -> Error {
+    let parsed = message
+        .split_once(" checksum mismatch: expected ")
+        .and_then(|(algo, rest)| {
+            let (expected, actual) = rest.split_once(", got ")?;
+            Some((HashAlgo::parse(algo).ok()?.name(), expected, actual))
+        });
+    match parsed {
+        Some((algo, expected, actual)) => Error::ChecksumMismatch {
+            algo,
+            expected: expected.to_string(),
+            actual: actual.to_string(),
+        },
+        None => Error::ChecksumMismatch {
+            algo: "checksum",
+            expected: String::new(),
+            actual: message.to_string(),
         },
     }
 }
@@ -188,8 +253,54 @@ mod tests {
         );
         assert!(matches!(back(&Error::Cancelled), Error::Cancelled));
         let e = back(&Error::Remote("gone".into()));
-        assert_eq!(e.to_string(), "relay: remote error: gone");
+        assert_eq!(e.to_string(), "remote error: relay: gone");
         assert_eq!(e.exit_code(), 1);
+    }
+
+    /// Every kind of error comes back as that kind, with its exit code,
+    /// and — where it has words of its own — with them.
+    #[test]
+    fn every_kind_survives_the_round_trip() {
+        let every = [
+            Error::InvalidUrl("no host".into()),
+            Error::UnsupportedScheme("gopher".into()),
+            Error::UnsupportedOperation {
+                scheme: "http".into(),
+                op: "rename",
+            },
+            Error::UnsupportedOperation {
+                scheme: "mailto".into(),
+                op: "hold files (it names a relay for `cp --via`; sftp:// or scp:// reach its files)",
+            },
+            Error::Config("bad".into()),
+            Error::invalid_option("x", "y"),
+            Error::Auth("no".into()),
+            Error::Remote("gone".into()),
+            Error::Signature("not trusted".into()),
+            Error::ChecksumMismatch {
+                algo: "blake3",
+                expected: "aa".into(),
+                actual: "bb".into(),
+            },
+            Error::Io(std::io::Error::other("disk full")),
+            Error::not_found("/x/y"),
+            Error::Cancelled,
+            Error::transport("sftp", std::io::Error::other("reset")),
+        ];
+        for e in every {
+            let back = error_from_json(&error_json(&e));
+            assert_eq!(back.kind(), e.kind(), "{e}");
+            assert_eq!(back.exit_code(), e.exit_code(), "{e}");
+            match &e {
+                Error::Io(_) | Error::Remote(_) => {
+                    assert!(back.to_string().contains("relay: "), "{back}");
+                }
+                Error::Transport { .. } => {
+                    assert_eq!(back.to_string(), format!("relay: {e}"));
+                }
+                _ => assert_eq!(back.to_string(), e.to_string()),
+            }
+        }
     }
 
     #[test]

@@ -303,7 +303,7 @@ fn a_stranger_a_bad_target_and_a_refused_flag() {
     let (code, _, err) = relay.cp("client", &[src.to_str().unwrap(), "mpt://b/blocker/"]);
     assert_eq!(code, 1, "{err}");
     assert!(err.contains("FAILED"), "{err}");
-    assert!(err.contains("relay: I/O error"), "{err}");
+    assert!(err.contains("I/O error: relay: "), "{err}");
     assert!(err.contains("1 of 1 jobs failed"), "{err}");
 
     // The relay from the configuration, and --no-via against it.

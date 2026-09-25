@@ -350,7 +350,7 @@ ordinary server without `mpt` on the `PATH` of that account, or the account's
 The client's public key is not in the relay's `authorized_keys`. The relay's
 log names the fingerprint it refused.
 
-**`relay: I/O error: …`** on a `FAILED` line [1]
+**`I/O error: relay: …`** or **`remote error: relay: …`** on a `FAILED` line [1]
 
 The relay reached the target and the target refused; the message after
 `relay:` is the target's own, as `cp` would have printed it there.
