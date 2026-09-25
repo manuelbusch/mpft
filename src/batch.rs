@@ -146,27 +146,32 @@ pub struct Targets {
 
 impl Targets {
     /// Note the targets of job number `index` (1-based, for the message),
-    /// or say which earlier job already writes one of them.
+    /// or say which earlier job already writes one of them. See
+    /// [`Targets::note_all`].
     pub fn note(&mut self, job: &Job, index: usize) -> Result<()> {
-        for dst in &job.dsts {
-            let Some(key) = key(dst, &job.src)? else {
-                continue;
-            };
-            if let Some(first) = self.seen.insert(key, index) {
-                // The file itself: under a directory target, the source's
-                // name; a file target is the file.
-                let file = if dst.is_dir_target() {
-                    dst.sibling(job.src.filename().unwrap_or(""))
-                        .map(|l| l.to_string())
-                        .unwrap_or_else(|_| dst.to_string())
-                } else {
-                    dst.to_string()
+        self.note_all(std::slice::from_ref(job), index)
+    }
+
+    /// Note the targets of `jobs`, numbered from `first` on, all or none:
+    /// when one of them is already written by an earlier job, or two of
+    /// them write the same file, the error says which and nothing is noted,
+    /// so the caller has nothing to undo.
+    pub fn note_all(&mut self, jobs: &[Job], first: usize) -> Result<()> {
+        let mut new: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for (i, job) in jobs.iter().enumerate() {
+            let index = first + i;
+            for dst in &job.dsts {
+                let Some(key) = key(dst, &job.src)? else {
+                    continue;
                 };
-                return Err(Error::InvalidUrl(format!(
-                    "jobs {first} and {index} write the same target {file}"
-                )));
+                let taken = self.seen.get(&key).or_else(|| new.get(&key)).copied();
+                if let Some(owner) = taken {
+                    return Err(collision(owner, index, job, dst));
+                }
+                new.insert(key, index);
             }
         }
+        self.seen.extend(new);
         Ok(())
     }
 
@@ -179,6 +184,24 @@ impl Targets {
             }
         }
     }
+}
+
+/// Two jobs on one file. The file itself: under a directory target, the
+/// source's name; a file target is the file.
+fn collision(first: usize, index: usize, job: &Job, dst: &Location) -> Error {
+    let file = if dst.is_dir_target() {
+        dst.sibling(job.src.filename().unwrap_or(""))
+            .map(|l| l.to_string())
+            .unwrap_or_else(|_| dst.to_string())
+    } else {
+        dst.to_string()
+    };
+    if first == index {
+        return Error::InvalidUrl(format!("job {index} writes the target {file} twice"));
+    }
+    Error::InvalidUrl(format!(
+        "jobs {first} and {index} write the same target {file}"
+    ))
 }
 
 /// What identifies the file a target writes: scheme, host, port and the
@@ -233,11 +256,7 @@ pub async fn prepare(
 
 /// Refuse a list in which two jobs would write the same file.
 pub fn check_collisions(jobs: &[Job]) -> Result<()> {
-    let mut targets = Targets::default();
-    for (i, job) in jobs.iter().enumerate() {
-        targets.note(job, i + 1)?;
-    }
-    Ok(())
+    Targets::default().note_all(jobs, 1)
 }
 
 /// Run every job, at most `opts.parallel` at a time.
@@ -421,6 +440,44 @@ mod tests {
         assert!(targets.note(&b, 2).is_err());
         targets.release(&a);
         targets.note(&b, 2).unwrap();
+    }
+
+    #[test]
+    fn a_refused_job_leaves_nothing_noted() {
+        let mut targets = Targets::default();
+        let first = job("/tmp/a/x.bin", &["sftp://h/in/"]);
+        targets.note(&first, 1).unwrap();
+        // Its first target is free, its second is taken: neither is noted,
+        // and the taken one still belongs to job 1.
+        let second = job("/tmp/b/x.bin", &["sftp://h/free/", "sftp://h/in/"]);
+        let err = targets.note(&second, 2).unwrap_err().to_string();
+        assert!(err.contains("jobs 1 and 2"), "{err}");
+        targets
+            .note(&job("/tmp/c/x.bin", &["sftp://h/free/"]), 3)
+            .unwrap();
+        let err = targets
+            .note(&job("/tmp/d/x.bin", &["sftp://h/in/"]), 4)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("jobs 1 and 4"), "{err}");
+
+        // One job naming a target twice is refused, and claims nothing.
+        let mut targets = Targets::default();
+        let twice = job("/tmp/a/x.bin", &["sftp://h/in/", "sftp://h/in/"]);
+        let err = targets.note(&twice, 1).unwrap_err().to_string();
+        assert!(err.contains("job 1 writes"), "{err}");
+        targets
+            .note(&job("/tmp/a/x.bin", &["sftp://h/in/"]), 2)
+            .unwrap();
+
+        // A set of jobs goes in whole or not at all.
+        let mut targets = Targets::default();
+        let set = [
+            job("/tmp/a/x.bin", &["sftp://h/one/"]),
+            job("/tmp/b/x.bin", &["sftp://h/one/"]),
+        ];
+        assert!(targets.note_all(&set, 1).is_err());
+        targets.note_all(&set[..1], 1).unwrap();
     }
 
     #[test]

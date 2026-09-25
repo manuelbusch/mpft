@@ -1762,10 +1762,10 @@ async fn do_follow(
                         .map(|s| locate_job(s, locate))
                         .collect::<anyhow::Result<Vec<_>>>()?;
                     let jobs = prepare_jobs(jobs, &open, args).await?;
-                    for job in &jobs {
-                        r.index += 1;
-                        r.targets.note(job, r.index)?;
-                    }
+                    // All of the line's jobs or none: a rejected line
+                    // leaves no target claimed.
+                    r.targets.note_all(&jobs, r.index + 1)?;
+                    r.index += jobs.len();
                     anyhow::Ok(jobs)
                 }
                 .await;

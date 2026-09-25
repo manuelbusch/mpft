@@ -210,20 +210,20 @@ async fn prepare(
             return Err(fail(ApiError::new(kind, &e), &refs));
         }
     };
-    let mut targets = state.targets.lock().unwrap_or_else(|e| e.into_inner());
-    for (i, job) in jobs.iter().enumerate() {
-        if let Err(e) = targets.note(job, i + 1) {
-            for earlier in &jobs[..i] {
-                targets.release(earlier);
-            }
-            return Err(fail(
-                ApiError::new(
-                    "conflict",
-                    format!("a target is already being written: {}", conflict_text(&e)),
-                ),
-                &refs,
-            ));
-        }
+    // All or nothing: a job refused here holds no target afterwards.
+    let noted = state
+        .targets
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .note_all(&jobs, 1);
+    if let Err(e) = noted {
+        return Err(fail(
+            ApiError::new(
+                "conflict",
+                format!("a target is already being written: {}", conflict_text(&e)),
+            ),
+            &refs,
+        ));
     }
     let prepared = jobs
         .into_iter()
@@ -619,6 +619,39 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(wait_final(&state, &fourth).await, JobState::Done);
+    }
+
+    #[tokio::test]
+    async fn a_job_refused_for_a_conflict_claims_no_target() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("in")).unwrap();
+        std::fs::create_dir(dir.path().join("out")).unwrap();
+        std::fs::write(dir.path().join("in/a.csv"), "a").unwrap();
+        let out = format!("{}/out/", dir.path().display());
+        let state = state(2);
+        // A pattern is expanded before targets are checked, so the target
+        // named twice is found in the preparation.
+        let twice = state
+            .submit(Submission {
+                kind: JobKind::Single,
+                specs: vec![JobSpec {
+                    src: format!("{}/in/*.csv", dir.path().display()),
+                    dsts: vec![out.clone(), out.clone()],
+                }],
+                options: JobOptions::default(),
+            })
+            .unwrap();
+        assert_eq!(wait_final(&state, &twice).await, JobState::Failed);
+        let error = state.store.snapshot(&twice, false).unwrap().error.unwrap();
+        assert_eq!(error.kind, "conflict", "{}", error.message);
+        // The file is free for the next job.
+        let next = state
+            .submit(batch(
+                vec![(format!("{}/in/a.csv", dir.path().display()), out)],
+                JobOptions::default(),
+            ))
+            .unwrap();
+        assert_eq!(wait_final(&state, &next).await, JobState::Done);
     }
 
     #[tokio::test]
