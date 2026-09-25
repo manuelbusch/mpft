@@ -223,6 +223,8 @@ pub struct AppState {
     watchers: AtomicUsize,
     /// Jobs the journal handed over, to start with [`AppState::run`].
     recovered: Mutex<Vec<JobId>>,
+    /// Held while a wrong token is answered, so guesses queue up.
+    guesses: tokio::sync::Mutex<()>,
 }
 
 impl AppState {
@@ -255,6 +257,7 @@ impl AppState {
             accepting: AtomicBool::new(true),
             watchers: AtomicUsize::new(0),
             recovered: Mutex::new(ids),
+            guesses: tokio::sync::Mutex::new(()),
         }))
     }
 

@@ -117,7 +117,7 @@ stable part.
 | 400 | `invalid_url` | a URL is malformed, is not an allowed profile, or adds `?options` to one |
 | 400 | `invalid_option` | an option value that cannot work with the server's own settings: `retries` without a memory cache, `resume` where transfers are not atomic, `delete_source` on a server without `allow_delete` |
 | 400 | `too_many_transfers` | the list is longer than `[server] max_transfers` |
-| 401 | `unauthorized` | no token, or the wrong one; the answer to a wrong one is delayed by 250 ms |
+| 401 | `unauthorized` | no token, or the wrong one; a wrong one is [answered late](../server/serve.md#securing-the-listener) |
 | 403 | `forbidden` | the request carries an `Origin` header |
 | 404 | `not_found` | no such job or transfer |
 | 409 | `conflict` | two transfers of the job write the same target, or one writes a target a running job is writing. A pattern or a `recursive` job is checked only once it is expanded, and such a conflict fails it in `preparing` with the same kind |

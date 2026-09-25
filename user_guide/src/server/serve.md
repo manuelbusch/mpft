@@ -219,7 +219,11 @@ Two further points of the design:
 
 The server speaks plain HTTP. For anything beyond the local machine put a
 reverse proxy with TLS in front of it, and let the proxy do rate limiting per
-client address; the server itself only slows a wrong token down by 250 ms.
+client address. The server itself only slows guessing down: a wrong token,
+on any route including the health check, is answered after 250 ms, and
+wrong tokens are answered one at a time over the whole server, so parallel
+requests guess no faster. A client that is refused slows down the other
+refused clients, never one with the right token.
 
 Requests that carry an `Origin` header are refused with `403`. Such a request
 comes from a browser acting for a web page, and the API is not for pages:

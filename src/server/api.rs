@@ -109,10 +109,7 @@ async fn auth(State(state): State<Arc<AppState>>, req: Request, next: Next) -> R
     match bearer(&state, req.headers()) {
         Bearer::Ok => next.run(req).await,
         Bearer::Wrong => {
-            // Slow a guess down; four tries a second per connection is
-            // nothing against a random token, and costs a client with the
-            // right one nothing.
-            tokio::time::sleep(WRONG_TOKEN_DELAY).await;
+            slow_down(&state).await;
             Reject::new(StatusCode::UNAUTHORIZED, "unauthorized", "wrong token").into_response()
         }
         Bearer::Missing => Reject::new(
@@ -125,6 +122,16 @@ async fn auth(State(state): State<Arc<AppState>>, req: Request, next: Next) -> R
 }
 
 const WRONG_TOKEN_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Slow a guess down: a wrong token is answered after
+/// [`WRONG_TOKEN_DELAY`], and one at a time over the whole server, so
+/// parallel requests do not guess any faster. Four tries a second is
+/// nothing against a random token, and costs a client with the right one
+/// nothing.
+async fn slow_down(state: &AppState) {
+    let _turn = state.guesses.lock().await;
+    tokio::time::sleep(WRONG_TOKEN_DELAY).await;
+}
 
 enum Bearer {
     Ok,
@@ -164,8 +171,14 @@ async fn not_found() -> Reject {
 
 /// Alive or not, for a probe; what else is going on only with the token.
 async fn healthz(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let bearer = bearer(&state, &headers);
+    // The details tell a right token from a wrong one, so a wrong one is
+    // slowed down here as on every other route.
+    if matches!(bearer, Bearer::Wrong) {
+        slow_down(&state).await;
+    }
     let accepting = state.accepting();
-    let body = if matches!(bearer(&state, &headers), Bearer::Ok) {
+    let body = if matches!(bearer, Bearer::Ok) {
         let (queued, running) = state.store.counts();
         json!({
             "ok": accepting,
@@ -609,6 +622,19 @@ mod tests {
         assert!(
             started.elapsed() >= WRONG_TOKEN_DELAY,
             "a wrong token is slowed down"
+        );
+        // Also where the answer only differs, and in parallel one at a time.
+        let started = std::time::Instant::now();
+        let guesses =
+            (0..3).map(|_| call(&app, Method::GET, "/v1/healthz", Some("guess"), None, ""));
+        for (status, body) in futures::future::join_all(guesses).await {
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body, serde_json::json!({ "ok": true }));
+        }
+        assert!(
+            started.elapsed() >= 3 * WRONG_TOKEN_DELAY,
+            "parallel guesses are answered one at a time: {:?}",
+            started.elapsed()
         );
         let (status, body) = call(&app, Method::GET, "/v1/jobs", None, None, "").await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
