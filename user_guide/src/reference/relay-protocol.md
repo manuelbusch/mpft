@@ -98,8 +98,10 @@ the same fan-out. A relay that refuses the header (`invalid_option`, or
 A `dst` entry of the form `{"url": …, "via": …}` tells the relay to write that
 target through a second relay: it opens an SSH session of its own, sends the
 same protocol with a one-target header, and reports what comes back as that
-target's result. Questions from the second relay reach the client through the
-first, translated to the original target's index. The relay logs in to the
+target's result. Questions from the second relay about its one target
+(`"dst": 0`) reach the client through the first, translated to the original
+target's index; any other question from it is refused without reaching the
+client, since its header names nothing else. The relay logs in to the
 second relay with a forwarded agent, and forwards the agent on only when the
 header says `agent_onward`. See [A target behind another
 relay](../server/relay-topologies.md#a-target-behind-another-relay).

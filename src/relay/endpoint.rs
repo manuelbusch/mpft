@@ -117,7 +117,11 @@ impl Sender for RelayEndpoint {
 }
 
 /// The far relay's questions about its one target are this relay's
-/// questions about the target at `index` (or its via), put to the client.
+/// questions about the target at `index`, put to the client. The header
+/// it was sent names that one target and nothing else — no source, no
+/// relay behind it — so a question about anything else has no answer: it
+/// could only be after another password, such as the one for the far
+/// relay itself.
 pub struct ChainAnswerer {
     pub broker: Arc<RemoteBroker>,
     pub index: usize,
@@ -127,12 +131,55 @@ pub struct ChainAnswerer {
 #[async_trait]
 impl PasswordAnswerer for ChainAnswerer {
     async fn answer(&self, need: &Need) -> Result<Option<SecretString>> {
-        // The far relay asks about its own dst 0, or the agent for it; here
-        // that is the target at `index`.
-        let who = match need.who {
-            Who::Src | Who::Dst(_) => Who::Dst(self.index),
-            Who::Via(_) => Who::Via(self.index),
+        match need.who {
+            Who::Dst(0) => {
+                self.broker
+                    .relay(Who::Dst(self.index), need, &self.target)
+                    .await
+            }
+            other => Err(Error::Auth(format!(
+                "the chained relay asked for a password it has no use for ({other:?}); \
+                 its header names one target and nothing else"
+            ))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    /// Only the far relay's one target is asked about; a question about
+    /// its source or a relay behind it is refused without asking the
+    /// client.
+    #[tokio::test]
+    async fn the_far_relay_is_answered_about_its_target_only() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let broker = RemoteBroker::new(tx, CancellationToken::new());
+        let answerer = ChainAnswerer {
+            broker: Arc::clone(&broker),
+            index: 3,
+            target: Location::parse("ftp://u@far/in/").unwrap(),
         };
-        self.broker.relay(who, need, &self.target).await
+        let need = |who| Need {
+            id: 1,
+            who,
+            target: "ftp://u@far/in/".into(),
+            user: Some("u".into()),
+            attempt: 1,
+        };
+        for who in [Who::Via(0), Who::Src, Who::Dst(1)] {
+            let err = answerer.answer(&need(who)).await.unwrap_err();
+            assert!(err.to_string().contains("no use for"), "{err}");
+        }
+        assert!(rx.try_recv().is_err(), "the client was asked");
+
+        let asking = tokio::spawn(async move { answerer.answer(&need(Who::Dst(0))).await });
+        let line = rx.recv().await.unwrap();
+        let asked = Need::parse(&line).unwrap();
+        assert_eq!(asked.who, Who::Dst(3));
+        broker.answer(&serde_json::json!({ "password": { "id": asked.id, "value": "pw" } }));
+        assert!(asking.await.unwrap().unwrap().is_some());
     }
 }
