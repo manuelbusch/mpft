@@ -54,7 +54,7 @@ message.
 | sent to a relay, `on-demand` mode | one answer per login, over the open session | one login, then dropped |
 | a key for an SSH target behind a relay | stays here; the relay signs through the forwarded agent | the session |
 | the server's token | `[server] token` as a reference; compared in constant time; a wrong one is answered late | the server's lifetime |
-| the server's journal | job descriptions with endpoints as submitted, mode `0600`; a URL under `urls = "any"` is masked | `retention` |
+| the server's journal | job descriptions with endpoints as submitted, mode `0600`; a URL under `urls = "any"` keeps its password | until the job is over and the file is [next compacted](../server/serve.md#the-journal-and-restarts) |
 
 [Credentials and secrets](../configuration/credentials.md) covers the first
 five rows, [Relaying through a fast host](../server/relay.md) the relay rows,

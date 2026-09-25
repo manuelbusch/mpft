@@ -629,39 +629,41 @@ enum Record {
 
 /// The journal: JSON Lines, one `submitted` record per job and one `done`
 /// record when it is over. A `submitted` without its `done` is a job to
-/// run again. The file is compacted when it is opened, so it holds only
-/// what is still open.
+/// run again. The file is compacted, so that it holds only what is still
+/// open, when it is opened and again whenever it has grown past
+/// [`COMPACT_MIN`] and twice what it held after the last compaction.
 pub struct Journal {
     path: PathBuf,
-    file: Mutex<std::fs::File>,
+    file: Mutex<Appender>,
 }
+
+/// The journal's file, open for appending, and how big it is.
+struct Appender {
+    file: std::fs::File,
+    size: u64,
+    /// Compact once `size` exceeds this.
+    compact_at: u64,
+    /// The smallest `compact_at`; lowered by tests.
+    compact_min: u64,
+}
+
+/// A journal is not compacted below this size: every submission is
+/// appended in full (up to `max_body`), and rewriting a small file after
+/// every few jobs would be wasted work.
+const COMPACT_MIN: u64 = 16 << 20;
 
 impl Journal {
     /// Open (or create) the journal at `path` and hand over the jobs it
     /// says are open, each with its attempt count raised by one.
     pub fn open(path: &Path) -> Result<(Journal, Vec<Recovered>)> {
         let mut open: Vec<Recovered> = Vec::new();
+        let mut size = 0;
         if path.exists() {
             open = read_open(path)?;
-            // Rewrite the file with only the open records, through a
-            // temporary file so a crash here loses nothing.
-            let tmp = path.with_extension("tmp");
-            {
-                let mut f = create_private(&tmp)?;
-                for r in &open {
-                    let line = serde_json::to_string(&Record::Submitted {
-                        id: r.id.clone(),
-                        at: format_time(r.submitted_at),
-                        attempt: r.attempt,
-                        submission: r.submission.clone(),
-                    })
-                    .map_err(|e| Error::Config(format!("journal: {e}")))?;
-                    f.write_all(line.as_bytes())?;
-                    f.write_all(b"\n")?;
-                }
-                f.sync_all()?;
+            for r in &mut open {
+                r.attempt += 1;
             }
-            std::fs::rename(&tmp, path)?;
+            size = rewrite(path, &open)?;
             if !open.is_empty() {
                 info!(
                     path = %path.display(),
@@ -670,23 +672,19 @@ impl Journal {
                 );
             }
         }
-        let mut options = std::fs::OpenOptions::new();
-        options.create(true).append(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let file = options
-            .open(path)
-            .map_err(|e| Error::Config(format!("journal {}: cannot open: {e}", path.display())))?;
+        let file = open_append(path)?;
         #[cfg(not(unix))]
         crate::credentials::warn_if_world_readable(path);
         debug!(path = %path.display(), "journal open");
         Ok((
             Journal {
                 path: path.to_path_buf(),
-                file: Mutex::new(file),
+                file: Mutex::new(Appender {
+                    file,
+                    size,
+                    compact_at: (2 * size).max(COMPACT_MIN),
+                    compact_min: COMPACT_MIN,
+                }),
             },
             open,
         ))
@@ -697,14 +695,89 @@ impl Journal {
     }
 
     fn write(&self, record: &Record) -> Result<()> {
-        let line =
+        let mut line =
             serde_json::to_string(record).map_err(|e| Error::Config(format!("journal: {e}")))?;
-        let mut f = self.file.lock().unwrap_or_else(|e| e.into_inner());
-        f.write_all(line.as_bytes())?;
-        f.write_all(b"\n")?;
-        f.sync_data()?;
+        line.push('\n');
+        let mut a = self.file.lock().unwrap_or_else(|e| e.into_inner());
+        a.file.write_all(line.as_bytes())?;
+        a.file.sync_data()?;
+        a.size += line.len() as u64;
+        if a.size > a.compact_at {
+            // The record is safely written; a compaction that fails costs
+            // only the space, and is tried again once the file has grown
+            // as much again.
+            if let Err(e) = self.compact(&mut a) {
+                warn!(path = %self.path.display(), "journal: cannot compact: {e}");
+                a.compact_at = (2 * a.size).max(a.compact_min);
+            }
+        }
         Ok(())
     }
+
+    /// Rewrite the file with only the open jobs, as [`Journal::open`] does,
+    /// and carry on appending to the new one.
+    fn compact(&self, a: &mut Appender) -> Result<()> {
+        let open = read_open(&self.path)?;
+        let size = rewrite(&self.path, &open)?;
+        a.file = open_append(&self.path)?;
+        debug!(
+            before = a.size,
+            after = size,
+            jobs = open.len(),
+            "journal compacted"
+        );
+        a.size = size;
+        a.compact_at = (2 * size).max(a.compact_min);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn set_compact_min(&self, min: u64) {
+        let mut a = self.file.lock().unwrap();
+        a.compact_min = min;
+        a.compact_at = (2 * a.size).max(min);
+    }
+}
+
+/// Replace the journal at `path` with one `submitted` record per job in
+/// `open`, through a temporary file so a crash on the way loses nothing.
+/// Returns the new file's size.
+fn rewrite(path: &Path, open: &[Recovered]) -> Result<u64> {
+    let tmp = path.with_extension("tmp");
+    let mut size = 0;
+    {
+        let mut f = create_private(&tmp)?;
+        for r in open {
+            let mut line = serde_json::to_string(&Record::Submitted {
+                id: r.id.clone(),
+                at: format_time(r.submitted_at),
+                attempt: r.attempt,
+                submission: r.submission.clone(),
+            })
+            .map_err(|e| Error::Config(format!("journal: {e}")))?;
+            line.push('\n');
+            f.write_all(line.as_bytes())?;
+            size += line.len() as u64;
+        }
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)?;
+    Ok(size)
+}
+
+/// The journal at `path`, opened for appending (created only its owner can
+/// read).
+fn open_append(path: &Path) -> Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(path)
+        .map_err(|e| Error::Config(format!("journal {}: cannot open: {e}", path.display())))
 }
 
 /// A new file that only its owner can read.
@@ -719,7 +792,7 @@ fn create_private(path: &Path) -> Result<std::fs::File> {
     Ok(options.open(path)?)
 }
 
-/// The jobs a journal leaves open, attempt already raised for the re-run.
+/// The jobs a journal leaves open, with the attempt it recorded.
 /// A line that does not parse (the last one, cut short by a crash) is
 /// skipped with a warning. Lines are split as bytes: a line cut in the
 /// middle of a character (`München`, written unescaped) is not UTF-8,
@@ -747,7 +820,7 @@ fn read_open(path: &Path) -> Result<Vec<Recovered>> {
                     Recovered {
                         id,
                         submitted_at,
-                        attempt: attempt + 1,
+                        attempt,
                         submission,
                     },
                 );
@@ -943,6 +1016,43 @@ mod tests {
         assert_eq!(store.sweep(Duration::ZERO), 1);
         assert!(store.snapshot(&a, false).is_none());
         assert!(store.snapshot(&b, false).is_some());
+    }
+
+    #[test]
+    fn the_journal_is_compacted_while_the_server_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.jsonl");
+        let (tx, _rx) = broadcast::channel(1024);
+        let (journal, _) = Journal::open(&path).unwrap();
+        journal.set_compact_min(2048);
+        let store = Store::new(Some(journal), tx);
+        let left = store
+            .submit(
+                submission("/tmp/left", "/tmp/out/"),
+                CancellationToken::new(),
+            )
+            .unwrap();
+        let mut largest = 0;
+        for _ in 0..200 {
+            let id = store
+                .submit(submission("/tmp/a", "/tmp/out/"), CancellationToken::new())
+                .unwrap();
+            store.finish(&id, true);
+            largest = largest.max(std::fs::metadata(&path).unwrap().len());
+        }
+        // 200 finished jobs are about 50 KiB of records; the file never
+        // grew far past the threshold.
+        assert!(largest < 8192, "{largest}");
+        drop(store);
+        let (_journal, open) = Journal::open(&path).unwrap();
+        assert_eq!(open.iter().map(|r| &r.id).collect::<Vec<_>>(), [&left]);
+        assert_eq!(open[0].attempt, 2);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
     }
 
     #[test]

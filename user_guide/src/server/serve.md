@@ -258,6 +258,11 @@ transfer either finished or left only a `.mpt-part`; a mail target may
 deliver twice, and a `delete_source` job whose source is already gone fails
 the second time. Finished jobs do not survive a restart.
 
+The file is compacted to the jobs still open when the server starts, and
+again while it runs whenever it has grown past 16 MiB and twice the size it
+had after the last compaction; each rewrite goes through a temporary file,
+so a crash in the middle loses nothing.
+
 A job from the journal is judged by the settings the server has now, as a
 new submission would be: its URLs against `urls` and `profiles`,
 `delete_source` against `allow_delete`, its length against `max_transfers`
