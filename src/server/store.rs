@@ -6,7 +6,7 @@
 //! task may call in from anywhere.
 
 use std::collections::HashMap;
-use std::io::{BufRead, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -721,17 +721,19 @@ fn create_private(path: &Path) -> Result<std::fs::File> {
 
 /// The jobs a journal leaves open, attempt already raised for the re-run.
 /// A line that does not parse (the last one, cut short by a crash) is
-/// skipped with a warning.
+/// skipped with a warning. Lines are split as bytes: a line cut in the
+/// middle of a character (`München`, written unescaped) is not UTF-8,
+/// and is skipped like any other broken line rather than failing the
+/// whole file.
 fn read_open(path: &Path) -> Result<Vec<Recovered>> {
-    let file = std::fs::File::open(path)?;
+    let bytes = std::fs::read(path)?;
     let mut open: HashMap<JobId, Recovered> = HashMap::new();
     let mut order: Vec<JobId> = Vec::new();
-    for (i, line) in std::io::BufReader::new(file).lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
+    for (i, line) in bytes.split(|b| *b == b'\n').enumerate() {
+        if line.trim_ascii().is_empty() {
             continue;
         }
-        match serde_json::from_str::<Record>(&line) {
+        match serde_json::from_slice::<Record>(line) {
             Ok(Record::Submitted {
                 id,
                 at,
@@ -969,6 +971,13 @@ mod tests {
             .open(&path)
             .unwrap()
             .write_all(b"{\"t\":\"done\",\"id\":\"")
+            .unwrap();
+        // And one cut in the middle of a character is not UTF-8 at all.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"\n{\"t\":\"submitted\",\"id\":\"M\xc3")
             .unwrap();
 
         let (_journal, open) = Journal::open(&path).unwrap();
