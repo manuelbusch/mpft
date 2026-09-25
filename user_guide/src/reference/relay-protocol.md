@@ -21,7 +21,7 @@ start; a relay that has no complete line by then refuses the session:
 | `src` | a URL the relay opens and reads itself, instead of a payload (v2) |
 | `name` | the file name the targets receive; required when there is no `src` |
 | `size` | how many payload bytes follow; required when there is no `src` |
-| `dst` | the targets: a URL string, or `{"url": …, "via": …}` for one the relay hands on to a second relay (v2) |
+| `dst` | the targets: a URL string, or `{"url": …, "via": …}` for one the relay hands on to a second relay (v2); `dsts` is accepted as another name for it |
 | `credentials` | `"header"` (the default) or `"on-demand"` (v2) |
 | `agent` | `true` when the client forwards an ssh-agent for the SSH endpoints (v2) |
 | `agent_onward` | `true` lets the relay forward that agent on to the relays of chained targets; otherwise it only logs in to them with it (v2) |
@@ -59,7 +59,15 @@ to a question of its own:
 
 Control frames are not counted against the credit and are written ahead of
 queued payload, so an answer never waits behind the file. Anything else in a
-control frame is logged and ignored; a malformed frame ends the session.
+control frame is ignored, and logged without its content.
+
+A frame the relay cannot take ends the session: a copy still running is
+cancelled, and the session's outcome is an `invalid_option` error (exit 2).
+That is the case for an unknown kind, a length beyond
+the limit, a control frame that is not JSON, the input ending inside a frame,
+payload beyond the credit, or any payload when the relay reads the source
+itself. The header is as strict: a field it does not know, in the header or
+in a `{"url": …, "via": …}` target, refuses it.
 
 In version 1 the payload is exactly `size` raw bytes after the header, with no
 frames, no questions, no `src` and no chained targets.
@@ -85,9 +93,8 @@ same `id`; a relay that gets no answer within the target's timeout fails that
 target with `no password from the client within Ns`.
 
 The credit starts at 4 MiB and is topped up in steps of 1 MiB as the copy
-consumes what arrived. A client that sends more than it was granted has its
-payload cut off — the relay stops reading, and the targets fail the way they
-do when a connection drops.
+consumes what arrived. A client that sends more than it was granted ends the
+session, as a malformed frame does.
 
 Its exit status is the [exit code](exit-codes.md) `cp` would have given for
 the same fan-out. A relay that refuses the header (`invalid_option`, or

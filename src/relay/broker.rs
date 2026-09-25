@@ -223,7 +223,8 @@ impl RemoteBroker {
     /// password answer is logged and dropped.
     pub fn answer(&self, value: &Value) {
         let Some(answer) = value.get("password") else {
-            debug!("relay: control frame without a password: {value}");
+            // Not shown: whatever it is, it came where passwords come.
+            debug!("relay: control frame without a password, ignored");
             return;
         };
         let Some(id) = answer.get("id").and_then(Value::as_u64) else {

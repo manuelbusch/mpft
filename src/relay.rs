@@ -128,8 +128,9 @@ impl Header {
 }
 
 /// One target of a header: a URL, or a URL behind a relay of its own.
+/// Strict like the header: a field it does not know is an error.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum Dst {
     Url(String),
     Via { url: String, via: String },
@@ -370,6 +371,7 @@ where
     // In version 2 the frames are taken apart from here on, before a
     // target is opened: opening one may already ask the client for a
     // password, and the answer comes in a control frame.
+    let fault = Arc::new(std::sync::Mutex::new(None));
     let (payload, intake): (Option<Box<dyn AsyncRead + Send + Unpin>>, _) = match header.v {
         1 => (Some(Box::new(reader)), None),
         _ => {
@@ -379,13 +381,10 @@ where
             // carries control frames only, and its end means the client
             // is gone. A data frame then has nowhere to go and ends the
             // session.
-            let (payload, on_end) = match header.src {
-                Some(_) => (None, Some(cancel.clone())),
-                None => (
-                    Some(Box::new(ChannelReader::new(data_rx, consumed_tx))
-                        as Box<dyn AsyncRead + Send + Unpin>),
-                    None,
-                ),
+            let payload = match header.src {
+                Some(_) => None,
+                None => Some(Box::new(ChannelReader::new(data_rx, consumed_tx))
+                    as Box<dyn AsyncRead + Send + Unpin>),
             };
             let intake = tokio::spawn(intake(
                 reader,
@@ -393,11 +392,17 @@ where
                 consumed_rx,
                 lines.clone(),
                 broker.clone(),
-                on_end,
+                Ending {
+                    cancel: cancel.clone(),
+                    reads_source: header.src.is_some(),
+                    fault: Arc::clone(&fault),
+                },
             ));
             (payload, Some(intake))
         }
     };
+    // The end of the session: the intake stopped, and what it found wrong
+    // with the client's input, which is then the session's error.
     let stop = |intake: Option<tokio::task::JoinHandle<()>>| {
         if let Some(intake) = intake {
             intake.abort();
@@ -405,6 +410,7 @@ where
         if let Some(broker) = &broker {
             broker.close();
         }
+        fault.lock().unwrap_or_else(|e| e.into_inner()).take()
     };
     let Prepared {
         copy,
@@ -412,10 +418,7 @@ where
         targets,
     } = match prepare(relay, &header, &broker, &cancel, agent).await {
         Ok(p) => p,
-        Err(e) => {
-            stop(intake);
-            return refuse(e);
-        }
+        Err(e) => return refuse(stop(intake).unwrap_or(e)),
     };
     info!(
         what = %header.what(),
@@ -435,10 +438,7 @@ where
     };
     let src = match src {
         Ok(s) => s,
-        Err(e) => {
-            stop(intake);
-            return refuse(e);
-        }
+        Err(e) => return refuse(stop(intake).unwrap_or(e)),
     };
     let progress = copy.progress.clone().unwrap_or_else(Progress::new);
     let refs: Vec<&dyn Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
@@ -461,7 +461,13 @@ where
             }
         }
     };
-    stop(intake);
+    // A fault that cancelled the copy is its reason; one after every
+    // target had the file changes nothing of that.
+    if let Some(fault) = stop(intake)
+        && !outcome.as_ref().is_ok_and(|r| r.all_ok())
+    {
+        return refuse(fault);
+    }
     match outcome {
         Ok(report) => (
             exit_code(&report),
@@ -480,19 +486,36 @@ fn refuse(e: Error) -> (u8, Value) {
     )
 }
 
+/// How the intake ends a session.
+struct Ending {
+    cancel: CancellationToken,
+    /// The relay reads the source itself.
+    reads_source: bool,
+    /// Where what the client sent wrong is left.
+    fault: Arc<std::sync::Mutex<Option<Error>>>,
+}
+
 /// Version 2: take the frames apart. Data goes to the copy through
 /// `data`, an answer to the broker, and what the copy has consumed (told
 /// on `consumed`) comes back to the client as credit. Ends when the
-/// client's input does, or when it sends what it may not; `on_end` is
-/// cancelled then, for a copy whose source is not that input.
+/// client's input does — which cancels the session when the relay reads
+/// the source itself (`reads_source`), since only the input tells that the
+/// client is still there — or when the client sends what it may not: a
+/// malformed frame, data beyond its credit, data where the relay reads the
+/// source. That ends the session too, with the error left for it.
 async fn intake<R: AsyncRead + Unpin>(
     mut reader: R,
     data: mpsc::UnboundedSender<Vec<u8>>,
     mut consumed: mpsc::UnboundedReceiver<u64>,
     lines: mpsc::UnboundedSender<Value>,
     broker: Option<Arc<RemoteBroker>>,
-    on_end: Option<CancellationToken>,
+    end: Ending,
 ) {
+    let Ending {
+        cancel,
+        reads_source,
+        fault,
+    } = end;
     let granted = Arc::new(AtomicU64::new(protocol::INITIAL_CREDIT));
     // The copy drops its reader once it has the payload, which ends the
     // crediting; the control frames keep coming until the client is done.
@@ -518,37 +541,48 @@ async fn intake<R: AsyncRead + Unpin>(
                 // An empty data frame carries nothing; handed on, it would
                 // read as the end of the payload.
                 Ok(Some(Frame::Data(bytes))) if bytes.is_empty() => {}
+                Ok(Some(Frame::Data(_))) if reads_source => {
+                    return Some(Error::invalid_option(
+                        "frame",
+                        "a payload frame, but the relay reads the source itself",
+                    ));
+                }
                 Ok(Some(Frame::Data(bytes))) => {
                     received += bytes.len() as u64;
                     if received > granted.load(Ordering::SeqCst) {
-                        warn!("relay: the client sent more data than it had credit for");
-                        break;
+                        return Some(Error::invalid_option(
+                            "credit",
+                            "the client sent more payload than it had credit for",
+                        ));
                     }
-                    if data.send(bytes).is_err() {
-                        break;
-                    }
+                    // The copy has the whole payload and no use for more.
+                    let _ = data.send(bytes);
                 }
                 Ok(Some(Frame::Control(value))) => match &broker {
                     Some(broker) => broker.answer(&value),
-                    None => debug!("relay: control frame in a header session: {value}"),
+                    // Not shown: it may hold a password all the same.
+                    None => debug!("relay: control frame in a header session, ignored"),
                 },
                 Ok(None) => {
                     debug!("relay: the client's input ended");
-                    break;
+                    if reads_source {
+                        cancel.cancel();
+                    }
+                    return None;
                 }
-                Err(e) => {
-                    warn!("relay: {e}");
-                    break;
-                }
+                Err(e) => return Some(Error::invalid_option("frame", e)),
             }
         }
     };
-    reading.await;
+    let found = reading.await;
     crediting.abort();
     if let Some(broker) = &broker {
         broker.close();
     }
-    if let Some(cancel) = on_end {
+    if let Some(e) = found {
+        warn!("relay: {e}");
+        // Left before the session is ended, so it is there to be found.
+        *fault.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
         cancel.cancel();
     }
 }
@@ -1365,6 +1399,30 @@ mod tests {
         assert_eq!(std::fs::read(dir.path().join("x.bin")).unwrap(), b"abcdef");
     }
 
+    /// A frame the relay cannot take ends the session with that error,
+    /// and no target keeps what arrived before it.
+    #[tokio::test]
+    async fn a_malformed_frame_ends_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let header =
+            json!({ "name": "x.bin", "size": 100, "dst": [format!("{}/", dir.path().display())] });
+        let mut payload = protocol::frame(protocol::DATA, &[1u8; 40]);
+        payload.extend([9u8, 0, 0, 0, 1, 0]);
+        payload.extend(protocol::frame(protocol::DATA, &[2u8; 60]));
+        let (code, lines) = relay_run(&relay(0), &header.to_string(), &payload).await;
+        assert_eq!(code, 2, "{lines:?}");
+        let error = &lines.last().unwrap()["error"];
+        assert_eq!(error["kind"], "invalid_option", "{lines:?}");
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("unknown frame kind 9"),
+            "{error}"
+        );
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+    }
+
     #[tokio::test]
     async fn a_payload_that_ends_early_fails_every_target() {
         let dir = tempfile::tempdir().unwrap();
@@ -1397,6 +1455,8 @@ mod tests {
             (json!({ "name": "x", "size": 1, "dst": [target.clone()], "options": { "retries": 2 } }).to_string(), "retries"),
             (json!({ "name": "x", "size": 1, "dst": [target.clone()], "nope": 1 }).to_string(), "header"),
             (json!({ "name": "x", "size": 5_000, "dst": [target.clone()] }).to_string(), "size"),
+            (json!({ "name": "x", "size": 1, "dst": [{ "url": target.clone(), "via": "ssh://r/", "hop": 2 }] }).to_string(), "header"),
+            (json!({ "name": "x", "size": 1, "dsts": [] }).to_string(), "dst"),
         ] {
             let (code, lines) = relay_run(&relay(4_096), &header, b"x").await;
             assert_eq!(code, 2, "{header}: {lines:?}");

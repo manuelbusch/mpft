@@ -14,10 +14,12 @@ A relay is `cp` with its standard input as the source. Nothing is spooled on
 the relay (with one exception for [chained
 targets](relay-topologies.md#a-target-behind-another-relay)), and everything
 `cp` does applies unchanged: checksums, atomic
-finishing, the memory cache with retries, timeouts, the report. The relay
-knows no targets of its own. The client names them, and the relay only
-delivers — with the passwords it is given, or by asking for each one as it
-logs in and keeping none.
+finishing, the memory cache with retries, timeouts, the report. The client
+names the targets, and the relay delivers — with the passwords it is given,
+or by asking for each one as it logs in and keeping none. An `mpt://` URL in
+what the client sends is one of the relay's own
+[profiles](../configuration/profiles.md), resolved from its configuration
+([Trust](relay-host.md#trust) says what of its own it adds then).
 
 The relay is in the default build (feature `relay`, which needs `ssh`).
 
