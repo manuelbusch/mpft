@@ -559,6 +559,7 @@ mod tests {
                     ..Default::default()
                 },
             ))
+            .await
             .unwrap();
         assert_eq!(wait_final(&state, &id).await, JobState::Done);
         let snap = state.store.snapshot(&id, true).unwrap();
@@ -597,6 +598,7 @@ mod tests {
                     ..Default::default()
                 },
             ))
+            .await
             .unwrap();
         assert_eq!(wait_final(&state, &id).await, JobState::Failed);
         let snap = state.store.snapshot(&id, true).unwrap();
@@ -619,6 +621,7 @@ mod tests {
                 )],
                 JobOptions::default(),
             ))
+            .await
             .unwrap();
         assert_eq!(wait_final(&state, &id).await, JobState::Failed);
         let snap = state.store.snapshot(&id, true).unwrap();
@@ -654,6 +657,7 @@ mod tests {
                     ..Default::default()
                 },
             ))
+            .await
             .unwrap();
         assert_eq!(wait_final(&state, &id).await, JobState::Failed);
         let error = state.store.snapshot(&id, false).unwrap().error.unwrap();
@@ -677,6 +681,7 @@ mod tests {
                 vec![(src.display().to_string(), out.clone())],
                 JobOptions::default(),
             ))
+            .await
             .unwrap();
         assert_eq!(wait_final(&state, &first).await, JobState::Done);
         let second = state
@@ -684,6 +689,7 @@ mod tests {
                 vec![(src.display().to_string(), out.clone())],
                 JobOptions::default(),
             ))
+            .await
             .unwrap();
         assert_eq!(wait_final(&state, &second).await, JobState::Done);
         // Two transfers of one batch on the same file: a conflict.
@@ -695,6 +701,7 @@ mod tests {
                 ],
                 JobOptions::default(),
             ))
+            .await
             .unwrap();
         assert_eq!(wait_final(&state, &third).await, JobState::Failed);
         let snap = state.store.snapshot(&third, false).unwrap();
@@ -705,6 +712,7 @@ mod tests {
                 vec![(src.display().to_string(), out)],
                 JobOptions::default(),
             ))
+            .await
             .unwrap();
         assert_eq!(wait_final(&state, &fourth).await, JobState::Done);
     }
@@ -728,6 +736,7 @@ mod tests {
                 }],
                 options: JobOptions::default(),
             })
+            .await
             .unwrap();
         assert_eq!(wait_final(&state, &twice).await, JobState::Failed);
         let error = state.store.snapshot(&twice, false).unwrap().error.unwrap();
@@ -738,6 +747,7 @@ mod tests {
                 vec![(format!("{}/in/a.csv", dir.path().display()), out)],
                 JobOptions::default(),
             ))
+            .await
             .unwrap();
         assert_eq!(wait_final(&state, &next).await, JobState::Done);
     }
@@ -771,7 +781,10 @@ mod tests {
                     CancellationToken::new(),
                 )
             };
-            (one("a", Some(true)).unwrap(), one("b", None).unwrap())
+            (
+                one("a", Some(true)).await.unwrap(),
+                one("b", None).await.unwrap(),
+            )
         };
         let state = AppState::new(cfg(false), Runtime::new(CopyOptions::default())).unwrap();
         state.run();
@@ -785,6 +798,7 @@ mod tests {
         assert!(error.message.contains("allow_delete"), "{}", error.message);
         assert!(dir.path().join("a").exists());
         assert_eq!(wait_final(&state, &plain).await, JobState::Done);
+        state.store.flush().await;
         drop(state);
         // Closed for good: a further restart has nothing to run.
         let (_, open) = crate::server::store::Journal::open(&journal).unwrap();
@@ -803,6 +817,7 @@ mod tests {
                 ),
                 CancellationToken::new(),
             )
+            .await
             .unwrap();
         let job = Job {
             src: Location::parse("/tmp/a").unwrap(),
@@ -864,6 +879,7 @@ mod tests {
                 vec![(src.display().to_string(), out)],
                 JobOptions::default(),
             ))
+            .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(

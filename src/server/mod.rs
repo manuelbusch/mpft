@@ -310,8 +310,11 @@ impl AppState {
 
     /// Take a job in and start it. The token the job runs under is a
     /// child of the server's.
-    pub fn submit(self: &Arc<Self>, submission: model::Submission) -> Result<JobId> {
-        let id = self.store.submit(submission, self.work.child_token())?;
+    pub async fn submit(self: &Arc<Self>, submission: model::Submission) -> Result<JobId> {
+        let id = self
+            .store
+            .submit(submission, self.work.child_token())
+            .await?;
         scheduler::spawn_job(Arc::clone(self), id.clone());
         Ok(id)
     }
@@ -373,6 +376,8 @@ impl AppState {
                 let _ = tokio::time::timeout(Duration::from_secs(5), self.store.drained()).await;
             }
         }
+        // The last jobs' `done` records, so a restart does not run them again.
+        let _ = tokio::time::timeout(Duration::from_secs(5), self.store.flush()).await;
         self.closing.cancel();
     }
 }

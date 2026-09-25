@@ -145,9 +145,29 @@ struct Inner {
 pub struct Store {
     inner: Mutex<Inner>,
     events: broadcast::Sender<Event>,
-    journal: Option<Journal>,
+    journal: Option<Arc<Journal>>,
     /// How many jobs are not over yet, for a shutdown that waits.
     unfinished: watch::Sender<usize>,
+    /// Journal writes handed to the blocking pool and not yet done, for
+    /// [`Store::flush`].
+    pending: Arc<watch::Sender<usize>>,
+}
+
+/// One journal write under way, counted until it is dropped: when the
+/// write is done, or when it never ran.
+struct Pending(Arc<watch::Sender<usize>>);
+
+impl Pending {
+    fn new(count: &Arc<watch::Sender<usize>>) -> Pending {
+        count.send_modify(|n| *n += 1);
+        Pending(Arc::clone(count))
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.0.send_modify(|n| *n -= 1);
+    }
 }
 
 /// A job the journal says was open when the server last stopped.
@@ -167,8 +187,9 @@ impl Store {
                 order: Vec::new(),
             }),
             events,
-            journal,
+            journal: journal.map(Arc::new),
             unfinished: watch::Sender::new(0),
+            pending: Arc::new(watch::Sender::new(0)),
         }
     }
 
@@ -196,17 +217,19 @@ impl Store {
         self.emit(Event::Queued { id });
     }
 
-    /// Take a new job, journal it, and say which id it got.
-    pub fn submit(&self, submission: Submission, cancel: CancellationToken) -> Result<JobId> {
+    /// Take a new job, journal it, and say which id it got. The job is
+    /// in the journal, on disk, before it is taken.
+    pub async fn submit(&self, submission: Submission, cancel: CancellationToken) -> Result<JobId> {
         let id = JobId::new();
         let now = SystemTime::now();
-        if let Some(j) = &self.journal {
-            j.write(&Record::Submitted {
-                id: id.clone(),
-                at: format_time(now),
-                attempt: 1,
-                submission: submission.clone(),
-            })?;
+        let record = Record::Submitted {
+            id: id.clone(),
+            at: format_time(now),
+            attempt: 1,
+            submission: submission.clone(),
+        };
+        if let Some(write) = self.journal_write(record) {
+            write.await?;
         }
         self.insert(
             id.clone(),
@@ -454,17 +477,29 @@ impl Store {
         let summary = j.snapshot(id, false);
         let n = inner.jobs.values().filter(|j| !j.state.is_final()).count();
         drop(inner);
-        self.unfinished.send_replace(n);
+        // Handed to the journal before the count drops, so a shutdown that
+        // waits for the count and then for `flush` has the record on disk.
+        // Nobody waits for it otherwise: the job is over either way, and a
+        // record lost to a crash only runs the job again.
         if journal
-            && let Some(jr) = &self.journal
-            && let Err(e) = jr.write(&Record::Done {
+            && let Some(write) = self.journal_write(Record::Done {
                 id: id.clone(),
                 at: format_time(now),
                 state,
             })
         {
-            warn!(%id, "journal: {e}");
+            let id = id.clone();
+            let write = async move {
+                if let Err(e) = write.await {
+                    warn!(%id, "journal: {e}");
+                }
+            };
+            match tokio::runtime::Handle::try_current() {
+                Ok(rt) => drop(rt.spawn(write)),
+                Err(_) => futures::executor::block_on(write),
+            }
         }
+        self.unfinished.send_replace(n);
         self.emit(Event::Done {
             id: id.clone(),
             state,
@@ -567,6 +602,44 @@ impl Store {
             .collect();
         inner.order = keep;
         before - inner.jobs.len()
+    }
+
+    /// Write `record` to the journal, if there is one, on the blocking
+    /// pool: the write ends with an fsync, which must not stall a worker
+    /// thread of the runtime. The write is under way when this returns (it
+    /// is counted for [`Store::flush`], and writes keep the order in which
+    /// they were handed over as long as the caller waits for one before
+    /// handing over the next about the same job); the future says how it
+    /// went. Outside a runtime the write is done before this returns.
+    fn journal_write(
+        &self,
+        record: Record,
+    ) -> Option<impl std::future::Future<Output = Result<()>> + Send + 'static> {
+        let journal = Arc::clone(self.journal.as_ref()?);
+        let pending = Pending::new(&self.pending);
+        let write = move || {
+            let result = journal.write(&record);
+            drop(pending);
+            result
+        };
+        let handle = match tokio::runtime::Handle::try_current() {
+            Ok(rt) => Ok(rt.spawn_blocking(write)),
+            Err(_) => Err(write()),
+        };
+        Some(async move {
+            match handle {
+                Ok(task) => task
+                    .await
+                    .map_err(|e| Error::Io(std::io::Error::other(format!("journal write: {e}"))))?,
+                Err(done) => done,
+            }
+        })
+    }
+
+    /// Resolves once every journal write handed over so far is on disk.
+    pub async fn flush(&self) {
+        let mut rx = self.pending.subscribe();
+        let _ = rx.wait_for(|n| *n == 0).await;
     }
 
     pub fn unfinished(&self) -> usize {
@@ -899,12 +972,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_job_walks_through_its_states_and_tells() {
+    #[tokio::test]
+    async fn a_job_walks_through_its_states_and_tells() {
         let (tx, mut rx) = broadcast::channel(64);
         let store = Store::new(None, tx);
         let id = store
             .submit(submission("/tmp/a", "/tmp/out/"), CancellationToken::new())
+            .await
             .unwrap();
         assert_eq!(store.unfinished(), 1);
         assert_eq!(store.snapshot(&id, false).unwrap().state, JobState::Queued);
@@ -974,13 +1048,14 @@ mod tests {
         assert_eq!(store.finish(&id, true), Some(JobState::Failed));
     }
 
-    #[test]
-    fn cancelling_fires_the_token_and_queued_transfers_never_run() {
+    #[tokio::test]
+    async fn cancelling_fires_the_token_and_queued_transfers_never_run() {
         let (tx, _rx) = broadcast::channel(64);
         let store = Store::new(None, tx);
         let token = CancellationToken::new();
         let id = store
             .submit(submission("/tmp/a", "/tmp/out/"), token.clone())
+            .await
             .unwrap();
         store.start(&id, vec![prepared("/tmp/a", "/tmp/out/")]);
         assert_eq!(store.cancel(&id), Some(JobState::Running));
@@ -995,15 +1070,17 @@ mod tests {
         assert_eq!(store.cancel(&JobId::new()), None);
     }
 
-    #[test]
-    fn listing_is_newest_first_and_filtered() {
+    #[tokio::test]
+    async fn listing_is_newest_first_and_filtered() {
         let (tx, _rx) = broadcast::channel(64);
         let store = Store::new(None, tx);
         let a = store
             .submit(submission("/tmp/a", "/tmp/out/"), CancellationToken::new())
+            .await
             .unwrap();
         let b = store
             .submit(submission("/tmp/b", "/tmp/out/"), CancellationToken::new())
+            .await
             .unwrap();
         store.fail(&a, ApiError::new("io", "nope"), true);
         let all = store.list(None, 10);
@@ -1018,8 +1095,8 @@ mod tests {
         assert!(store.snapshot(&b, false).is_some());
     }
 
-    #[test]
-    fn the_journal_is_compacted_while_the_server_runs() {
+    #[tokio::test]
+    async fn the_journal_is_compacted_while_the_server_runs() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("jobs.jsonl");
         let (tx, _rx) = broadcast::channel(1024);
@@ -1031,11 +1108,13 @@ mod tests {
                 submission("/tmp/left", "/tmp/out/"),
                 CancellationToken::new(),
             )
+            .await
             .unwrap();
         let mut largest = 0;
         for _ in 0..200 {
             let id = store
                 .submit(submission("/tmp/a", "/tmp/out/"), CancellationToken::new())
+                .await
                 .unwrap();
             store.finish(&id, true);
             largest = largest.max(std::fs::metadata(&path).unwrap().len());
@@ -1043,6 +1122,7 @@ mod tests {
         // 200 finished jobs are about 50 KiB of records; the file never
         // grew far past the threshold.
         assert!(largest < 8192, "{largest}");
+        store.flush().await;
         drop(store);
         let (_journal, open) = Journal::open(&path).unwrap();
         assert_eq!(open.iter().map(|r| &r.id).collect::<Vec<_>>(), [&left]);
@@ -1055,8 +1135,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_journal_hands_back_what_was_left_open() {
+    #[tokio::test]
+    async fn the_journal_hands_back_what_was_left_open() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("jobs.jsonl");
         let (tx, _rx) = broadcast::channel(64);
@@ -1065,15 +1145,19 @@ mod tests {
         let store = Store::new(Some(journal), tx.clone());
         let done = store
             .submit(submission("/tmp/a", "/tmp/out/"), CancellationToken::new())
+            .await
             .unwrap();
         let left = store
             .submit(submission("/tmp/b", "/tmp/out/"), CancellationToken::new())
+            .await
             .unwrap();
         let abandoned = store
             .submit(submission("/tmp/c", "/tmp/out/"), CancellationToken::new())
+            .await
             .unwrap();
         store.finish(&done, true);
         store.finish(&abandoned, false);
+        store.flush().await;
         drop(store);
         // A crash in the middle of a write leaves half a line behind.
         std::fs::OpenOptions::new()

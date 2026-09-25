@@ -265,6 +265,7 @@ async fn submit_job(
             options: req.options,
         },
     )
+    .await
 }
 
 /// `POST /v1/batches`: a list of transfers, as JSON or as one of the job
@@ -334,12 +335,13 @@ async fn submit_batch(
             options,
         },
     )
+    .await
 }
 
 /// What is checked before a job is taken: nothing that needs I/O. The
 /// rest (a source that does not exist, a pattern that matches nothing)
 /// shows up as the job's failure.
-fn accept(state: &Arc<AppState>, submission: Submission) -> Result<Response, Reject> {
+async fn accept(state: &Arc<AppState>, submission: Submission) -> Result<Response, Reject> {
     if !state.accepting() {
         return Err(Reject::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -412,7 +414,7 @@ fn accept(state: &Arc<AppState>, submission: Submission) -> Result<Response, Rej
         });
     }
     let transfers = submission.specs.len();
-    let id = state.submit(submission).map_err(|e| {
+    let id = state.submit(submission).await.map_err(|e| {
         Reject::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             e.kind(),
