@@ -194,6 +194,14 @@ They would otherwise share the same temporary file and destroy each other's
 upload, and the survivor would be whichever finished last. The exit code is 2:
 it is a mistake in the command, not a failure of the transfer.
 
+Targets are compared by where they lead: a profile reference by what it
+resolves to, and a path on a file system (local, SFTP, SCP, FTP) with
+repeated slashes and `.` components evened out, so `out//a.csv`,
+`out/./a.csv` and `out/a.csv` are one file. `..` is not resolved, and
+object keys and HTTP paths are compared as written. Case is compared as
+written too: on a file system that ignores it, `A.csv` and `a.csv` are one
+file that the check does not catch.
+
 ## Parallelism
 
 `--parallel <n>` (4 by default, `[defaults] parallel` in the configuration)

@@ -18,6 +18,7 @@ use futures::{Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use crate::location::Scheme;
 use crate::transfer::{CopyOptions, FanoutReport, Progress};
 use crate::{Endpoint, Error, Location, Result, copy_many};
 
@@ -231,12 +232,25 @@ fn collision(first: Option<usize>, index: usize, job: &Job, dst: &Location) -> E
 }
 
 /// What identifies the file a target writes: scheme, host, port and the
-/// final path. `None` for a mail target, which is exempt.
+/// final path. `None` for a mail target, which is exempt. A profile
+/// reference is compared by what it resolves to, since the jobs hold
+/// resolved locations. Where the path is a file system's (see
+/// [`same_file_path`]) its spelling is evened out first. Case is compared
+/// as it is: on a file system that ignores it, `A.csv` and `a.csv` are one
+/// file that this does not catch.
 fn key(dst: &Location, src: &Location) -> Result<Option<String>> {
     if dst.scheme().is_mail() {
         return Ok(None);
     }
     let path = dst.target_path(src.filename())?;
+    let path = match dst.scheme() {
+        Scheme::File | Scheme::Sftp | Scheme::Scp | Scheme::Ftp | Scheme::Ftps => {
+            same_file_path(&path, dst.scheme() == Scheme::File && cfg!(windows))
+        }
+        // An object key or a URL path names what it spells: `a//b` is an
+        // object of its own.
+        _ => path,
+    };
     Ok(Some(format!(
         "{}|{}|{}|{}",
         dst.scheme(),
@@ -244,6 +258,25 @@ fn key(dst: &Location, src: &Location) -> Result<Option<String>> {
         dst.port_or_default(),
         path
     )))
+}
+
+/// A file system path spelled one way: repeated separators collapsed and
+/// `.` components dropped, so `/out//a` and `/out/./a` are `/out/a`.
+/// `..` is left alone, since what it climbs to depends on links. With
+/// `backslash`, `\` separates too (a local path on Windows).
+fn same_file_path(path: &str, backslash: bool) -> String {
+    let path = if backslash {
+        path.replace('\\', "/")
+    } else {
+        path.to_string()
+    };
+    let rooted = path.starts_with('/');
+    let parts: Vec<&str> = path
+        .split('/')
+        .filter(|p| !p.is_empty() && *p != ".")
+        .collect();
+    let joined = parts.join("/");
+    if rooted { format!("/{joined}") } else { joined }
 }
 
 /// How [`prepare`] turns a job list into file jobs.
@@ -504,6 +537,27 @@ mod tests {
         ];
         assert!(targets.note_all(&set, 1).is_err());
         targets.note_all(&set[..1], 1).unwrap();
+    }
+
+    #[test]
+    fn one_file_spelt_two_ways_is_one_target() {
+        for (a, b) in [
+            ("/tmp/out/", "//tmp/out/"),
+            ("/tmp/out/", "/tmp/./out//"),
+            ("sftp://h/in/x.bin", "sftp://h/in//x.bin"),
+            ("/tmp/out/x.bin", "file:///tmp/out/x.bin"),
+        ] {
+            let jobs = vec![job("/tmp/a/x.bin", &[a]), job("/tmp/b/x.bin", &[b])];
+            assert!(check_collisions(&jobs).is_err(), "{a} and {b}");
+        }
+        // `..` may climb through a link, and an object key is what it says.
+        for (a, b) in [
+            ("/tmp/out/x.bin", "/tmp/other/../out/x.bin"),
+            ("s3://bucket/out/x.bin", "s3://bucket/out//x.bin"),
+        ] {
+            let jobs = vec![job("/tmp/a/x.bin", &[a]), job("/tmp/b/x.bin", &[b])];
+            check_collisions(&jobs).unwrap();
+        }
     }
 
     #[test]
