@@ -85,6 +85,10 @@ The relay writes JSON lines to its standard output, each at most 1 MiB; `cp
 {"error": {"kind": "…", "message": "…"}}         instead of a report, when the relay refused or could not read
 ```
 
+An `error` of kind `io` may add `"io": "not_found"` or
+`"io": "permission_denied"`, so that a missing file or a refusal comes back to
+the client as that, and is treated as it would be without the relay.
+
 A `need` line names the endpoint it is about by position, never by URL:
 `"dst": <index>` for a target of the header, `"src": true` for the source, or
 `"via": <index>` for the relay a target is reached through. `attempt` counts

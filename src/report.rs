@@ -130,8 +130,23 @@ pub fn fanout_from_json(v: &Value) -> Result<FanoutReport> {
 }
 
 /// An error as `{"kind": …, "message": …}`; `kind` is [`Error::kind`].
+///
+/// An I/O error of a kind a caller acts on (a file that is not there, one
+/// that may not be touched) says which in `io` as well, so that it comes
+/// back as that kind: `"not_found"` or `"permission_denied"`.
 pub fn error_json(err: &Error) -> Value {
-    json!({ "kind": err.kind(), "message": err.to_string() })
+    let mut v = json!({ "kind": err.kind(), "message": err.to_string() });
+    if let Error::Io(e) = err {
+        let io = match e.kind() {
+            std::io::ErrorKind::NotFound => Some("not_found"),
+            std::io::ErrorKind::PermissionDenied => Some("permission_denied"),
+            _ => None,
+        };
+        if let Some(io) = io {
+            v["io"] = io.into();
+        }
+    }
+    v
 }
 
 /// The error back from its JSON, of the same kind, so it keeps its exit
@@ -180,10 +195,17 @@ pub fn error_from_json(v: &Value) -> Error {
                     .unwrap_or("do what was asked"),
             }
         }
-        "io" => Error::Io(std::io::Error::other(format!(
-            "relay: {}",
-            after("I/O error: ")
-        ))),
+        "io" => {
+            let kind = match v["io"].as_str() {
+                Some("not_found") => std::io::ErrorKind::NotFound,
+                Some("permission_denied") => std::io::ErrorKind::PermissionDenied,
+                _ => std::io::ErrorKind::Other,
+            };
+            Error::Io(std::io::Error::new(
+                kind,
+                format!("relay: {}", after("I/O error: ")),
+            ))
+        }
         "remote" => Error::Remote(format!("relay: {}", after("remote error: "))),
         _ => Error::Transport {
             protocol: "relay",
@@ -284,6 +306,10 @@ mod tests {
             },
             Error::Io(std::io::Error::other("disk full")),
             Error::not_found("/x/y"),
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "/x/z",
+            )),
             Error::Cancelled,
             Error::transport("sftp", std::io::Error::other("reset")),
         ];
@@ -291,6 +317,10 @@ mod tests {
             let back = error_from_json(&error_json(&e));
             assert_eq!(back.kind(), e.kind(), "{e}");
             assert_eq!(back.exit_code(), e.exit_code(), "{e}");
+            assert_eq!(back.is_not_found(), e.is_not_found(), "{e}");
+            if let (Error::Io(a), Error::Io(b)) = (&e, &back) {
+                assert_eq!(a.kind(), b.kind(), "{e}");
+            }
             match &e {
                 Error::Io(_) | Error::Remote(_) => {
                     assert!(back.to_string().contains("relay: "), "{back}");
