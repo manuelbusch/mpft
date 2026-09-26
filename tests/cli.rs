@@ -315,3 +315,38 @@ fn a_copy_that_fails_early_still_prints_json() {
         "{report}"
     );
 }
+
+/// A setting or flag that is wrong exits with 2, like clap's complaints,
+/// wherever it is found; several of them once exited with 1.
+#[test]
+fn a_wrong_setting_exits_with_2() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+    let mut cases: Vec<(&str, Vec<&str>)> = vec![
+        ("", vec!["--password-file", "nosuch", "cp", "a.txt", "out/"]),
+        (
+            "[policy]\nrequire_signature = true\n",
+            vec!["--check", "cp", "a.txt", "out/"],
+        ),
+    ];
+    if cfg!(feature = "relay") {
+        cases.push(("", vec!["--resume", "relay"]));
+        cases.push(("", vec!["relay", "--listen", "not-an-address"]));
+        cases.push((
+            "[relay]\ngrace = \"soon\"\n",
+            vec!["relay", "--listen", "127.0.0.1:0"],
+        ));
+    }
+    if cfg!(feature = "server") {
+        cases.push((
+            "",
+            vec!["--delete-source", "serve", "--bind", "127.0.0.1:0"],
+        ));
+        cases.push(("", vec!["serve", "--bind", "nowhere"]));
+        cases.push(("", vec!["serve", "--retention", "a while"]));
+    }
+    for (config, args) in cases {
+        let out = mpt_with(dir.path(), config, &args, None);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+    }
+}

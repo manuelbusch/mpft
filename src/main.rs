@@ -689,8 +689,8 @@ impl std::fmt::Display for ExitWith {
 
 impl std::error::Error for ExitWith {}
 
-/// A wrong command line, told with exit code 2 like clap's own complaints.
-#[cfg_attr(not(feature = "relay"), allow(dead_code))] // only the relay's flags need it
+/// A wrong command line or setting, told with exit code 2 like clap's own
+/// complaints.
 fn usage(msg: impl Into<String>) -> anyhow::Error {
     anyhow::Error::new(ExitWith {
         code: USAGE,
@@ -843,8 +843,13 @@ fn read_password(cli: &Cli) -> anyhow::Result<Option<secrecy::SecretString>> {
     use mpt::credentials::{check_secret_file, first_line};
     if let Some(path) = &cli.password_file {
         check_secret_file(path, mpt::policy::policy().strict_permissions)?;
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading the password from {}", path.display()))?;
+        // A file the flag names that cannot be read is a wrong command line.
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            usage(format!(
+                "--password-file: reading the password from {}: {e}",
+                path.display()
+            ))
+        })?;
         return Ok(Some(first_line(&text).into()));
     }
     if cli.password_stdin {
@@ -941,7 +946,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
     if cli.hash.is_none()
         && let Some(h) = profiles.iter().find_map(|p| p.hash.as_deref())
     {
-        settings.hash = Some(HashAlgo::parse(h).with_context(|| "profile hash")?);
+        settings.hash = Some(HashAlgo::parse(h).map_err(|e| usage(format!("profile hash: {e}")))?);
     }
     // A profile may switch atomic finishing off, but cannot switch it back on
     // against --no-atomic.
@@ -1012,10 +1017,10 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
     let verify = verify_spec(&cli)?;
     let check = cli.check || verify.is_some();
     if check && verify.is_none() && mpt::policy::policy().require_signature {
-        anyhow::bail!(
+        return Err(usage(
             "policy.require_signature is set, but no trusted keys are given: \
-             use --verify-signers/--verify-keyring or [verify] in the configuration"
-        );
+             use --verify-signers/--verify-keyring or [verify] in the configuration",
+        ));
     }
     let opts = CopyOptions {
         cache: if settings.cache {
@@ -1252,10 +1257,10 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
             base.cancel = None;
             base.progress = None;
             if base.delete_source && !server.allow_delete {
-                anyhow::bail!(
+                return Err(usage(
                     "--delete-source would make every job delete its source; \
-                     add --allow-delete (or [server] allow_delete) if that is meant"
-                );
+                     add --allow-delete (or [server] allow_delete) if that is meant",
+                ));
             }
             let rules = rules.clone();
             let rt = mpt::server::Runtime {
@@ -1281,7 +1286,9 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                 ("--resume", opts.resume),
             ] {
                 if set {
-                    anyhow::bail!("{flag} has no meaning for a relay: its source is the upload");
+                    return Err(usage(format!(
+                        "{flag} has no meaning for a relay: its source is the upload"
+                    )));
                 }
             }
             let mut base = opts;
@@ -1298,14 +1305,14 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                 max_size: match (args.max_size, &section.max_size) {
                     (Some(n), _) => n,
                     (None, Some(v)) => mpt::config::parse_size(v)
-                        .map_err(|e| anyhow::anyhow!("[relay] max_size: {e}"))?,
+                        .map_err(|e| usage(format!("[relay] max_size: {e}")))?,
                     (None, None) => 0,
                 },
                 credentials: match (args.credentials, &section.credentials) {
                     (Some(mode), _) => mode,
                     (None, Some(v)) => v
                         .parse()
-                        .map_err(|e| anyhow::anyhow!("[relay] credentials: {e}"))?,
+                        .map_err(|e| usage(format!("[relay] credentials: {e}")))?,
                     (None, None) => mpt::relay::RelayCredentials::Header,
                 },
                 allow_delete: args.allow_delete || section.allow_delete.unwrap_or(false),
@@ -2190,7 +2197,7 @@ async fn server_config(
     if let Some(bind) = args.bind.as_deref().or(s.bind.as_deref()) {
         out.bind = bind
             .parse()
-            .with_context(|| format!("bind address '{bind}' (expected host:port)"))?;
+            .map_err(|e| usage(format!("bind address '{bind}' (expected host:port): {e}")))?;
     }
     let token = match &args.token_env {
         Some(var) => Some(Secret::Reference(SecretRef::from(Source::Env(var.clone())))),
@@ -2205,21 +2212,20 @@ async fn server_config(
         .or_else(|| mpt::config::path(&s.journal));
     if let Some(v) = args.retention.as_deref().or(s.retention.as_deref()) {
         out.retention =
-            mpt::config::parse_duration(v).map_err(|e| anyhow::anyhow!("retention: {e}"))?;
+            mpt::config::parse_duration(v).map_err(|e| usage(format!("retention: {e}")))?;
     }
     if let Some(n) = args.parallel.or(s.parallel) {
         out.parallel = n;
     }
     if let Some(v) = &s.max_body {
         out.max_body = mpt::config::parse_size(v)
-            .map_err(|e| anyhow::anyhow!("[server] max_body: {e}"))?
-            as usize;
+            .map_err(|e| usage(format!("[server] max_body: {e}")))? as usize;
     }
     match (args.grace, s.grace.as_deref()) {
         (Some(secs), _) => out.grace = Duration::from_secs(secs),
         (None, Some(v)) => {
             out.grace = mpt::config::parse_duration(v)
-                .map_err(|e| anyhow::anyhow!("[server] grace: {e}"))?;
+                .map_err(|e| usage(format!("[server] grace: {e}")))?;
         }
         (None, None) => {}
     }
@@ -2249,7 +2255,7 @@ fn relay_listener(
 ) -> anyhow::Result<mpt::relay::sshd::Listener> {
     let listen = addr
         .parse()
-        .with_context(|| format!("listen address '{addr}' (expected host:port)"))?;
+        .map_err(|e| usage(format!("listen address '{addr}' (expected host:port): {e}")))?;
     let host_key = args
         .host_key
         .clone()
@@ -2268,15 +2274,17 @@ fn relay_listener(
         .or_else(|| {
             mpt::config::Config::default_path().map(|p| p.with_file_name("authorized_keys"))
         })
-        .context("no home directory to look for authorized_keys in: give --authorized-keys")?;
+        .ok_or_else(|| {
+            usage("no home directory to look for authorized_keys in: give --authorized-keys")
+        })?;
     let parallel = match args.parallel.or(section.parallel).unwrap_or(4) {
-        0 => anyhow::bail!("parallel must be at least 1"),
+        0 => return Err(usage("parallel must be at least 1")),
         n => n,
     };
     let grace = match (args.grace, section.grace.as_deref()) {
         (Some(secs), _) => Duration::from_secs(secs),
         (None, Some(v)) => {
-            mpt::config::parse_duration(v).map_err(|e| anyhow::anyhow!("[relay] grace: {e}"))?
+            mpt::config::parse_duration(v).map_err(|e| usage(format!("[relay] grace: {e}")))?
         }
         (None, None) => Duration::from_secs(30),
     };

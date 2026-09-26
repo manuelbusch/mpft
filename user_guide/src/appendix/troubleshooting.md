@@ -263,7 +263,7 @@ table](../reference/api.md#errors) maps them. The ones that come up:
 Working as intended: without a token anyone who can reach the port could use
 every profile. Set a token, or stay on loopback.
 
-**`--delete-source would make every job delete its source; add --allow-delete (or [server] allow_delete) if that is meant`** [1]
+**`--delete-source would make every job delete its source; add --allow-delete (or [server] allow_delete) if that is meant`** [2]
 
 The server was started with a global `--delete-source`, which would apply to
 every job, without the switch that allows deleting.

@@ -586,7 +586,7 @@ fn delete_source_needs_allow_delete() {
         .unwrap();
     assert_eq!(
         out.status.code(),
-        Some(1),
+        Some(2),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
