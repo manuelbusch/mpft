@@ -9,14 +9,101 @@ use crate::{Endpoint, Error, Location, Result};
 
 use super::Job;
 
-/// Whether the last path component of `loc` is a pattern (`*` or `[…]`).
-/// `?` does not count: in a URL it starts the query.
+/// Whether the last path component of `loc` needs [`expand`]: a pattern
+/// (`*`, or `[…]` with its closing bracket), or a name with a character
+/// escaped by `\` that `expand` turns into the plain name. `?` does not
+/// count: in a URL it starts the query.
 pub fn has_pattern(loc: &Location) -> bool {
     !loc.scheme().is_mail()
         && !loc.is_dir_target()
-        && loc
-            .filename()
-            .is_some_and(|n| n.contains('*') || n.contains('['))
+        && loc.filename().is_some_and(|n| {
+            let name = Name::parse(n);
+            name.wild || name.escaped
+        })
+}
+
+/// A source's file name, read as a pattern.
+#[derive(Debug, PartialEq, Eq)]
+struct Name {
+    /// The name for the glob matcher, with every character meant
+    /// literally in brackets (`[*]`, `[[]`).
+    pattern: String,
+    /// It has a `*` or a character class: it stands for several files.
+    wild: bool,
+    /// The name with its escapes resolved, for a name that is not wild.
+    literal: String,
+    /// It had a `\` escape.
+    escaped: bool,
+}
+
+impl Name {
+    /// `*` is any run of characters and `[…]` a class, as in a shell. A
+    /// `\` before `*`, `?`, `[`, `]` or `\` makes that character literal;
+    /// so does writing it in brackets (`[*]`), which also works where `\`
+    /// separates or cannot be written. A `[` without its `]` is literal,
+    /// and so is `?`, which in a URL starts the query.
+    fn parse(name: &str) -> Name {
+        let chars: Vec<char> = name.chars().collect();
+        let mut out = Name {
+            pattern: String::new(),
+            wild: false,
+            literal: String::new(),
+            escaped: false,
+        };
+        let literal = |out: &mut Name, c: char| {
+            out.literal.push(c);
+            match c {
+                '*' | '?' | '[' | ']' => {
+                    out.pattern.push('[');
+                    out.pattern.push(c);
+                    out.pattern.push(']');
+                }
+                _ => out.pattern.push(c),
+            }
+        };
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            match c {
+                '\\' if matches!(chars.get(i + 1), Some('*' | '?' | '[' | ']' | '\\')) => {
+                    out.escaped = true;
+                    literal(&mut out, chars[i + 1]);
+                    i += 2;
+                    continue;
+                }
+                '*' => {
+                    out.wild = true;
+                    out.pattern.push('*');
+                }
+                '[' => match class_end(&chars, i) {
+                    Some(end) => {
+                        out.wild = true;
+                        out.pattern.extend(&chars[i..=end]);
+                        i = end + 1;
+                        continue;
+                    }
+                    None => literal(&mut out, c),
+                },
+                _ => literal(&mut out, c),
+            }
+            i += 1;
+        }
+        out
+    }
+}
+
+/// Where the class that opens at `chars[start]` (a `[`) closes, as the
+/// glob matcher reads it: a `]` right after `[` or `[!` belongs to the
+/// class. `None` when it does not close.
+fn class_end(chars: &[char], start: usize) -> Option<usize> {
+    let mut i = start + 1;
+    if chars.get(i) == Some(&'!') {
+        i += 1;
+    }
+    if chars.get(i) == Some(&']') {
+        i += 1;
+    }
+    (i..chars.len()).find(|&j| chars[j] == ']')
 }
 
 /// Expand every job whose source is a pattern into one job per matching
@@ -30,13 +117,21 @@ pub async fn expand(
     limit: Option<usize>,
 ) -> Result<Vec<Job>> {
     let mut out = Vec::with_capacity(jobs.len());
-    for job in jobs {
+    for mut job in jobs {
         if !has_pattern(&job.src) {
             check_limit(out.len() + 1, limit, &job.src)?;
             out.push(job);
             continue;
         }
-        let matches = matching_files(&job.src, open).await?;
+        let name = Name::parse(job.src.filename().unwrap_or(""));
+        if !name.wild {
+            // Only escapes: the one file of that name.
+            job.src = job.src.sibling(&name.literal)?;
+            check_limit(out.len() + 1, limit, &job.src)?;
+            out.push(job);
+            continue;
+        }
+        let matches = matching_files(&job.src, &name.pattern, open).await?;
         if matches.is_empty() && !allow_empty {
             return Err(Error::InvalidUrl(format!(
                 "{} matches no file (--allow-empty makes that fine)",
@@ -79,10 +174,11 @@ fn check_limit(count: usize, limit: Option<usize>, source: &Location) -> Result<
 /// locations, in listing order.
 async fn matching_files(
     pattern: &Location,
+    glob: &str,
     open: &(dyn Fn(&Location) -> Result<Box<dyn Endpoint>> + Sync),
 ) -> Result<Vec<Location>> {
     let name = pattern.filename().unwrap_or("");
-    let glob = Pattern::new(name)
+    let glob = Pattern::new(glob)
         .map_err(|e| Error::InvalidUrl(format!("pattern {name} in {pattern}: {}", e.msg)))?;
     let dir = pattern.parent()?;
     let entries = open(&dir)?.receiver()?.list().await?;
@@ -298,6 +394,73 @@ mod tests {
         assert!(!has_pattern(&loc("sftp://h/in/plain.csv")));
         assert!(!has_pattern(&loc("sftp://h/in/")));
         assert!(!has_pattern(&loc("mailto:a@example.com")));
+        // A `[` that does not close is a character like any other.
+        assert!(!has_pattern(&loc("/tmp/in/report[1.csv")));
+        // An escape needs `expand`, to become the plain name.
+        assert!(has_pattern(&loc(r"/tmp/in/report\[1\].csv")));
+    }
+
+    #[test]
+    fn a_name_is_read_with_its_escapes_and_classes() {
+        let n = Name::parse(r"report\[1\].csv");
+        assert!(!n.wild && n.escaped);
+        assert_eq!(n.literal, "report[1].csv");
+        let n = Name::parse(r"a\*b");
+        assert_eq!((n.wild, n.literal.as_str()), (false, "a*b"));
+        let n = Name::parse(r"a\*b*.csv");
+        assert!(n.wild);
+        assert_eq!(n.pattern, "a[*]b*.csv");
+        let n = Name::parse("report[1.csv");
+        assert!(!n.wild && !n.escaped);
+        assert_eq!(n.pattern, "report[[]1.csv");
+        let n = Name::parse("x[]a].csv");
+        assert!(n.wild);
+        assert_eq!(n.pattern, "x[]a].csv");
+        let n = Name::parse("a[*]b");
+        assert!(n.wild, "a class of one is still a class");
+        // `?` is a character, and a `\` before anything else is kept.
+        let n = Name::parse(r"what?\n*");
+        assert_eq!(n.pattern, r"what[?]\n*");
+    }
+
+    #[tokio::test]
+    async fn escaped_and_bracketed_characters_match_themselves() {
+        let dir = tempfile::tempdir().unwrap();
+        for n in ["report[1].csv", "report1.csv", "a*b", "ab", "x[1.csv"] {
+            std::fs::write(dir.path().join(n), n).unwrap();
+        }
+        let d = dir.path().display();
+        let names = |jobs: Vec<Job>| {
+            let mut v: Vec<String> = jobs
+                .iter()
+                .map(|j| j.src.filename().unwrap().to_string())
+                .collect();
+            v.sort();
+            v
+        };
+        // Escapes alone name one file, which need not be listed.
+        let jobs = expand_local(&format!(r"{d}/report\[1\].csv"), "/tmp/out/x", false)
+            .await
+            .unwrap();
+        assert_eq!(names(jobs), ["report[1].csv"]);
+        let jobs = expand_local(&format!(r"{d}/a\*b"), "/tmp/out/x", false)
+            .await
+            .unwrap();
+        assert_eq!(names(jobs), ["a*b"]);
+        // Brackets work as well, and in a pattern with a wildcard.
+        let jobs = expand_local(&format!("{d}/report[[]1[]].*"), "/tmp/out/", false)
+            .await
+            .unwrap();
+        assert_eq!(names(jobs), ["report[1].csv"]);
+        let jobs = expand_local(&format!(r"{d}/report\[*"), "/tmp/out/", false)
+            .await
+            .unwrap();
+        assert_eq!(names(jobs), ["report[1].csv"]);
+        // An unbalanced `[` is taken literally.
+        let jobs = expand_local(&format!("{d}/x[1.*"), "/tmp/out/", false)
+            .await
+            .unwrap();
+        assert_eq!(names(jobs), ["x[1.csv"]);
     }
 
     async fn expand_local(pattern: &str, dst: &str, allow_empty: bool) -> Result<Vec<Job>> {

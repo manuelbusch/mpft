@@ -69,6 +69,18 @@ Rules:
   matrix](../protocols/overview.md#what-each-one-can-do).
 - **`?` is not a pattern character.** It starts the query part of a URL, so it
   could not be one. Use `*` or a character class.
+- **A `[` without its `]` is an ordinary character**: `report[1.csv` names
+  that file.
+- **A literal `*`, `[` or `]` is escaped** with a backslash, `report\[1\].csv`
+  or `a\*b`, or written in brackets, `report[[]1[]].csv` or `a[*]b`. A name
+  whose special characters are all escaped by backslashes is that one file,
+  copied like any other (to a file target too); brackets make it a pattern
+  that matches only that file. The backslash works in local paths on Unix
+  and in `sftp://`, `scp://` and `s3://` URLs. In `ftp://`, `http://` and
+  `file://` URLs a backslash is read as `/`, and on Windows it separates
+  local paths, so there use the brackets. On a command line, and in a
+  [line-form job list](job-lists.md#three-ways-to-write-a-list), single
+  quotes keep the backslash from being taken as the shell's own.
 - Dotfiles need a literal dot in the pattern, as in a shell: `*` does not match
   `.hidden`.
 - Directories are not matched, only files.
