@@ -39,6 +39,8 @@ struct JobEntry {
     /// Fires when the job is cancelled (by a request, or by the server
     /// giving up on a drain); every copy of the job runs under a child.
     cancel: CancellationToken,
+    /// A request cancelled it, as opposed to the server at shutdown.
+    cancel_requested: bool,
 }
 
 /// A transfer ready to run, with its endpoints as clients see them: the
@@ -321,6 +323,7 @@ impl Store {
                 error: None,
                 transfers: Vec::new(),
                 cancel,
+                cancel_requested: false,
             },
             Some(reservation),
         );
@@ -342,6 +345,7 @@ impl Store {
                 error: None,
                 transfers: Vec::new(),
                 cancel,
+                cancel_requested: false,
             },
             None,
         );
@@ -493,8 +497,9 @@ impl Store {
     /// The job is over. Its state follows its transfers: failed if one
     /// failed and `fail_fast` stopped the rest, else cancelled if any was
     /// (or none ran because the job was cancelled first), else failed if
-    /// any failed, else done. `journal` is false for a job the server is
-    /// abandoning at shutdown, which should run again after the restart.
+    /// any failed, else done. `journal` is false while the server is
+    /// abandoning its jobs at shutdown; see [`Store::close`] for what that
+    /// leaves out of the journal.
     pub fn finish(&self, id: &JobId, journal: bool) -> Option<JobState> {
         let mut inner = self.lock();
         let j = inner.jobs.get_mut(id)?;
@@ -531,6 +536,11 @@ impl Store {
         self.close(id, state, Some(error), journal)
     }
 
+    /// Close the job. Its end goes into the journal unless `journal` is
+    /// false (the server is abandoning its jobs at shutdown) and the job
+    /// ended cancelled without a request asking for it: that is a job the
+    /// shutdown cut off, which runs again after the restart. A job that
+    /// ended on its own, or that a client cancelled, is over for good.
     fn close(
         &self,
         id: &JobId,
@@ -544,6 +554,7 @@ impl Store {
         if j.state.is_final() {
             return Some(j.state);
         }
+        let journal = journal || state != JobState::Cancelled || j.cancel_requested;
         j.state = state;
         j.finished_at = Some(now);
         j.error = error;
@@ -591,11 +602,12 @@ impl Store {
     /// Ask a job to stop. The state it was in comes back: a job that is
     /// already over is left as it is.
     pub fn cancel(&self, id: &JobId) -> Option<JobState> {
-        let inner = self.lock();
-        let j = inner.jobs.get(id)?;
+        let mut inner = self.lock();
+        let j = inner.jobs.get_mut(id)?;
         let state = j.state;
         if !state.is_final() {
             info!(%id, "cancelling");
+            j.cancel_requested = true;
             j.cancel.cancel();
         }
         Some(state)
@@ -1238,6 +1250,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn only_a_job_the_shutdown_cut_off_is_left_open_in_the_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.jsonl");
+        let (tx, _rx) = broadcast::channel(64);
+        let (journal, _) = Journal::open(&path).unwrap();
+        let store = Store::new(Some(journal), tx);
+        let submit = |src: &'static str| {
+            store.submit(submission(src, "/tmp/out/"), CancellationToken::new())
+        };
+        let (requested, finished, cut_off) = (
+            submit("/tmp/a").await.unwrap(),
+            submit("/tmp/b").await.unwrap(),
+            submit("/tmp/c").await.unwrap(),
+        );
+        // All three end while the server is abandoning its jobs.
+        store.cancel(&requested);
+        store.finish(&requested, false);
+        store.start(&finished, vec![prepared("/tmp/b", "/tmp/out/")]);
+        store.transfer_done(
+            &finished,
+            &ok_report(0, job("/tmp/b", "/tmp/out/")),
+            None,
+            None,
+        );
+        assert_eq!(store.finish(&finished, false), Some(JobState::Done));
+        store.fail(&cut_off, ApiError::new("cancelled", "cut off"), false);
+        store.flush().await;
+        drop(store);
+        let (_journal, open) = Journal::open(&path).unwrap();
+        assert_eq!(open.iter().map(|r| &r.id).collect::<Vec<_>>(), [&cut_off]);
+    }
+
+    #[tokio::test]
     async fn the_journal_is_compacted_while_the_server_runs() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("jobs.jsonl");
@@ -1293,11 +1338,14 @@ mod tests {
             .submit(submission("/tmp/b", "/tmp/out/"), CancellationToken::new())
             .await
             .unwrap();
+        // Cut off by the shutdown: its token fired without a request.
+        let shutdown = CancellationToken::new();
         let abandoned = store
-            .submit(submission("/tmp/c", "/tmp/out/"), CancellationToken::new())
+            .submit(submission("/tmp/c", "/tmp/out/"), shutdown.clone())
             .await
             .unwrap();
         store.finish(&done, true);
+        shutdown.cancel();
         store.finish(&abandoned, false);
         store.flush().await;
         drop(store);

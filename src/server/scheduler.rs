@@ -227,8 +227,10 @@ async fn run(state: Arc<AppState>, id: JobId) {
     info!(%id, state = ?state_after, "over");
 }
 
-/// Whether a job's end goes into the journal: not while the server is
-/// abandoning it, because then it should run again after the restart.
+/// Whether a job's end goes into the journal: not when the server's
+/// abandoning of its jobs cut it off, because then it should run again
+/// after the restart (the store tells that from a job that ended anyway,
+/// or that a request cancelled).
 fn journal(state: &AppState) -> bool {
     !state.work.is_cancelled()
 }

@@ -263,7 +263,8 @@ journal = "~/.local/state/mpt/jobs.jsonl"
 
 After a restart, the jobs the file still shows as open run again with
 `attempt` raised by one. That includes the jobs a shutdown cancelled after
-its grace period ran out. A file target is safe to run twice, since a
+its grace period ran out, but not a job a client cancelled with `DELETE`, nor
+one that finished on its own while the shutdown was cancelling the rest. A file target is safe to run twice, since a
 transfer either finished or left only a `.mpt-part`; a mail target may
 deliver twice, and a `delete_source` job whose source is already gone fails
 the second time. Finished jobs do not survive a restart.

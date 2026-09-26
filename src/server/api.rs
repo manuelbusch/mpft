@@ -952,7 +952,9 @@ mod tests {
         let (status, body) = call(&app, Method::POST, "/v1/jobs", t, None, &body_a).await;
         assert_eq!(status, StatusCode::ACCEPTED, "{body}");
         let url = body["url"].as_str().unwrap().to_string();
-        let (status, body) = call(&app, Method::POST, "/v1/jobs", t, None, &body_a).await;
+        // Another target, so that only the queue stands in its way.
+        let body_b = body_a.replace("/out/", "/elsewhere/");
+        let (status, body) = call(&app, Method::POST, "/v1/jobs", t, None, &body_b).await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
         assert_eq!(body["error"]["kind"], "too_many_jobs");
         // The accepted job runs to its end and, allowed to, deletes its source.
