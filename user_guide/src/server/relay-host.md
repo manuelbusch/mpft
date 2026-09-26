@@ -64,7 +64,8 @@ server: a relay started with `--timeout 120 --cache` delivers every upload
 that way unless the client's header says otherwise, and `[defaults]` and
 `[policy]` of the relay's configuration are in force. Ctrl-C or `SIGTERM`
 stops accepting sessions, waits `--grace` for the running relays and then
-cancels them. A connection that was already open cannot start a relay once
+cancels them; a second one cancels them immediately, a third exits with 130
+without waiting any longer. A connection that was already open cannot start a relay once
 the shutdown has begun.
 
 ### Through an existing sshd

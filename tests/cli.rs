@@ -120,3 +120,74 @@ fn a_relay_of_an_unused_profile_changes_nothing() {
         stderr(&out)
     );
 }
+
+/// Ctrl-C stops a copy whose source never ends and never gets to the next
+/// read (a pipe nobody writes to): the process exits with 130 instead of
+/// waiting for that read, where no further Ctrl-C reached it either.
+#[cfg(unix)]
+#[test]
+fn an_interrupt_ends_a_copy_stuck_in_a_read() {
+    use std::time::{Duration, Instant};
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("out")).unwrap();
+    let fifo = dir.path().join("fifo");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    // Opening the pipe for writing returns once mpt opened it for reading,
+    // and that is after it listens for signals.
+    let mut writer = Command::new("sh")
+        .arg("-c")
+        .arg("exec 3>fifo; touch opened; sleep 60")
+        .current_dir(dir.path())
+        .spawn()
+        .unwrap();
+    let config = dir.path().join("test-config.toml");
+    std::fs::write(&config, "").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .arg("--config")
+        .arg(&config)
+        .args(["cp", "fifo", "out/"])
+        .current_dir(dir.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    while !dir.path().join("opened").exists() {
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "mpt never opened the pipe"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let kill = |sig: &str| {
+        Command::new("kill")
+            .args([sig, &child.id().to_string()])
+            .status()
+            .unwrap()
+    };
+    kill("-INT");
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > Duration::from_secs(20) {
+            let _ = child.kill();
+            let _ = writer.kill();
+            panic!("mpt did not stop after SIGINT");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let _ = writer.kill();
+    let _ = writer.wait();
+    let mut err = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut err).unwrap();
+    assert_eq!(status.code(), Some(130), "{err}");
+    assert!(err.contains("interrupted"), "{err}");
+}

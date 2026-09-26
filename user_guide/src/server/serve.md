@@ -287,7 +287,7 @@ by default; `"0"` keeps them until the server stops.
 
 Ctrl-C stops the server taking jobs, waits `grace` for the running ones and
 exits 0. A second Ctrl-C cancels them immediately. Those cancelled jobs are the
-ones a journal runs again.
+ones a journal runs again. A third exits with 130 without waiting any longer.
 
 ```
 $ mpt serve

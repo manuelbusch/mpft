@@ -65,7 +65,7 @@ Ctrl-C stops the transfer rather than abandoning it:
 
 ```
 ^C
-interrupted, stopping and cleaning up…
+interrupted, stopping and cleaning up (Ctrl-C again exits immediately)…
 error: copy big.bin -> sftp://srv.example.com/in/: cancelled: interrupted
 ```
 

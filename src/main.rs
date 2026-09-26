@@ -709,8 +709,26 @@ impl std::fmt::Display for Interrupted {
 
 impl std::error::Error for Interrupted {}
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("error: starting the runtime: {e}");
+            return ExitCode::from(FAILED);
+        }
+    };
+    let code = rt.block_on(start());
+    // Work on the blocking pool that a cancelled copy left behind (a read
+    // from a pipe that never ends) gets a moment, then the process exits
+    // without it rather than hang where no signal reaches it any more.
+    rt.shutdown_timeout(Duration::from_secs(1));
+    code
+}
+
+async fn start() -> ExitCode {
     let cli = Cli::parse();
     if cli.password_stdin && matches!(&cli.cmd, Cmd::Batch { file, .. } if file.as_os_str() == "-")
     {
@@ -882,6 +900,9 @@ impl LocateRules {
 }
 
 async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
+    // Listening starts before anything else does, so that a signal that
+    // comes early (as soon as a server's port file is there) is not missed.
+    let mut signals = Interrupts::install().context("listening for Ctrl-C")?;
     if cli.refuse_plaintext_auth {
         mpt::policy::set_refuse_plaintext_auth(true);
     }
@@ -913,7 +934,8 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
     let timeout = (settings.timeout > 0).then(|| Duration::from_secs(settings.timeout));
     // Ctrl-C stops the transfer, removes partial files and leaves the rest
     // alone. A server finishes its running jobs first; a second Ctrl-C
-    // cancels them too.
+    // cancels them too. One more exits without waiting for the cleanup,
+    // in case that is what hangs.
     let cancel = tokio_util::sync::CancellationToken::new();
     let abort = tokio_util::sync::CancellationToken::new();
     {
@@ -921,19 +943,31 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
         let abort = abort.clone();
         let serving = cli.cmd.is_serve();
         tokio::spawn(async move {
-            if interrupted().await {
-                if serving {
-                    anstream::eprintln!(
-                        "{WARN}interrupted{WARN:#}, finishing the running jobs (Ctrl-C again cancels them)…"
-                    );
-                } else {
-                    anstream::eprintln!("{WARN}interrupted{WARN:#}, stopping and cleaning up…");
+            if !signals.next().await {
+                return;
+            }
+            if serving {
+                anstream::eprintln!(
+                    "{WARN}interrupted{WARN:#}, finishing the running jobs (Ctrl-C again cancels them)…"
+                );
+            } else {
+                anstream::eprintln!(
+                    "{WARN}interrupted{WARN:#}, stopping and cleaning up (Ctrl-C again exits immediately)…"
+                );
+            }
+            cancel.cancel();
+            if serving {
+                if !signals.next().await {
+                    return;
                 }
-                cancel.cancel();
-                if serving && interrupted().await {
-                    anstream::eprintln!("{WARN}interrupted again{WARN:#}, cancelling the jobs…");
-                    abort.cancel();
-                }
+                anstream::eprintln!(
+                    "{WARN}interrupted again{WARN:#}, cancelling the jobs (Ctrl-C again exits immediately)…"
+                );
+                abort.cancel();
+            }
+            if signals.next().await {
+                anstream::eprintln!("{WARN}interrupted again{WARN:#}, exiting without cleaning up");
+                std::process::exit(INTERRUPTED.into());
             }
         });
     }
@@ -2582,22 +2616,49 @@ impl Via {
 
 /// Ctrl-C, or SIGTERM where there is one: what systemd's `stop` and
 /// `docker stop` send. Both mean the same here, so a service is drained
-/// rather than killed.
-async fn interrupted() -> bool {
+/// rather than killed. The listeners live as long as the process: a signal
+/// that comes while nobody waits for it is kept for the next wait, not
+/// swallowed.
+struct Interrupts {
     #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        let Ok(mut term) = signal(SignalKind::terminate()) else {
-            return tokio::signal::ctrl_c().await.is_ok();
-        };
-        tokio::select! {
-            r = tokio::signal::ctrl_c() => r.is_ok(),
-            _ = term.recv() => true,
+    int: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    term: tokio::signal::unix::Signal,
+    #[cfg(windows)]
+    ctrl_c: tokio::signal::windows::CtrlC,
+}
+
+impl Interrupts {
+    fn install() -> std::io::Result<Interrupts> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            Ok(Interrupts {
+                int: signal(SignalKind::interrupt())?,
+                term: signal(SignalKind::terminate())?,
+            })
+        }
+        #[cfg(windows)]
+        {
+            Ok(Interrupts {
+                ctrl_c: tokio::signal::windows::ctrl_c()?,
+            })
         }
     }
-    #[cfg(not(unix))]
-    {
-        tokio::signal::ctrl_c().await.is_ok()
+
+    /// The next signal; `false` once none can come any more.
+    async fn next(&mut self) -> bool {
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                r = self.int.recv() => r.is_some(),
+                r = self.term.recv() => r.is_some(),
+            }
+        }
+        #[cfg(windows)]
+        {
+            self.ctrl_c.recv().await.is_some()
+        }
     }
 }
 

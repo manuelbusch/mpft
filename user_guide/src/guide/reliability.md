@@ -64,6 +64,9 @@ exit code is **130**. In a fan-out, targets that had already finished
 keep their file; the unfinished ones report `cancelled`. In a batch, jobs that
 had not started never start.
 
+A second Ctrl-C exits immediately, also with 130, without waiting for the
+cleanup: part files may then be left behind.
+
 With `--resume` the part file is kept instead of removed, so that the next
 run can continue it.
 
@@ -75,7 +78,7 @@ sends only the rest.
 ```
 $ mpt --resume cp big.bin sftp://srv.example.com/in/
 ^C
-interrupted, stopping and cleaning up…
+interrupted, stopping and cleaning up (Ctrl-C again exits immediately)…
 error: copy big.bin -> sftp://srv.example.com/in/: cancelled: interrupted
 
 $ ls -l …/in/

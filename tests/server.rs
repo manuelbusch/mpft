@@ -162,6 +162,8 @@ impl Server {
     }
 
     /// Ask the server to stop and wait for it; the exit status comes back.
+    /// A server that does not stop within 30 seconds fails the test instead
+    /// of hanging it.
     #[cfg(unix)]
     fn interrupt(&mut self) -> std::process::ExitStatus {
         Command::new("kill")
@@ -169,7 +171,18 @@ impl Server {
             .arg(self.child.id().to_string())
             .status()
             .unwrap();
-        self.child.wait().unwrap()
+        let started = Instant::now();
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return status;
+            }
+            if started.elapsed() > Duration::from_secs(30) {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                panic!("the server did not stop after SIGINT:\n{}", self.log());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 }
 
