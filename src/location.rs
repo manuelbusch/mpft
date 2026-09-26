@@ -1287,6 +1287,13 @@ fn non_empty(s: String) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
+/// A URL string as it may be shown: the password of `user:password@` and
+/// every secret option as `***`. It works on the text alone, so it takes a
+/// URL of any scheme, `smtp://` included, and one that does not parse.
+pub fn mask_url(raw: &str) -> String {
+    masked(raw)
+}
+
 /// Mask the password of `user:password@` and every secret option in a raw
 /// URL string, for error messages about input that did not parse. Works on
 /// the text alone, since a URL that failed to parse cannot be asked.

@@ -7,12 +7,12 @@ what; this page is the list.
 `mpt config check` validates a file and prints what it sets. An unknown key is
 an error, and the message names the keys that were expected.
 
-The listing it prints is a summary rather than a dump: a handful of keys —
-`[policy] strict_permissions` and `max_signature_age`, `[ssh] cert` and
-`hostkey`, `[mail] auth` and `max_attachment`, `[s3] profile` — are read and
-applied but not shown, and a secret appears as `(reference)` rather than as its
-value. A key missing from the listing has not been ignored; `ok <path>` at the
-top is what says the file was accepted.
+The listing shows every key the file sets, with three exceptions to what it
+prints as the value: a secret appears as `(reference)` when the file says
+where to fetch it and as `*** (in the file)` when it is written out; the
+password in `[mail] smtp` appears as `***`; and the profiles are listed by name
+in one `[profiles]` row, since `mpt profiles` shows what they hold. `ok <path>`
+at the top is what says the file was accepted.
 
 ## `[defaults]`
 

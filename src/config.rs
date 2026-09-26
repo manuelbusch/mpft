@@ -374,10 +374,10 @@ pub enum OptionValue {
 }
 
 impl Profile {
-    /// The free-form entries as URL options, in the file's order. A value may
-    /// be a list, which repeats the option (`hostkey`, `header`). A
-    /// credential reference is left out: its value is only known once it
-    /// has been fetched (see [`Config::resolve`]).
+    /// The free-form entries as URL options, sorted by name (the file's
+    /// order is not kept). A value may be a list, which repeats the option
+    /// (`hostkey`, `header`). A credential reference is left out: its value
+    /// is only known once it has been fetched (see [`Config::resolve`]).
     pub fn options(&self) -> Result<Vec<(String, String)>> {
         Ok(self
             .option_values()?

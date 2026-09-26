@@ -265,3 +265,35 @@ fn a_following_dry_run_numbers_every_job() {
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert!(stderr(&out).contains("1 line rejected"), "{}", stderr(&out));
 }
+
+/// `config check` lists the profiles and masks the SMTP password; it once
+/// printed `smtp://u:pw@…` as written and counted the profiles without
+/// printing them.
+#[test]
+fn config_check_lists_profiles_and_hides_secrets() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = "[mail]\nsmtp = \"smtp://u:s3cret@mail.example.com:587\"\n\
+                  password = \"hunter2\"\n\
+                  [profiles.backup]\nurl = \"/tmp/backup/\"\n";
+    let out = mpt_with(dir.path(), config, &["config", "check"], None);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("[profiles]"), "{text}");
+    assert!(text.contains("backup"), "{text}");
+    assert!(text.contains("smtp://u:***@mail.example.com:587"), "{text}");
+    assert!(
+        !text.contains("s3cret") && !text.contains("hunter2"),
+        "{text}"
+    );
+    assert!(text.contains("[mail] password"), "{text}");
+
+    // Profiles alone are something set, not "nothing set".
+    let out = mpt_with(
+        dir.path(),
+        "[profiles.backup]\nurl = \"/tmp/backup/\"\n",
+        &["config", "check"],
+        None,
+    );
+    assert!(stdout(&out).contains("[profiles]"), "{}", stdout(&out));
+    assert!(!stdout(&out).contains("nothing set"), "{}", stdout(&out));
+}

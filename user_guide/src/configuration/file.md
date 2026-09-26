@@ -116,8 +116,8 @@ in `defaults.timeout`
 Both exit with code 2. Run `mpt config check` after every edit; it is the
 only place these mistakes are reported before a real transfer needs them.
 
-Profiles are listed by [`mpt profiles`](profiles.md), not by `config check`,
-and a handful of keys are applied without being listed; see the
+`config check` names the profiles in one `[profiles]` row; what they hold is
+listed by [`mpt profiles`](profiles.md). How secrets are shown is in the
 [reference](../reference/configuration.md). The `ok <path>` line says that
 the file was read and accepted.
 

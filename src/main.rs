@@ -2754,6 +2754,13 @@ fn show_config(cfg: &mpt::Config) {
             })*
         };
     }
+    // A secret is not shown, only whether it is written out or fetched.
+    let secret = |s: &Option<mpt::credentials::Secret>| {
+        s.as_ref().map(|s| match s {
+            mpt::credentials::Secret::Literal(_) => "*** (in the file)",
+            mpt::credentials::Secret::Reference(_) => "(reference)",
+        })
+    };
     let (d, p) = (&cfg.defaults, &cfg.policy);
     rows!(
         "defaults".color = d.color,
@@ -2769,6 +2776,7 @@ fn show_config(cfg: &mpt::Config) {
         "defaults".skip_existing = d.skip_existing,
         "defaults".delete_source = d.delete_source,
         "defaults".log = d.log,
+        "defaults".json = d.json,
         "defaults".parallel = d.parallel,
         "defaults".via = d.via,
         "defaults".via_credentials = d.via_credentials,
@@ -2777,23 +2785,32 @@ fn show_config(cfg: &mpt::Config) {
         "policy".refuse_plaintext_auth = p.refuse_plaintext_auth,
         "policy".refuse_insecure_tls = p.refuse_insecure_tls,
         "policy".require_signature = p.require_signature,
+        "policy".strict_permissions = p.strict_permissions,
+        "policy".max_signature_age = p.max_signature_age,
         "signing".key = cfg.signing.key,
         "signing".agent_fingerprint = cfg.signing.agent_fingerprint,
+        "signing".passphrase = secret(&cfg.signing.passphrase),
         "verify".allowed_signers = cfg.verify.allowed_signers,
         "verify".keyring = cfg.verify.keyring,
         "ssh".user = cfg.ssh.user,
         "ssh".key = cfg.ssh.key,
+        "ssh".cert = cfg.ssh.cert,
+        "ssh".passphrase = secret(&cfg.ssh.passphrase),
         "ssh".known_hosts_file = cfg.ssh.known_hosts_file,
-        "mail".smtp = cfg.mail.smtp,
+        "mail".smtp = cfg.mail.smtp.as_deref().map(mpt::location::mask_url),
+        "mail".password = secret(&cfg.mail.password),
+        "mail".auth = cfg.mail.auth,
         "mail".from = cfg.mail.from,
         "mail".max_attachment = cfg.mail.max_attachment,
-        "http".token = cfg.http.token.as_ref().map(|_| "(reference)"),
+        "http".token = secret(&cfg.http.token),
         "s3".endpoint = cfg.s3.endpoint,
         "s3".region = cfg.s3.region,
         "s3".path_style = cfg.s3.path_style,
+        "s3".access_key_id = secret(&cfg.s3.access_key_id),
+        "s3".secret_access_key = secret(&cfg.s3.secret_access_key),
         "s3".profile = cfg.s3.profile,
         "server".bind = cfg.server.bind,
-        "server".token = cfg.server.token.as_ref().map(|_| "(reference)"),
+        "server".token = secret(&cfg.server.token),
         "server".journal = cfg.server.journal,
         "server".retention = cfg.server.retention,
         "server".parallel = cfg.server.parallel,
@@ -2818,15 +2835,19 @@ fn show_config(cfg: &mpt::Config) {
     if !cfg.ssh.hostkey.is_empty() {
         rows.push(("[ssh] hostkey".into(), cfg.ssh.hostkey.join(", ")));
     }
-    let width = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
-    for (k, v) in &rows {
-        anstream::println!("{HEAD}{k:<width$}{HEAD:#}  {NUM}{v}{NUM:#}");
+    if !cfg.http.hosts.is_empty() {
+        rows.push(("[http] hosts".into(), cfg.http.hosts.join(", ")));
     }
+    // The profiles by name; `mpt profiles` shows what they hold.
     if !cfg.profiles.is_empty() {
         rows.push((
             "[profiles]".into(),
             cfg.profiles.keys().cloned().collect::<Vec<_>>().join(", "),
         ));
+    }
+    let width = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+    for (k, v) in &rows {
+        anstream::println!("{HEAD}{k:<width$}{HEAD:#}  {NUM}{v}{NUM:#}");
     }
     if rows.is_empty() {
         anstream::println!("{DIM}nothing set; built-in defaults are in use{DIM:#}");
