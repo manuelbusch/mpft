@@ -191,3 +191,38 @@ fn an_interrupt_ends_a_copy_stuck_in_a_read() {
     assert_eq!(status.code(), Some(130), "{err}");
     assert!(err.contains("interrupted"), "{err}");
 }
+
+/// `--password-stdin` is refused with a command that reads standard input
+/// itself; `mpt relay` once swallowed the upload as the password, and
+/// `credentials set` stored an empty secret.
+#[test]
+fn the_password_cannot_share_stdin_with_a_command_that_reads_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut refused = vec![vec!["--password-stdin", "batch", "-"]];
+    if cfg!(feature = "relay") {
+        refused.push(vec!["--password-stdin", "relay"]);
+    }
+    if cfg!(feature = "keyring") {
+        refused.push(vec!["--password-stdin", "credentials", "set", "svc/user"]);
+    }
+    for args in refused {
+        let out = mpt_with(dir.path(), "", &args, Some(b"pw\nmore\n"));
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("cannot both come from stdin"),
+            "{args:?}: {}",
+            stderr(&out)
+        );
+    }
+
+    // Anywhere else only the first line is read.
+    std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+    std::fs::create_dir(dir.path().join("out")).unwrap();
+    let out = mpt_with(
+        dir.path(),
+        "",
+        &["--password-stdin", "cp", "a.txt", "out/"],
+        Some(b"pw\nmore\n"),
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+}

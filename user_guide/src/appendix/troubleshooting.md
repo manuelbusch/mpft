@@ -237,7 +237,9 @@ Resuming continues a part file, which `--no-atomic` never creates.
 
 **`the job list and the password cannot both come from stdin`** [2]
 
-`--password-stdin` with `mpt batch -`. Use `--password-file` instead.
+`--password-stdin` with `mpt batch -`; the upload of `mpt relay` and the secret
+of `mpt credentials set` are refused the same way. Use `--password-file`
+instead.
 
 **`unexpected argument '-r' found`** [2]
 

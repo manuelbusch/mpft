@@ -455,6 +455,21 @@ impl Cmd {
         })
     }
 
+    /// What the command reads from standard input itself, if anything:
+    /// `--password-stdin` cannot have it then.
+    fn reads_stdin(&self) -> Option<&'static str> {
+        match self {
+            Cmd::Batch { file, .. } if file.as_os_str() == "-" => Some("job list"),
+            #[cfg(feature = "relay")]
+            Cmd::Relay(a) if a.listen.is_none() => Some("upload"),
+            #[cfg(feature = "keyring")]
+            Cmd::Credentials {
+                action: CredentialCmd::Set { .. },
+            } => Some("secret"),
+            _ => None,
+        }
+    }
+
     fn batch_args(&self) -> Option<&BatchArgs> {
         match self {
             Cmd::Cp { batch, .. } | Cmd::Batch { batch, .. } => Some(batch),
@@ -730,9 +745,10 @@ fn main() -> ExitCode {
 
 async fn start() -> ExitCode {
     let cli = Cli::parse();
-    if cli.password_stdin && matches!(&cli.cmd, Cmd::Batch { file, .. } if file.as_os_str() == "-")
+    if cli.password_stdin
+        && let Some(what) = cli.cmd.reads_stdin()
     {
-        eprintln!("error: the job list and the password cannot both come from stdin");
+        eprintln!("error: the {what} and the password cannot both come from stdin");
         return ExitCode::from(USAGE);
     }
     // The job list is read first: its endpoints decide which credentials
@@ -832,8 +848,10 @@ fn read_password(cli: &Cli) -> anyhow::Result<Option<secrecy::SecretString>> {
         return Ok(Some(first_line(&text).into()));
     }
     if cli.password_stdin {
+        // The first line and no more: what follows is not the password's.
         let mut text = String::new();
-        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+        std::io::stdin()
+            .read_line(&mut text)
             .context("reading the password from stdin")?;
         return Ok(Some(first_line(&text).into()));
     }
