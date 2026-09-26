@@ -1,7 +1,8 @@
 """The routes of `mpt serve` and its event stream.
 
 Everything takes and returns the JSON the server speaks; nothing is
-interpreted here. See the "Server" section of the mpt README for the shapes.
+interpreted here. The shapes are in the API reference of the mpt user guide
+(user_guide/src/reference/api.md).
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from typing import Any
 
 import httpx
 from websockets.asyncio.client import connect
-from websockets.exceptions import ConnectionClosedOK
+from websockets.exceptions import ConnectionClosedOK, InvalidStatus
 
 Json = dict[str, Any]
 
@@ -44,20 +45,32 @@ class ApiError(Exception):
 
     @classmethod
     def from_response(cls, resp: httpx.Response) -> ApiError:
-        kind, message = "error", resp.text.strip() or resp.reason_phrase
+        return cls._parse(resp.status_code, resp.reason_phrase, resp.text, resp.headers)
+
+    @classmethod
+    def from_handshake(cls, err: InvalidStatus) -> ApiError:
+        """A WebSocket upgrade the server answered with an error (401, 403,
+        404) instead of switching protocols."""
+        resp = err.response
+        body = (resp.body or b"").decode(errors="replace")
+        return cls._parse(resp.status_code, resp.reason_phrase, body, resp.headers)
+
+    @classmethod
+    def _parse(cls, status: int, reason: str, text: str, headers: Any) -> ApiError:
+        kind, message = "error", text.strip() or reason
         try:
-            error = resp.json().get("error", {})
+            error = json.loads(text).get("error", {})
             kind = error.get("kind", kind)
             message = error.get("message", message)
-        except ValueError:
+        except (ValueError, AttributeError):
             pass
         retry_after = None
-        if "retry-after" in resp.headers:
+        if headers.get("retry-after") is not None:
             try:
-                retry_after = float(resp.headers["retry-after"])
+                retry_after = float(headers["retry-after"])
             except ValueError:
                 pass
-        return cls(resp.status_code, kind, message, retry_after)
+        return cls(status, kind, message, retry_after)
 
 
 class MptApi:
@@ -107,7 +120,8 @@ class MptApi:
     async def submit(self, src: str, dst: str | list[str], options: Json | None = None) -> Json:
         """One transfer: a source and one or more targets.
 
-        Returns `{"id", "url", "state"}`; the job runs in the background.
+        Returns `{"id", "url", "state", "transfers"}`; the job runs in the
+        background.
         """
         body: Json = {"src": src, "dst": dst}
         if options:
@@ -180,18 +194,25 @@ class MptApi:
     async def events(self, job_id: str | None = None) -> AsyncIterator[Json]:
         """The event stream, one JSON object per frame.
 
-        For one job: its `snapshot` first, then `queued`, `started`,
-        `transfer_started`, `progress`, `transfer_done`, `done`; the server
-        closes the socket after `done` and the iterator ends. Without a
-        job id every job's events come, and the stream stays open.
+        For one job: its `snapshot` first, then `queued`, `preparing`,
+        `started`, `transfer_started`, `progress`, `transfer_done`, `done`;
+        the server closes the socket after `done` and the iterator ends.
+        Without a job id every job's events come, `lagged` among them, and
+        the stream stays open.
 
         The token goes in the `Authorization` header of the upgrade; no
-        `Origin` header is sent, since the server refuses those.
+        `Origin` header is sent, since the server refuses those. A refused
+        upgrade (a wrong token, an unknown job) raises `ApiError`, as the
+        HTTP routes do.
         """
         route = f"/v1/jobs/{job_id}/events" if job_id else "/v1/events"
-        async with connect(self._ws_url(route), additional_headers=self._headers) as ws:
-            try:
-                async for frame in ws:
-                    yield json.loads(frame)
-            except ConnectionClosedOK:
-                return
+        try:
+            async with connect(self._ws_url(route), additional_headers=self._headers) as ws:
+                try:
+                    async for frame in ws:
+                        yield json.loads(frame)
+                except ConnectionClosedOK:
+                    return
+        # Only the handshake raises this: the server answered with a status.
+        except InvalidStatus as e:
+            raise ApiError.from_handshake(e) from None

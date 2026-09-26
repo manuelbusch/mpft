@@ -88,13 +88,16 @@ again. `mpt-client watch --all` prints them one per line (`--json` for the
 raw frames).
 
 **Errors** come as `{"error": {"kind", "message"}}`; `ApiError` carries
-the status, the kind and, for a `429`, the server's `Retry-After`. A
+the status, the kind and, for a `429`, the server's `Retry-After`. A refused
+WebSocket upgrade raises it too, and the command line exits with 3 for
+either. A
 `400 too_many_transfers` means the list was longer than the server's
 `max_transfers`; the same kind on a *failed* job means a pattern or a tree
 turned out that large.
 
 **Relay.** `mpt relay` is the other way in: one upload over SSH that the
-relay fans out itself (see "Relay" in the main README). It is not an HTTP
+relay fans out itself (see [the relay page of the user
+guide](../../user_guide/src/server/relay.md)). It is not an HTTP
 route — a client for it opens an SSH session, runs `mpt relay`, writes one
 JSON header line and the bytes, and reads JSON lines back; `asyncssh`
 would do, and `mpt cp --via` already does.
