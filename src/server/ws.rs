@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::response::Response;
@@ -29,11 +30,18 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// Nothing a client sends is read, so nothing big needs buffering.
 const CLIENT_MESSAGE_LIMIT: usize = 4096;
 
+/// A request on an event route that is not a WebSocket upgrade, as an
+/// error in the API's shape rather than axum's plain text.
+fn not_an_upgrade(e: WebSocketUpgradeRejection) -> Reject {
+    Reject::new(e.status(), "invalid_upgrade", e.body_text())
+}
+
 pub(super) async fn job_events(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    ws: WebSocketUpgrade,
+    ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Result<Response, Reject> {
+    let ws = ws.map_err(not_an_upgrade)?;
     let id = JobId::parse(&id)
         .filter(|id| state.store.snapshot(id, false).is_some())
         .ok_or_else(|| {
@@ -50,10 +58,12 @@ pub(super) async fn job_events(
 
 pub(super) async fn all_events(
     State(state): State<Arc<AppState>>,
-    ws: WebSocketUpgrade,
-) -> Response {
-    ws.max_message_size(CLIENT_MESSAGE_LIMIT)
-        .on_upgrade(move |socket| watch(state, socket, None))
+    ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
+) -> Result<Response, Reject> {
+    Ok(ws
+        .map_err(not_an_upgrade)?
+        .max_message_size(CLIENT_MESSAGE_LIMIT)
+        .on_upgrade(move |socket| watch(state, socket, None)))
 }
 
 /// Counts the client for the ticker while it is connected.

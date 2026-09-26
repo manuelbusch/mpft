@@ -1,12 +1,16 @@
 //! The HTTP side: routes, the bearer check, and errors as JSON.
 //!
-//! Every error is `{"error": {"kind": …, "message": …}}` with a status
-//! that says whose fault it is: 400 for a request the server cannot act
-//! on, 401 without the token, 404 for a job it does not know, 409 for a
-//! job that would write what another writes (a job with a pattern or a
-//! tree is checked once it is expanded, after the 202), 413 for a body over the
-//! limit, 415 for a body in a form it does not read, 503 while it shuts
-//! down.
+//! Every error is `{"error": {"kind": …, "message": …}}`, also where axum
+//! would answer on its own (no such route, a method a route does not
+//! take, a failed WebSocket upgrade), with a status that says whose fault
+//! it is: 400 for a request the server cannot act on, 401 without the
+//! token, 403 for a request from a page or (without a token) for another
+//! host, 404 for a job it does not know, 405 for a method a route does
+//! not take, 409 for a job that would write what another writes (a job
+//! with a pattern or a tree is checked once it is expanded, after the
+//! 202), 413 for a body over the limit, 415 for a body in a form it does
+//! not read, 429 while too many jobs are open, 500 when the journal cannot
+//! be written, 503 while it shuts down.
 
 use std::sync::Arc;
 
@@ -46,6 +50,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/healthz", get(healthz))
         .merge(guarded)
         .fallback(not_found)
+        .method_not_allowed_fallback(method_not_allowed)
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state),
             loopback_host,
@@ -229,6 +234,14 @@ async fn not_found() -> Reject {
     Reject::not_found("no such route")
 }
 
+async fn method_not_allowed(req: Request) -> Reject {
+    Reject::new(
+        StatusCode::METHOD_NOT_ALLOWED,
+        "method_not_allowed",
+        format!("{} is not a method of {}", req.method(), req.uri().path()),
+    )
+}
+
 /// Alive or not, for a probe; what else is going on only with the token.
 async fn healthz(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let bearer = bearer(&state, &headers);
@@ -285,8 +298,23 @@ fn content_type(headers: &HeaderMap) -> Option<String> {
     })
 }
 
+/// A request body. A body that is JSON but whose `options` are not (an
+/// option the server does not know, a value of the wrong type) is told
+/// as `invalid_option`, as the same mistake in a query string is.
 fn parse_json<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Reject> {
     serde_json::from_slice(bytes).map_err(|e| {
+        let options = serde_json::from_slice::<serde_json::Value>(bytes)
+            .ok()
+            .and_then(|v| v.get("options").cloned());
+        if let Some(options) = options
+            && let Err(e) = serde_json::from_value::<JobOptions>(options)
+        {
+            return Reject::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_option",
+                format!("options: {e}"),
+            );
+        }
         Reject::new(
             StatusCode::BAD_REQUEST,
             "invalid_body",
@@ -888,6 +916,47 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         let (status, _) = call(&app, Method::GET, "/v1/jobs?state=odd", t, None, "").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+        // An unknown option is the same kind in a body and in a query.
+        let (status, body) = call(
+            &app,
+            Method::POST,
+            "/v1/jobs",
+            t,
+            None,
+            r#"{"src": "/tmp/a", "dst": "/tmp/b/", "options": {"speed": 2}}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["kind"], "invalid_option", "{body}");
+        let (status, body) = call(
+            &app,
+            Method::POST,
+            "/v1/batches?speed=2",
+            t,
+            Some("text/plain"),
+            "/tmp/a /tmp/b/\n",
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["kind"], "invalid_option", "{body}");
+        // A field the request does not have is a bad body.
+        let (_, body) = call(
+            &app,
+            Method::POST,
+            "/v1/jobs",
+            t,
+            None,
+            r#"{"srcs": "/tmp/a"}"#,
+        )
+        .await;
+        assert_eq!(body["error"]["kind"], "invalid_body", "{body}");
+        // What axum would answer itself comes in the same shape.
+        let (status, body) = call(&app, Method::PUT, "/v1/jobs", t, None, "").await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(body["error"]["kind"], "method_not_allowed", "{body}");
+        let (status, body) = call(&app, Method::GET, "/v1/events", t, None, "").await;
+        assert!(status.is_client_error(), "{status}");
+        assert_eq!(body["error"]["kind"], "invalid_upgrade", "{body}");
         let (status, _) = call(&app, Method::GET, "/v1/jobs/notanid", t, None, "").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         let (status, _) = call(

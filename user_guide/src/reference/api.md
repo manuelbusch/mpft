@@ -113,17 +113,21 @@ stable part.
 
 | Status | `kind` | When |
 |---|---|---|
-| 400 | `invalid_body` | the JSON could not be read, or names an unknown option |
-| 400 | `invalid_url` | a URL is malformed, is not an allowed profile, or adds `?options` to one |
-| 400 | `invalid_option` | an option value that cannot work with the server's own settings: `retries` without a memory cache, `resume` where transfers are not atomic, `delete_source` on a server without `allow_delete` |
+| 400 | `invalid_body` | the body could not be read: not JSON (or not UTF-8), a field the request does not have, a batch without jobs |
+| 400 | `invalid_url` | a URL is malformed, is not an allowed profile, or adds `?options` to one; a line of a job list that does not parse |
+| 400 | `invalid_option` | an option the server does not know, in the body's `options` or in the query string; a value of the wrong type; or one that cannot work with the server's own settings: `retries` without a memory cache, `resume` where transfers are not atomic, `delete_source` on a server without `allow_delete` |
+| 400 | `config` | a profile the job names is misconfigured; the message names the profile, the server's log says what is wrong |
 | 400 | `too_many_transfers` | the list is longer than `[server] max_transfers` |
+| 400, 426 | `invalid_upgrade` | a request on an event route that is not a WebSocket upgrade |
 | 401 | `unauthorized` | no token, or the wrong one; a wrong one is [answered late](../server/serve.md#securing-the-listener) |
 | 403 | `forbidden` | the request carries an `Origin` header, or, on a server without a token, a `Host` that is not a loopback name or address |
-| 404 | `not_found` | no such job or transfer |
+| 404 | `not_found` | no such job, transfer or route |
+| 405 | `method_not_allowed` | the route does not take that method |
 | 409 | `conflict` | two transfers of the job write the same target, or one writes a target a running job is writing. A pattern or a `recursive` job is checked only once it is expanded, and such a conflict fails it in `preparing` with the same kind |
 | 413 | `too_large` | the body exceeds `[server] max_body` |
 | 415 | `unsupported_media_type` | a body type the route does not take |
 | 429 | `too_many_jobs` | `[server] max_queued` jobs are open; the `Retry-After` header says when to try again |
+| 500 | the failure's own, often `io` | the job could not be written to the journal; it was not taken |
 | 503 | `shutting_down` | the server is draining and takes no new jobs |
 
 A job that fails after it was accepted carries the same shape in its `error`
