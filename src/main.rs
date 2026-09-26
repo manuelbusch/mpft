@@ -1108,15 +1108,27 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
     match &cli.cmd {
         Cmd::Cp { batch, .. } | Cmd::Batch { batch, .. } => match work {
             Work::Single { src, dsts } => {
-                let targets = dsts
+                let opened = dsts
                     .iter()
                     .map(|d| open(d))
-                    .collect::<anyhow::Result<Vec<_>>>()?;
-                let src = open(&src)?;
+                    .collect::<anyhow::Result<Vec<_>>>()
+                    .and_then(|targets| Ok((open(&src)?, targets)));
+                let (source, targets) = match opened {
+                    Ok(o) => o,
+                    Err(e) => {
+                        if settings.json {
+                            let shown = locate(&src)
+                                .map(|l| l.to_string())
+                                .unwrap_or_else(|_| mpt::location::mask_url(&src));
+                            print_json_failure(&shown, &e);
+                        }
+                        return Err(e);
+                    }
+                };
                 // The bar watches the counters the copy fills in; it draws
                 // only while the copy runs and wipes its line when it is done.
                 let bar = opts.progress.clone().map(spawn_progress);
-                let outcome = do_copy(src, targets, &opts, settings.json).await;
+                let outcome = do_copy(source, targets, &opts, settings.json).await;
                 clear_progress(bar);
                 outcome
             }
@@ -1371,9 +1383,16 @@ async fn do_copy(
     json: bool,
 ) -> anyhow::Result<()> {
     let refs: Vec<&dyn mpt::Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
-    let report = mpt::copy_many(src.as_ref(), &refs, opts)
-        .await
-        .with_context(|| format!("copy {}", src.location()))?;
+    let report = match mpt::copy_many(src.as_ref(), &refs, opts).await {
+        Ok(report) => report,
+        Err(e) => {
+            let e = anyhow::Error::new(e).context(format!("copy {}", src.location()));
+            if json {
+                print_json_failure(&src.location().to_string(), &e);
+            }
+            return Err(e);
+        }
+    };
     if json {
         println!(
             "{}",
@@ -1384,6 +1403,21 @@ async fn do_copy(
         None => Ok(()),
         Some((INTERRUPTED, msg)) => Err(anyhow::Error::new(Interrupted).context(msg)),
         Some((code, msg)) => Err(anyhow::Error::new(ExitWith { code, msg })),
+    }
+}
+
+/// A copy that failed before there was a report, as JSON: what a batch
+/// prints for such a job, without the job number.
+fn print_json_failure(source: &str, err: &anyhow::Error) {
+    let lib = err.chain().find_map(|c| c.downcast_ref::<mpt::Error>());
+    let line = serde_json::json!({
+        "source": source,
+        "ok": false,
+        "error": lib.map(|e| e.to_string()).unwrap_or_else(|| format!("{err:#}")),
+        "cancelled": matches!(lib, Some(mpt::Error::Cancelled)),
+    });
+    if let Ok(text) = serde_json::to_string_pretty(&line) {
+        println!("{text}");
     }
 }
 

@@ -120,7 +120,10 @@ $ mpt --json cp --check out/report.pdf back/ 2>/dev/null
 
 `ok` is the field to branch on. It is not simply "no error": a copy whose
 targets all succeeded but whose checksum did not match is `false`, and so is
-one whose source `--delete-source` could not delete.
+one whose source `--delete-source` could not delete. A copy that failed before
+anything was transferred — the source could not be opened, say — prints a
+shorter object, `source`, `ok`, `error` and `cancelled`, as a batch does for
+such a job.
 
 `mpt --json ls <url>` prints the listing as an array, with `modified` in RFC
 3339:

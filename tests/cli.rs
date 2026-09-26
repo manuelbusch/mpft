@@ -297,3 +297,21 @@ fn config_check_lists_profiles_and_hides_secrets() {
     assert!(stdout(&out).contains("[profiles]"), "{}", stdout(&out));
     assert!(!stdout(&out).contains("nothing set"), "{}", stdout(&out));
 }
+
+/// `cp --json` prints an object even when the copy fails before there is a
+/// report, as a batch does for such a job; it once printed nothing.
+#[test]
+fn a_copy_that_fails_early_still_prints_json() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("out")).unwrap();
+    let out = mpt(dir.path(), &["--json", "cp", "nosuch.txt", "out/"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["source"], "nosuch.txt");
+    assert_eq!(report["cancelled"], false);
+    assert!(
+        report["error"].as_str().unwrap().contains("No such file"),
+        "{report}"
+    );
+}
