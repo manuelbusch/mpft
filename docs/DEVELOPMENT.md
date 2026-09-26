@@ -79,9 +79,30 @@ switches its suite on, and an unset one skips it with a message:
 | `MPT_IT_HTTP`, `MPT_IT_WEBDAV` | a static HTTP server and WsgiDAV | HTTP and WebDAV round trips |
 | `MPT_IT_S3` | moto | S3 round trips including a multipart upload |
 | `MPT_IT_MAILTO`, `MPT_SMTP_URL`, `MPT_IT_MAILDIR` | aiosmtpd writing to a maildir | mail delivery, checked by reading the maildir |
-| `MPT_IT_SFTP`, `MPT_IT_SCP`, `MPT_IT_SSH_HOSTKEY` | the user's `sshd` on port 2222 with a generated client key | SFTP and SCP round trips, host-key pinning, agent forwarding through a relay |
+| `MPT_IT_SFTP`, `MPT_IT_SCP`, `MPT_IT_SSH_HOSTKEY` | the user's `sshd` with a generated client key | SFTP and SCP round trips, host-key pinning, agent forwarding through a relay |
 | `MPT_IT_SFTP_CERT`, `MPT_IT_SSH_AGENT` | the same `sshd` trusting a CA, and an `ssh-agent` holding the certificate key | certificate authentication from a file and from an agent, also through a relay |
 | `MPT_IT_LOG` | — | `debug` shows the client's tracing while the tests run |
+
+Running the script again starts only what is not running; `pids` in the
+work dir keeps every server it started, and `agent.pid` the `ssh-agent`, so
+`stop_servers.sh` stops all of them. It removes the agent's socket only once
+the agent is gone.
+
+The ports are the defaults in the table's order: 2121 and 2122 (FTP, FTPS),
+8082 (HTTP), 8081 (WebDAV), 9000 (S3), 8025 (SMTP) and 2222 (SSH). A second
+set beside the first — when the defaults are taken by another checkout, say —
+needs a work dir of its own and other ports, given as `MPT_IT_PORT_FTP`,
+`MPT_IT_PORT_FTPS`, `MPT_IT_PORT_HTTP`, `MPT_IT_PORT_WEBDAV`,
+`MPT_IT_PORT_S3`, `MPT_IT_PORT_SMTP` and `MPT_IT_PORT_SSH`; the `env.sh` it
+writes points at them:
+
+```
+export MPT_IT_PORT_FTP=2131 MPT_IT_PORT_FTPS=2132 MPT_IT_PORT_HTTP=8092 \
+       MPT_IT_PORT_WEBDAV=8091 MPT_IT_PORT_S3=9010 MPT_IT_PORT_SMTP=8035 MPT_IT_PORT_SSH=2232
+bash tests/local/start_servers.sh .venv /tmp/mpt-it2
+source /tmp/mpt-it2/env.sh && cargo test --test integration
+bash tests/local/stop_servers.sh /tmp/mpt-it2
+```
 
 Implicit FTPS (`tls=implicit`) is implemented but not covered by these
 servers.

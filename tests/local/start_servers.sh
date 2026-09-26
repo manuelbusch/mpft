@@ -5,7 +5,15 @@
 # Usage: bash tests/local/start_servers.sh <venv-dir> <work-dir>
 #        source <work-dir>/env.sh && cargo test --test integration
 # Stop:  bash tests/local/stop_servers.sh <work-dir>
+# The ports can be moved, to run a second set beside the first with a work
+# dir of its own: MPT_IT_PORT_FTP (2121), MPT_IT_PORT_FTPS (2122),
+# MPT_IT_PORT_SMTP (8025), MPT_IT_PORT_S3 (9000), MPT_IT_PORT_WEBDAV (8081),
+# MPT_IT_PORT_HTTP (8082), MPT_IT_PORT_SSH (2222).
 set -u
+FTP_PORT=${MPT_IT_PORT_FTP:-2121}; FTPS_PORT=${MPT_IT_PORT_FTPS:-2122}
+SMTP_PORT=${MPT_IT_PORT_SMTP:-8025}; S3_PORT=${MPT_IT_PORT_S3:-9000}
+WEBDAV_PORT=${MPT_IT_PORT_WEBDAV:-8081}; HTTP_PORT=${MPT_IT_PORT_HTTP:-8082}
+SSH_PORT=${MPT_IT_PORT_SSH:-2222}
 VENV=$(cd "${1:?venv dir}" && pwd); mkdir -p "${2:?work dir}"; WORK=$(cd "$2" && pwd); PY=$VENV/bin/python
 HERE=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$WORK"/{ftp,http,webdav,mail/tmp,mail/new,mail/cur,ssh,logs}
@@ -17,20 +25,27 @@ if [ ! -f cert.pem ]; then
   cat key.pem cert.pem > ftp_cert.pem
 fi
 
+# `pids` keeps what an earlier run started and is still running: a server
+# that is skipped below as "already in use" may be one of those, and
+# stop_servers.sh has to find it.
+touch pids
+for p in $(cat pids); do kill -0 "$p" 2>/dev/null && echo "$p"; done > pids.alive
+mv pids.alive pids
+
 start() { # name, port, command...
   local name=$1 port=$2; shift 2
   if nc -z -w1 127.0.0.1 "$port" 2>/dev/null; then echo "$name: port $port already in use, skipping"; return; fi
   nohup "$@" > "logs/$name.log" 2>&1 &
   echo $! >> pids
 }
-: > pids
-start ftp    2121 $PY "$HERE/ftp_server.py" 2121 2122 "$WORK/ftp" "$WORK/ftp_cert.pem"
-start smtp   8025 $PY -m aiosmtpd -n -c aiosmtpd.handlers.Mailbox "$WORK/mail" -l 127.0.0.1:8025
-start s3     9000 $VENV/bin/moto_server -p 9000
-start webdav 8081 $VENV/bin/wsgidav --host=127.0.0.1 --port=8081 --root="$WORK/webdav" --auth=anonymous
-start http   8082 $PY "$HERE/http_put_server.py" 8082 "$WORK/http"
+start ftp    $FTP_PORT $PY "$HERE/ftp_server.py" $FTP_PORT $FTPS_PORT "$WORK/ftp" "$WORK/ftp_cert.pem"
+start smtp   $SMTP_PORT $PY -m aiosmtpd -n -c aiosmtpd.handlers.Mailbox "$WORK/mail" -l 127.0.0.1:$SMTP_PORT
+start s3     $S3_PORT $VENV/bin/moto_server -p $S3_PORT
+start webdav $WEBDAV_PORT $VENV/bin/wsgidav --host=127.0.0.1 --port=$WEBDAV_PORT --root="$WORK/webdav" --auth=anonymous
+start http   $HTTP_PORT $PY "$HERE/http_put_server.py" $HTTP_PORT "$WORK/http"
 
-# user-level sshd on port 2222 (key auth with a throwaway key)
+# user-level sshd (key auth with a throwaway key); the port is given on its
+# command line, which overrides the one in the file
 if [ ! -f ssh/host_key ]; then
   ssh-keygen -q -t ed25519 -N "" -f ssh/host_key
   ssh-keygen -q -t ed25519 -N "" -f ssh/client_key
@@ -56,47 +71,49 @@ StrictModes no
 UsePAM no
 CFG
 fi
-start sshd 2222 /usr/sbin/sshd -f "$WORK/ssh/sshd_config" -D -e
+start sshd $SSH_PORT /usr/sbin/sshd -f "$WORK/ssh/sshd_config" -p $SSH_PORT -D -e
 
 # An ssh-agent of its own holding cert_key and its certificate, for the tests
 # that authenticate through an agent rather than from a key file. The socket
-# lives under /tmp: a Unix socket path has to stay short.
+# lives under /tmp: a Unix socket path has to stay short. An agent from an
+# earlier run is used again; its process id stays in agent.pid, so that
+# stop_servers.sh can stop it.
 AGENT_SOCK=$(cat agent.sock.path 2>/dev/null)
 if [ -z "$AGENT_SOCK" ] || [ ! -S "$AGENT_SOCK" ]; then
   AGENT_SOCK=$(mktemp -d /tmp/mpt-agent.XXXXXX)/sock
   echo "$AGENT_SOCK" > agent.sock.path
   nohup ssh-agent -D -a "$AGENT_SOCK" > logs/ssh-agent.log 2>&1 &
-  echo $! >> pids
+  echo $! > agent.pid
   for _ in $(seq 1 50); do [ -S "$AGENT_SOCK" ] && break; sleep 0.1; done
   SSH_AUTH_SOCK=$AGENT_SOCK ssh-add -q ssh/cert_key 2>/dev/null
 fi
 
 sleep 2
 # create the S3 bucket
-curl -s -X PUT http://127.0.0.1:9000/testbucket > /dev/null
+curl -s -X PUT http://127.0.0.1:$S3_PORT/testbucket > /dev/null
 
 mkdir -p ssh/data ssh/scp
 cat > env.sh <<ENV
 export AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_REGION=us-east-1
 # connect_retries: pyftpdlib duplicates its greeting on ~1.5 % of concurrent
 # connects (see ftp_server.py), which desynchronizes that one control channel.
-export MPT_IT_FTP="ftp://ftpuser:ftppass@127.0.0.1:2121/?connect_retries=1"
-export MPT_IT_FTPS="ftps://ftpuser:ftppass@127.0.0.1:2122/?insecure=true&connect_retries=1"
-export MPT_IT_HTTP="http://127.0.0.1:8082/"
-export MPT_IT_WEBDAV="webdav://127.0.0.1:8081/"
-export MPT_IT_S3="s3://testbucket/it/?endpoint=http://127.0.0.1:9000"
+export MPT_IT_FTP="ftp://ftpuser:ftppass@127.0.0.1:$FTP_PORT/?connect_retries=1"
+export MPT_IT_FTPS="ftps://ftpuser:ftppass@127.0.0.1:$FTPS_PORT/?insecure=true&connect_retries=1"
+export MPT_IT_HTTP="http://127.0.0.1:$HTTP_PORT/"
+export MPT_IT_WEBDAV="webdav://127.0.0.1:$WEBDAV_PORT/"
+export MPT_IT_S3="s3://testbucket/it/?endpoint=http://127.0.0.1:$S3_PORT"
 export MPT_IT_MAILTO="mailto:dest@example.com?from=sender@example.com"
-export MPT_SMTP_URL="smtp://127.0.0.1:8025/?tls=none"
+export MPT_SMTP_URL="smtp://127.0.0.1:$SMTP_PORT/?tls=none"
 export MPT_IT_MAILDIR="$WORK/mail"
 # connect_retries: under a burst of parallel tests the user-level sshd
 # occasionally resets a connection before authentication; one retry absorbs it.
-export MPT_IT_SFTP="sftp://$USER@127.0.0.1:2222/$WORK/ssh/data/?key=$WORK/ssh/client_key&known_hosts=off&connect_retries=1"
+export MPT_IT_SFTP="sftp://$USER@127.0.0.1:$SSH_PORT/$WORK/ssh/data/?key=$WORK/ssh/client_key&known_hosts=off&connect_retries=1"
 # A directory of its own: sftp and scp targets in one fan-out would otherwise
 # write the same file (including the same .mpt-part) at the same time.
-export MPT_IT_SCP="scp://$USER@127.0.0.1:2222/$WORK/ssh/scp/?key=$WORK/ssh/client_key&known_hosts=off&connect_retries=1"
+export MPT_IT_SCP="scp://$USER@127.0.0.1:$SSH_PORT/$WORK/ssh/scp/?key=$WORK/ssh/client_key&known_hosts=off&connect_retries=1"
 # Certificate authentication: cert_key is not in authorized_keys, so this URL
 # only works if the certificate is presented.
-export MPT_IT_SFTP_CERT="sftp://$USER@127.0.0.1:2222/$WORK/ssh/data/?key=$WORK/ssh/cert_key&cert=$WORK/ssh/cert_key-cert.pub&known_hosts=off"
+export MPT_IT_SFTP_CERT="sftp://$USER@127.0.0.1:$SSH_PORT/$WORK/ssh/data/?key=$WORK/ssh/cert_key&cert=$WORK/ssh/cert_key-cert.pub&known_hosts=off"
 # An agent that holds cert_key together with its certificate.
 export MPT_IT_SSH_AGENT="$AGENT_SOCK"
 export MPT_IT_SSH_HOSTKEY="$(ssh-keygen -lf "$WORK/ssh/host_key.pub" | cut -d' ' -f2)"
