@@ -23,7 +23,7 @@ pub enum Format {
     /// `{"src": "…", "dst": "…"}` or `"dst": ["…", "…"]` per line.
     Jsonl,
     /// Header row with a `src` column and one or more `dst` columns;
-    /// comma- or tab-separated.
+    /// comma- or tab-separated. No comments: every row is a job.
     Csv,
 }
 
@@ -193,7 +193,8 @@ fn parse_csv(text: &str) -> Result<Vec<JobSpec>> {
         .delimiter(delimiter)
         .flexible(true)
         .trim(csv::Trim::All)
-        .comment(Some(b'#'))
+        // No comments: `#` is an ordinary first character of a cell (a
+        // source `#archive/x`), and a spreadsheet has no comment rows.
         .from_reader(text.as_bytes());
     let headers = reader
         .headers()
@@ -317,6 +318,18 @@ mod tests {
             vec![
                 spec("/tmp/a", &["sftp://h/in/", "s3://b/"]),
                 spec("/tmp/b, with comma", &["ftp://f/"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_csv_row_starting_with_a_hash_is_a_job() {
+        let text = "src,dst\n#archive/x,sftp://h/in/\n/tmp/a,sftp://h/in/\n";
+        assert_eq!(
+            parse(text, Format::Csv).unwrap(),
+            vec![
+                spec("#archive/x", &["sftp://h/in/"]),
+                spec("/tmp/a", &["sftp://h/in/"]),
             ]
         );
     }

@@ -53,7 +53,8 @@ id,src,dst,dst,note
 
 Columns that are not `src` or `dst` are ignored, so a query result can be used
 as it comes out. Empty `dst` cells are ignored too, so rows may have different
-numbers of targets.
+numbers of targets. Only the line form has comments: in CSV, a row whose first
+cell starts with `#` is a job like any other, and blank rows are skipped.
 
 The format is taken from the file name (`.jsonl`, `.csv`, `.tsv`) or guessed
 from the first line: a `{` means JSON, a header naming `src` means CSV,
