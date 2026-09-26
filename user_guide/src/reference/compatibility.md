@@ -22,7 +22,7 @@ its [first page](../introduction.md).
 | **URL options** | the options each protocol page lists; an unknown option is ignored, as it is today |
 | **environment variables** | the names on [Environment variables](environment.md) |
 | **the HTTP API** | every route under `/v1/`, the job and transfer objects, the WebSocket events and the error kinds; a change that breaks a client would come under `/v2/` |
-| **the relay protocol** | version 1 and version 2 as [Relay protocol](relay-protocol.md) describes them; a relay keeps accepting both; a header without `v` means the newest version the relay speaks |
+| **the relay protocol** | versions 1, 2 and 3 as [Relay protocol](relay-protocol.md) describes them; a relay keeps accepting all of them; a header without `v` means the newest version the relay speaks |
 | **checksum and signature files** | `<name>.sha256`, `.sha512`, `.b3`, `.sig`, `.asc` in the formats `sha256sum`, `b3sum`, `ssh-keygen -Y` and `gpg` read |
 | **the library** | the crate follows Cargo's semantic versioning; the CLI's exit codes are `Error::exit_code()` and the API's kinds `Error::kind()` |
 

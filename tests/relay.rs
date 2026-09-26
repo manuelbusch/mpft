@@ -1209,3 +1209,38 @@ fn the_agent_goes_on_to_a_second_relay_only_when_asked() {
         r2.log()
     );
 }
+
+/// The relay lists a directory only it can see — relative to its own
+/// working directory — for the library's client, and a directory that is
+/// not there comes back as a missing file.
+#[tokio::test]
+async fn the_relay_lists_a_directory_for_the_client() {
+    let relay = Relay::start(&[]);
+    std::fs::create_dir_all(relay.path("in/sub")).unwrap();
+    std::fs::write(relay.path("in/a.csv"), b"abc").unwrap();
+    assert!(!Path::new("in/a.csv").exists());
+    let via = mpt::relay::via::Via::new(
+        Default::default(),
+        &mpt::CopyOptions::default(),
+        &mpt::relay::via::ViaSettings {
+            timeout: 20,
+            ..Default::default()
+        },
+    );
+    let at = mpt::Location::parse(&relay.via("client")).unwrap();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let dir = mpt::Location::parse("in/").unwrap();
+    let mut entries = via.list(&at, &dir, &cancel).await.unwrap();
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    let seen: Vec<(&str, Option<u64>, bool)> = entries
+        .iter()
+        .map(|e| (e.name.as_str(), e.size, e.is_dir))
+        .collect();
+    assert_eq!(seen[0], ("a.csv", Some(3), false));
+    assert_eq!((seen[1].0, seen[1].2), ("sub", true));
+    assert!(relay.log().contains("relay listing"), "{}", relay.log());
+
+    let missing = mpt::Location::parse("nope/").unwrap();
+    let err = via.list(&at, &missing, &cancel).await.unwrap_err();
+    assert!(err.is_not_found(), "{err}");
+}

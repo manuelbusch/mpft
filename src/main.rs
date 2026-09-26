@@ -1191,17 +1191,8 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                 .await
                 .with_context(|| format!("listing {}", ep.location()))?;
             if settings.json {
-                let rows: Vec<serde_json::Value> = entries
-                    .iter()
-                    .map(|e| {
-                        serde_json::json!({
-                            "name": e.name,
-                            "size": e.size,
-                            "is_dir": e.is_dir,
-                            "modified": e.modified.map(mpt::sign::format_time),
-                        })
-                    })
-                    .collect();
+                let rows: Vec<serde_json::Value> =
+                    entries.iter().map(mpt::report::entry_json).collect();
                 println!("{}", serde_json::to_string_pretty(&rows)?);
                 return Ok(());
             }

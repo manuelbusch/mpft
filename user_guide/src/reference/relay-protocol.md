@@ -1,7 +1,8 @@
 # Relay protocol
 
 What passes over the SSH channel between `cp --via` and `mpt relay`, or over
-the standard input and output of `mpt relay` run directly.
+the standard input and output of `mpt relay` run directly. A session is a copy
+or, from version 3 on, the [listing of a directory](#listing-a-directory).
 
 ## The header
 
@@ -17,15 +18,19 @@ start; a relay that has no complete line by then refuses the session:
 
 | Field | Meaning |
 |---|---|
-| `v` | protocol version, `1` or `2`; **`2` when the field is absent** |
-| `src` | a URL the relay opens and reads itself, instead of a payload (v2) |
+| `v` | protocol version, `1`, `2` or `3`; **`3` when the field is absent** |
+| `op` | `"copy"` (the default) or `"list"` (v3) |
+| `src` | a URL the relay opens and reads itself, instead of a payload (v2); the directory of a listing |
 | `name` | the file name the targets receive; required when there is no `src` |
 | `size` | how many payload bytes follow; required when there is no `src` |
-| `dst` | the targets: a URL string, or `{"url": …, "via": …}` for one the relay hands on to a second relay (v2); `dsts` is accepted as another name for it |
+| `dst` | the targets of a copy: a URL string, or `{"url": …, "via": …}` for one the relay hands on to a second relay (v2); `dsts` is accepted as another name for it |
 | `credentials` | `"header"` (the default) or `"on-demand"` (v2) |
 | `agent` | `true` when the client forwards an ssh-agent for the SSH endpoints (v2) |
 | `agent_onward` | `true` lets the relay forward that agent on to the relays of chained targets; otherwise it only logs in to them with it (v2) |
 | `options` | the [job options](api.md#job-options) the relay honours; may be omitted |
+
+A client sends `"v": 2` for a copy, which needs nothing of version 3, so a
+relay of an older release still takes it, and `"v": 3` for a listing.
 
 Everything is checked before a byte of the payload is read: the version, that
 there is either a `src` or a `name` with a `size`, that `dst` is not empty,
@@ -81,6 +86,8 @@ The relay writes JSON lines to its standard output, each at most 1 MiB; `cp
 {"progress": {"read": 12345, "total": 40000}}   four times a second while bytes move
 {"credit": 1048576}                              this many more payload bytes may be sent (v2)
 {"need": "password", "id": 7, "dst": 0, "target": "ftp://upload@dc2.example/in/", "user": "upload", "attempt": 1}
+{"entry": {"name": "a.csv", "size": 3, "is_dir": false, "modified": "2026-09-01T10:00:00Z"}}   one entry of a listing (v3)
+{"listed": {"entries": 12}}                      the end of a listing (v3)
 {"report": { … }}                                the object --json prints, at the end
 {"error": {"kind": "…", "message": "…"}}         instead of a report, when the relay refused or could not read
 ```
@@ -116,3 +123,26 @@ client, since its header names nothing else. The relay logs in to the
 second relay with a forwarded agent, and forwards the agent on only when the
 header says `agent_onward`. See [A target behind another
 relay](../server/relay-topologies.md#a-target-behind-another-relay).
+
+## Listing a directory
+
+A header with `"op": "list"` and `"v": 3` asks the relay to list the
+directory `src` names:
+
+```json
+{"v": 3, "op": "list", "src": "sftp://deploy@srv.example.com/in/", "options": {"timeout": 30}}
+```
+
+The relay opens `src` by the rules of a copy's source: its own profiles, the
+credential mode, `need` lines for `"src": true`, the forwarded agent. A
+listing has no `dst`, no `name` or `size`, no `agent_onward`, and no option but
+`timeout`; any of them refuses the header. The client sends no payload
+frames, only control frames with answers, and keeps its input open until the
+relay is done: its end cancels the listing.
+
+The relay answers with an `entry` line for each entry, in the shape of `ls
+--json`, and a `listed` line with their number; it exits with 0. A listing
+that fails ends with an `error` line instead, and the exit code of the
+failure. A relay of an older release refuses the header (`op` is a field it
+does not know, or `3` a version it does not speak), which the client reports
+as a relay too old for listing.

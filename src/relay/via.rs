@@ -12,10 +12,10 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use super::plan::{self, Part, PartOutcome, ViaTable};
-use super::{Credentials, Dst, Header, VERSION, agent, broker, client};
+use super::{COPY_VERSION, Credentials, Dst, Header, agent, broker, client};
 use crate::options::JobOptions;
 use crate::transfer::{CacheMode, CopyOptions, FanoutReport};
-use crate::{Error, Job, Location, Result, Scheme};
+use crate::{Entry, Error, Job, Location, Result, Scheme};
 
 /// How the relays are used: the settings of `cp --via` and of
 /// `[defaults]` that are not options of the copy itself.
@@ -151,6 +151,75 @@ impl Via {
             )),
             _ => Ok(()),
         }
+    }
+
+    /// The relay that reads `loc` as a source: the one its profile names,
+    /// if any.
+    pub fn source_relay(&self, loc: &Location) -> Option<&Location> {
+        self.table.for_source(loc)
+    }
+
+    /// List the directory `dir` through `relay`, which opens it itself —
+    /// with the credentials and the agent a copy would have given it.
+    pub async fn list(
+        &self,
+        relay: &Location,
+        dir: &Location,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Vec<Entry>> {
+        let responder = self.responder(std::slice::from_ref(dir));
+        let header = Header {
+            credentials: self.credentials,
+            agent: responder.is_some(),
+            options: JobOptions {
+                timeout: self.options.timeout,
+                ..Default::default()
+            },
+            ..Header::list(self.header_url(dir)?)
+        };
+        let session = client::Session {
+            via: relay,
+            header: &header,
+            body: None,
+            cancel,
+            answer: Arc::new(broker::JobAnswerer {
+                src: Some(dir.clone()),
+                dsts: Vec::new(),
+                vias: Vec::new(),
+            }),
+            agent: responder.map(|r| Arc::new(r) as Arc<dyn crate::broker::AgentSource>),
+        };
+        let mut entries = Vec::new();
+        let mut bad = None;
+        let mut listed = false;
+        let outcome = client::send(session, |line| {
+            if let Some(entry) = line.get("entry") {
+                match crate::report::entry_from_json(entry) {
+                    Ok(e) => entries.push(e),
+                    Err(e) => {
+                        bad.get_or_insert(e);
+                    }
+                }
+            }
+            listed |= line.get("listed").is_some();
+        })
+        .await?;
+        for line in outcome.stderr.lines().filter(|l| !l.trim().is_empty()) {
+            tracing::debug!("relay: {line}");
+        }
+        if let Some(err) = &outcome.error {
+            return Err(too_old(relay, err).unwrap_or_else(|| crate::report::error_from_json(err)));
+        }
+        if let Some(e) = bad {
+            return Err(e);
+        }
+        if !listed {
+            return Err(Error::Remote(format!(
+                "the relay ended with exit {} and no listing",
+                outcome.exit
+            )));
+        }
+        Ok(entries)
     }
 
     /// One job, its parts side by side: the targets without a relay from
@@ -301,7 +370,8 @@ impl Via {
         let mut options = self.options.clone();
         options.delete_source = copy.delete_source.then_some(true);
         let header = Header {
-            v: VERSION,
+            v: COPY_VERSION,
+            op: super::Op::Copy,
             src: Some(self.header_url(src)?),
             name: None,
             size: None,
@@ -429,6 +499,21 @@ impl Via {
     }
 }
 
+/// The error a relay of an older release gives for a listing — its header
+/// has no `op`, or its protocol no version 3 — told as what it means.
+fn too_old(relay: &Location, err: &serde_json::Value) -> Option<Error> {
+    let message = err["message"].as_str().unwrap_or("");
+    let old = err["kind"] == "invalid_option"
+        && (message.contains("unknown field `op`") || message.starts_with("invalid option 'v'"));
+    old.then(|| {
+        Error::Remote(format!(
+            "the relay {relay} is too old for listing, which needs version {} of the relay \
+             protocol; update mpt on the relay",
+            super::VERSION
+        ))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,6 +562,22 @@ mod tests {
             with_agent.header_targets(&keyed).unwrap(),
             vec!["sftp://u@h/in/?known_hosts=off"]
         );
+    }
+
+    #[test]
+    fn an_older_relay_is_told_as_too_old_for_listing() {
+        let relay = Location::parse("ssh://relay@h/").unwrap();
+        for message in [
+            "invalid option 'header': unknown field `op`, expected one of `v`, `src`",
+            "invalid option 'v': this relay speaks versions 1 and 2, not 3",
+        ] {
+            let err = serde_json::json!({ "kind": "invalid_option", "message": message });
+            let told = too_old(&relay, &err).unwrap().to_string();
+            assert!(told.contains("too old for listing"), "{told}");
+        }
+        let other =
+            serde_json::json!({ "kind": "invalid_option", "message": "invalid option 'src': x" });
+        assert!(too_old(&relay, &other).is_none());
     }
 
     #[test]

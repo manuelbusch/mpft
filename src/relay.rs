@@ -18,6 +18,11 @@
 //! that; a relay set to `header` refuses a client that asks for it, and
 //! the other way round.
 //!
+//! Version 3 adds a second kind of session: `"op": "list"` asks the relay
+//! to list the directory `src` names, which it answers with an `entry`
+//! line per entry. That is how a client reads a directory only the relay
+//! can reach.
+//!
 //! A target of the header may name a relay of its own. The relay then
 //! writes it through that one ([`endpoint`]), with the same protocol and
 //! the same questions — which it passes on to the client — so a file goes
@@ -59,8 +64,13 @@ use crate::{Endpoint, Error, Location, Result};
 use broker::{RemoteBroker, Who};
 use protocol::{ChannelReader, Frame};
 
-/// The protocol version a client sends.
-pub const VERSION: u32 = 2;
+/// The newest protocol version, which a relay speaks along with the older
+/// ones. Version 3 adds the listing ([`Op::List`]).
+pub const VERSION: u32 = 3;
+
+/// The version a client sends for a copy. A copy needs nothing of version
+/// 3, so relays of an older release keep taking it.
+pub const COPY_VERSION: u32 = 2;
 
 /// The longest header line a relay reads.
 pub const MAX_HEADER: usize = 64 * 1024;
@@ -77,6 +87,9 @@ pub const HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3
 pub struct Header {
     #[serde(default = "version")]
     pub v: u32,
+    /// What the session does: a copy unless it says otherwise.
+    #[serde(default, skip_serializing_if = "Op::is_copy")]
+    pub op: Op,
     /// The source the relay reads itself, instead of a payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub src: Option<String>,
@@ -86,7 +99,8 @@ pub struct Header {
     /// How many bytes the payload has, when one follows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
-    #[serde(alias = "dsts")]
+    /// The targets of a copy; a listing has none.
+    #[serde(default, alias = "dsts", skip_serializing_if = "Vec::is_empty")]
     pub dst: Vec<Dst>,
     /// Where the targets' passwords come from.
     #[serde(default, skip_serializing_if = "Credentials::is_header")]
@@ -106,11 +120,28 @@ impl Header {
     /// A header for a payload of `size` bytes called `name`.
     pub fn stream(name: impl Into<String>, size: u64, dst: Vec<String>) -> Header {
         Header {
-            v: VERSION,
+            v: COPY_VERSION,
+            op: Op::Copy,
             src: None,
             name: Some(name.into()),
             size: Some(size),
             dst: dst.into_iter().map(Dst::Url).collect(),
+            credentials: Credentials::Header,
+            agent: false,
+            agent_onward: false,
+            options: JobOptions::default(),
+        }
+    }
+
+    /// A header that asks for the directory `src` to be listed.
+    pub fn list(src: impl Into<String>) -> Header {
+        Header {
+            v: VERSION,
+            op: Op::List,
+            src: Some(src.into()),
+            name: None,
+            size: None,
+            dst: Vec::new(),
             credentials: Credentials::Header,
             agent: false,
             agent_onward: false,
@@ -124,6 +155,31 @@ impl Header {
             (Some(name), _) => name.clone(),
             (None, Some(src)) => src.clone(),
             (None, None) => String::new(),
+        }
+    }
+}
+
+/// What a session does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Op {
+    /// Copy the payload, or the source the relay reads, to the targets.
+    #[default]
+    Copy,
+    /// List the directory `src` names: an `entry` line for each of its
+    /// entries, then a `listed` line (version 3).
+    List,
+}
+
+impl Op {
+    fn is_copy(&self) -> bool {
+        *self == Op::Copy
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Op::Copy => "copy",
+            Op::List => "list",
         }
     }
 }
@@ -367,6 +423,9 @@ where
         Credentials::OnDemand => Some(RemoteBroker::new(lines.clone(), cancel.clone())),
         Credentials::Header => None,
     };
+    if header.op == Op::List {
+        return listing(relay, header, reader, lines, broker, cancel, agent).await;
+    }
     let name = header.name.clone().unwrap_or_default();
     let size = header.size.unwrap_or(0);
     // In version 2 the frames are taken apart from here on, before a
@@ -475,6 +534,66 @@ where
             json!({ "report": crate::report::fanout_json(&report) }),
         ),
         Err(e) => refuse(e),
+    }
+}
+
+/// A listing session: the directory `src` names, one `entry` line per
+/// entry and a `listed` line at the end. The client's input carries
+/// control frames only, as with a source the relay reads itself.
+async fn listing<R>(
+    relay: &Relay,
+    header: Header,
+    reader: BufReader<R>,
+    lines: mpsc::UnboundedSender<Value>,
+    broker: Option<Arc<RemoteBroker>>,
+    cancel: CancellationToken,
+    agent: Option<Arc<dyn AgentSource>>,
+) -> (u8, Value)
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    let fault = Arc::new(std::sync::Mutex::new(None));
+    // Nothing is credited: no payload is taken.
+    let (data_tx, _data_rx) = mpsc::unbounded_channel();
+    let (_consumed_tx, consumed_rx) = mpsc::unbounded_channel();
+    let intake = tokio::spawn(intake(
+        reader,
+        data_tx,
+        consumed_rx,
+        lines.clone(),
+        broker.clone(),
+        Ending {
+            cancel: cancel.clone(),
+            reads_source: true,
+            fault: Arc::clone(&fault),
+        },
+    ));
+    let listed = async {
+        let url = header.src.as_deref().unwrap_or_default();
+        let loc = (relay.locate)(url, &header.options)?;
+        let agent = agent.filter(|_| header.agent);
+        let loc = with_agent(with_broker(loc, &broker, Who::Src)?, &agent);
+        info!(what = %loc, credentials = header.credentials.as_str(), "relay listing");
+        let source = crate::protocols::open(loc)?;
+        let entries = source.receiver()?.list().await?;
+        for e in &entries {
+            let _ = lines.send(json!({ "entry": crate::report::entry_json(e) }));
+        }
+        Ok::<_, Error>(entries.len())
+    };
+    let outcome = tokio::select! {
+        r = listed => r,
+        () = cancel.cancelled() => Err(Error::Cancelled),
+    };
+    intake.abort();
+    if let Some(broker) = &broker {
+        broker.close();
+    }
+    let fault = fault.lock().unwrap_or_else(|e| e.into_inner()).take();
+    match (outcome, fault) {
+        (_, Some(fault)) => refuse(fault),
+        (Ok(n), None) => (0, json!({ "listed": { "entries": n } })),
+        (Err(e), None) => refuse(e),
     }
 }
 
@@ -621,7 +740,17 @@ async fn read_header<R: AsyncRead + Unpin>(
         return Err(Error::invalid_option(
             "v",
             format!(
-                "this relay speaks versions 1 and {VERSION}, not {}",
+                "this relay speaks versions 1 to {VERSION}, not {}",
+                header.v
+            ),
+        ));
+    }
+    if header.op != Op::Copy && header.v < 3 {
+        return Err(Error::invalid_option(
+            "op",
+            format!(
+                "{} is not in version {} of the protocol",
+                header.op.as_str(),
                 header.v
             ),
         ));
@@ -644,6 +773,37 @@ async fn read_header<R: AsyncRead + Unpin>(
                 ));
             }
         }
+    }
+    if header.op == Op::List {
+        // The directory, and nothing that belongs to a copy.
+        if header.src.is_none() {
+            return Err(Error::invalid_option(
+                "src",
+                "a listing needs the directory",
+            ));
+        }
+        for (what, wrong) in [
+            ("name", header.name.is_some()),
+            ("size", header.size.is_some()),
+            ("dst", !header.dst.is_empty()),
+            ("agent_onward", header.agent_onward),
+        ] {
+            if wrong {
+                return Err(Error::invalid_option(what, "not in a listing"));
+            }
+        }
+        let only_timeout = JobOptions {
+            timeout: header.options.timeout,
+            ..JobOptions::default()
+        };
+        if header.options != only_timeout {
+            return Err(Error::invalid_option(
+                "options",
+                "a listing takes a timeout and nothing else",
+            ));
+        }
+        relay.credentials.allows(header.credentials)?;
+        return Ok(header);
     }
     match (&header.src, &header.name, &header.size) {
         (None, Some(_), Some(_)) | (Some(_), None, None) => {}
@@ -1178,6 +1338,99 @@ mod tests {
         assert!(text.contains("more than this relay takes"), "{text}");
     }
 
+    /// Send `header` and keep the input open, as a client that waits for
+    /// the outcome does; the lines and the exit code.
+    async fn held_open(relay: &Relay, header: serde_json::Value) -> (u8, Vec<serde_json::Value>) {
+        let (mut client_in, server_in) = duplex(64 << 10);
+        let (server_out, mut client_out) = duplex(64 << 10);
+        let feed = tokio::spawn(async move {
+            let mut line = header.to_string();
+            line.push('\n');
+            client_in.write_all(line.as_bytes()).await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let read = tokio::spawn(async move {
+            let mut text = String::new();
+            client_out.read_to_string(&mut text).await.unwrap();
+            text
+        });
+        let code = run(relay, server_in, server_out).await;
+        feed.abort();
+        let text = read.await.unwrap();
+        let lines = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        (code, lines)
+    }
+
+    #[tokio::test]
+    async fn a_directory_is_listed_entry_by_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.csv"), b"12345").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let src = format!("{}/", dir.path().display());
+        let (code, lines) = held_open(
+            &relay(0),
+            json!({ "v": 3, "op": "list", "src": src, "options": { "timeout": 5 } }),
+        )
+        .await;
+        assert_eq!(code, 0, "{lines:?}");
+        let mut entries: Vec<crate::Entry> = lines
+            .iter()
+            .filter_map(|l| l.get("entry"))
+            .map(|e| crate::report::entry_from_json(e).unwrap())
+            .collect();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(entries.len(), 2, "{lines:?}");
+        assert_eq!(
+            (entries[0].name.as_str(), entries[0].size, entries[0].is_dir),
+            ("a.csv", Some(5), false)
+        );
+        assert!(entries[0].modified.is_some());
+        assert!(entries[1].is_dir);
+        assert_eq!(lines.last().unwrap()["listed"]["entries"], 2);
+
+        // A directory that is not there fails as a missing file does.
+        let (code, lines) = held_open(
+            &relay(0),
+            json!({ "op": "list", "src": format!("{}/nope/", dir.path().display()) }),
+        )
+        .await;
+        assert_eq!(code, 1, "{lines:?}");
+        let err = crate::report::error_from_json(&lines.last().unwrap()["error"]);
+        assert!(err.is_not_found(), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_listing_header_is_checked_like_any_other() {
+        for (header, what) in [
+            (
+                json!({ "v": 2, "op": "list", "src": "/tmp/" }),
+                "not in version 2",
+            ),
+            (json!({ "v": 3, "op": "list" }), "needs the directory"),
+            (
+                json!({ "op": "list", "src": "/tmp/", "dst": ["/tmp/x/"] }),
+                "'dst': not in a listing",
+            ),
+            (
+                json!({ "op": "list", "src": "/tmp/", "name": "x", "size": 1 }),
+                "'name': not in a listing",
+            ),
+            (
+                json!({ "op": "list", "src": "/tmp/", "options": { "delete_source": true } }),
+                "a timeout and nothing else",
+            ),
+            (json!({ "op": "move", "src": "/tmp/" }), "unknown variant"),
+        ] {
+            let (code, lines) = held_open(&relay(0), header).await;
+            assert_eq!(code, 2, "{lines:?}");
+            let message = lines[0]["error"]["message"].as_str().unwrap();
+            assert!(message.contains(what), "{what}: {message}");
+        }
+    }
+
     /// An HTTP server on a free port that answers every request with
     /// `body` — its length announced when `announce` — and hands back the
     /// requests it saw.
@@ -1445,7 +1698,8 @@ mod tests {
         for (header, what) in [
             ("not json".to_string(), "header"),
             (json!({ "name": "x", "size": 1, "dst": [] }).to_string(), "dst"),
-            (json!({ "v": 3, "name": "x", "size": 1, "dst": [target.clone()] }).to_string(), "v"),
+            (json!({ "v": 4, "name": "x", "size": 1, "dst": [target.clone()] }).to_string(), "v"),
+            (json!({ "name": "x", "size": 1 }).to_string(), "dst"),
             (json!({ "v": 1, "name": "x", "size": 1, "dst": [target.clone()], "credentials": "on-demand" }).to_string(), "credentials"),
             (json!({ "name": "x", "dst": [target.clone()] }).to_string(), "header"),
             (json!({ "src": "/x", "name": "x", "size": 1, "dst": [target.clone()] }).to_string(), "src"),

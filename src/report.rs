@@ -11,6 +11,31 @@ use serde_json::{Value, json};
 use crate::transfer::{CheckReport, FanoutReport, TargetReport};
 use crate::{Error, HashAlgo, Result};
 
+/// One entry of a listing, the shape `ls --json` prints: `name`, `size`,
+/// `is_dir` and `modified` (RFC 3339, or `null`).
+pub fn entry_json(e: &crate::Entry) -> Value {
+    json!({
+        "name": e.name,
+        "size": e.size,
+        "is_dir": e.is_dir,
+        "modified": e.modified.map(crate::sign::format_time),
+    })
+}
+
+/// [`entry_json`] read back.
+pub fn entry_from_json(v: &Value) -> Result<crate::Entry> {
+    let bad = |what: &str| Error::Remote(format!("a listed entry without {what}: {v}"));
+    Ok(crate::Entry {
+        name: v["name"].as_str().ok_or_else(|| bad("a name"))?.to_string(),
+        size: v["size"].as_u64(),
+        is_dir: v["is_dir"].as_bool().ok_or_else(|| bad("is_dir"))?,
+        modified: match v["modified"].as_str() {
+            Some(t) => Some(crate::sign::parse_time(t).map_err(|_| bad("a valid time"))?),
+            None => None,
+        },
+    })
+}
+
 /// The whole outcome of one copy: what was read, what each target did, the
 /// digests and the `check` verdict.
 pub fn fanout_json(report: &FanoutReport) -> Value {
@@ -259,6 +284,24 @@ fn checksum_mismatch(message: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_listed_entry_survives_the_round_trip() {
+        let e = crate::Entry {
+            name: "a b.csv".into(),
+            size: Some(7),
+            is_dir: false,
+            modified: Some(std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+        };
+        let back = entry_from_json(&entry_json(&e)).unwrap();
+        assert_eq!(
+            (back.name, back.size, back.is_dir, back.modified),
+            (e.name, e.size, e.is_dir, e.modified)
+        );
+        let dir = entry_from_json(&json!({ "name": "d", "size": null, "is_dir": true })).unwrap();
+        assert!(dir.is_dir && dir.size.is_none() && dir.modified.is_none());
+        assert!(entry_from_json(&json!({ "size": 1, "is_dir": false })).is_err());
+    }
 
     #[test]
     fn an_error_keeps_its_kind_on_the_way_back() {

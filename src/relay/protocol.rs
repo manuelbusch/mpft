@@ -1,4 +1,5 @@
-//! The wire format of a relay session, version 2.
+//! The wire format of a relay session, versions 2 and 3 (which differ in
+//! the header only: 3 adds the listing).
 //!
 //! The client writes the header line, then frames: a byte for the kind, a
 //! big-endian `u32` length and the payload. A data frame carries up to
