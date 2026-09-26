@@ -5,20 +5,27 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 class Handler(SimpleHTTPRequestHandler):
     def do_PUT(self):
+        # Chunked is what the header says, not what a missing or zero
+        # Content-Length suggests: an empty file has "Content-Length: 0",
+        # and reading chunks from it would wait for the client's timeout.
+        chunked = "chunked" in self.headers.get("Transfer-Encoding", "").lower()
         length = int(self.headers.get("Content-Length", 0) or 0)
         path = self.translate_path(self.path)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as f:
-            if length:
-                f.write(self.rfile.read(length))
-            else:  # chunked
+            if chunked:
                 while True:
-                    line = self.rfile.readline().strip()
+                    # The size, possibly followed by ";extensions".
+                    line = self.rfile.readline().split(b";")[0].strip()
                     size = int(line, 16) if line else 0
                     if size == 0:
-                        self.rfile.readline()
+                        # Trailers, if any, up to the empty line.
+                        while self.rfile.readline().strip():
+                            pass
                         break
                     f.write(self.rfile.read(size)); self.rfile.readline()
+            elif length:
+                f.write(self.rfile.read(length))
         # For the bearer-token test: record what the client authorized with.
         auth = self.headers.get("Authorization")
         if auth:
