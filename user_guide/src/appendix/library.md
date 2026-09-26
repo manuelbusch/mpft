@@ -239,7 +239,9 @@ is a relay over any reader and writer, `sshd::serve()` its SSH server, and
 writes the header and the payload, and returns the relay's report.
 `plan::plan()` is the split of one job across relays — what runs from here,
 what one relay uploads, what another reads itself — and `plan::merge()` puts
-the parts back into a single report.
+the parts back into a single report. `via::Via` is all of that for
+`cp --via` and the profiles' relays: `Via::table()` gathers the relays in play,
+and `Via::run()` copies one job through them.
 `stream::ReaderEndpoint` is what makes any reader of a known size a source
 for `copy_many`. `options::JobOptions` is the options object of both the API
 and the relay header, with `apply()` laying it over a `CopyOptions`.

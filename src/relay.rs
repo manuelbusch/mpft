@@ -39,6 +39,7 @@ pub mod endpoint;
 pub mod plan;
 pub mod protocol;
 pub mod sshd;
+pub mod via;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
