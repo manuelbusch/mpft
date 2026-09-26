@@ -45,7 +45,66 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/healthz", get(healthz))
         .merge(guarded)
         .fallback(not_found)
+        .layer(middleware::from_fn_with_state(
+            Arc::clone(&state),
+            loopback_host,
+        ))
         .with_state(state)
+}
+
+/// Without a token the server is on loopback, and a page in the operator's
+/// browser could still reach it by DNS rebinding: its own host name,
+/// pointed at 127.0.0.1, makes the requests same-origin, so no `Origin`
+/// header is sent and the page could read the answers. Such a request
+/// names the page's host in `Host`; only a loopback name or address is
+/// let through. With a token the check is the token's.
+async fn loopback_host(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+    if state.cfg.token.is_none() {
+        let host = req
+            .uri()
+            .authority()
+            .map(|a| a.host().to_string())
+            .or_else(|| {
+                req.headers()
+                    .get(header::HOST)
+                    .and_then(|v| v.to_str().ok())
+                    .map(host_of)
+            });
+        if let Some(host) = host
+            && !is_loopback_host(&host)
+        {
+            return Reject::new(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                format!(
+                    "Host {host} is not a loopback address; a server without a token \
+                     answers only to localhost, 127.0.0.1 or [::1]"
+                ),
+            )
+            .into_response();
+        }
+    }
+    next.run(req).await
+}
+
+/// The host part of a `Host` header: without the port, an IPv6 address
+/// without its brackets.
+fn host_of(value: &str) -> String {
+    let value = value.trim();
+    if let Some(rest) = value.strip_prefix('[') {
+        return rest.split(']').next().unwrap_or("").to_string();
+    }
+    value.split(':').next().unwrap_or("").to_string()
+}
+
+/// `localhost`, or an address in 127.0.0.0/8 or `::1`.
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let host = host.strip_suffix('.').unwrap_or(host);
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// A request that is refused: the status and what to tell the client.
@@ -675,6 +734,53 @@ mod tests {
             .unwrap();
         let resp = open.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn without_a_token_only_a_loopback_host_is_answered() {
+        let open = app(ServerConfig {
+            urls: UrlRule::Any,
+            ..Default::default()
+        });
+        let get = |host: &'static str| {
+            let open = open.clone();
+            async move {
+                let req = HttpRequest::builder()
+                    .method(Method::GET)
+                    .uri("/v1/jobs")
+                    .header("host", host)
+                    .body(Body::empty())
+                    .unwrap();
+                open.oneshot(req).await.unwrap().status()
+            }
+        };
+        for host in [
+            "localhost:7788",
+            "LOCALHOST",
+            "127.0.0.1:7788",
+            "127.1.2.3",
+            "[::1]:7788",
+        ] {
+            assert_eq!(get(host).await, StatusCode::OK, "{host}");
+        }
+        // A rebound name, or any other address, is refused.
+        for host in [
+            "evil.example:7788",
+            "localhost.evil.example",
+            "10.0.0.1:7788",
+        ] {
+            assert_eq!(get(host).await, StatusCode::FORBIDDEN, "{host}");
+        }
+        // With a token the token decides.
+        let guarded = app(with_token(UrlRule::Any));
+        let req = HttpRequest::builder()
+            .method(Method::GET)
+            .uri("/v1/jobs")
+            .header("host", "mpt.example.com")
+            .header("authorization", "Bearer s3cret")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(guarded.oneshot(req).await.unwrap().status(), StatusCode::OK);
     }
 
     #[tokio::test]

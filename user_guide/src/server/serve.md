@@ -232,6 +232,12 @@ server on loopback or open its WebSocket. A client of your own does not send
 the header. The token goes in the `Authorization` header for the WebSocket
 too; there is no `?token=` in the URL.
 
+A server without a token also answers only requests whose `Host` is
+`localhost`, a `127.x.x.x` address or `[::1]`, with any port; anything else
+gets `403`. A page could otherwise point a name of its own at 127.0.0.1
+(DNS rebinding), and its requests would then be same-origin and carry no
+`Origin` header.
+
 The health check answers without a token, but says only whether the server is
 up:
 
