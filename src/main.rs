@@ -1020,11 +1020,17 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
     };
 
     // A pattern as the source of a plain `cp` is a batch of one line, and so
-    // is any source with -r, since it may turn out to be a directory.
+    // is any source with -r, since it may turn out to be a directory. A dry
+    // run goes the same way, so that it prints the job the batch would run
+    // and runs nothing.
     let recursive = cli.cmd.batch_args().is_some_and(|b| b.recursive);
+    let dry_run = cli.cmd.batch_args().is_some_and(|b| b.dry_run);
     let work = match work {
         Work::Single { src, dsts }
-            if via.is_some() || recursive || mpt::batch::expand::has_pattern(&locate(&src)?) =>
+            if via.is_some()
+                || recursive
+                || dry_run
+                || mpt::batch::expand::has_pattern(&locate(&src)?) =>
         {
             Work::Many(vec![JobSpec { src, dsts }])
         }

@@ -189,8 +189,9 @@ $ mpt cp --dry-run 'in/*.csv' out/
 [3/3] in/data3.csv -> out/
 ```
 
-This is the cheap way to find out what a pattern matches on a server. Run it
-before any command with `--delete-source`.
+A plain copy of one file prints its one job the same way. This is the cheap
+way to find out what a pattern matches on a server. Run it before any command
+with `--delete-source`.
 
 ## Colliding targets
 
