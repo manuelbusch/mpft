@@ -192,7 +192,14 @@ add a `Scheme` variant with its `SchemeInfo`, and hand it out from
 `remove`, `supports_append`, `existing_size`, `append`, `supports_mkdir`,
 `mkdir_all`) default to "not supported", and the transfer pipeline adapts: a
 target without rename simply does not get atomic finishing, a source without
-listing cannot be a pattern or tree source. Add the scheme to the capability
+listing cannot be a pattern or tree source.
+
+Two methods of `Sender` are worth overriding even so. `scheme_name` names the
+scheme in the error an unsupported method returns; a sender that keeps the
+default is called `unknown` there. `is_dir` says whether the location names
+an existing directory, so that a target without a trailing slash still takes
+the file under its own name, as `cp` does; the default `false` is right only
+where the slash alone decides (S3, HTTP, mail). Add the scheme to the capability
 matrix in `user_guide/src/protocols/overview.md` and give it a protocol page.
 
 ## Possible further protocols
