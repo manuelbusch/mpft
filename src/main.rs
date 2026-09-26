@@ -1786,6 +1786,8 @@ async fn do_follow(
 
     let open = |loc: &mpt::Location| mpt::protocols::open(loc.clone());
     let out = std::sync::Mutex::new(BatchOutput::new(None, settings.json));
+    // Jobs a dry run printed instead of running them.
+    let printed = std::sync::atomic::AtomicUsize::new(0);
     let cancel = opts.cancel.clone();
     let bar = progress.clone().map(spawn_batch_progress);
     let batch_opts = mpt::BatchOptions {
@@ -1876,9 +1878,10 @@ async fn do_follow(
                 .await;
                 match jobs {
                     Ok(jobs) if args.dry_run => {
-                        for job in &jobs {
-                            print_dry_run(job, r.index, None, settings.json);
+                        for (i, job) in jobs.iter().enumerate() {
+                            print_dry_run(job, before + i + 1, None, settings.json);
                         }
+                        printed.fetch_add(jobs.len(), std::sync::atomic::Ordering::Relaxed);
                     }
                     Ok(jobs) => return Some((futures::stream::iter(jobs), r)),
                     Err(e) => {
@@ -1902,9 +1905,23 @@ async fn do_follow(
     };
     clear_progress(bar);
     let out = out.into_inner().unwrap();
-    if report.jobs.is_empty() && out.rejected == 0 {
+    let printed = printed.into_inner();
+    if report.jobs.is_empty() && printed == 0 && out.rejected == 0 {
         anstream::eprintln!("{WARN}nothing to do{WARN:#}: no jobs arrived");
         return Ok(());
+    }
+    if args.dry_run {
+        // Nothing ran: the lines that were rejected are all there is to say.
+        return match out.rejected {
+            0 => Ok(()),
+            n => Err(anyhow::Error::new(ExitWith {
+                code: batch_code(&out.codes),
+                msg: match n {
+                    1 => "1 line rejected".to_string(),
+                    n => format!("{n} lines rejected"),
+                },
+            })),
+        };
     }
     out.finish(&report)
 }

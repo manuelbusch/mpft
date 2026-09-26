@@ -226,3 +226,42 @@ fn the_password_cannot_share_stdin_with_a_command_that_reads_it() {
     );
     assert!(out.status.success(), "{}", stderr(&out));
 }
+
+/// A dry run of `batch - --follow` numbers the jobs of one line one by one
+/// and does not end by saying that none arrived; it once gave all of a
+/// line's jobs the number of the last.
+#[test]
+fn a_following_dry_run_numbers_every_job() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["a.csv", "b.csv", "c.txt"] {
+        std::fs::write(dir.path().join(name), name).unwrap();
+    }
+    let out = mpt_with(
+        dir.path(),
+        "",
+        &["batch", "-", "--follow", "--dry-run"],
+        Some(b"*.csv out/\nc.txt out/\n"),
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let lines: Vec<String> = stdout(&out).lines().map(String::from).collect();
+    assert_eq!(
+        lines,
+        [
+            "[1] ./a.csv -> out/",
+            "[2] ./b.csv -> out/",
+            "[3] c.txt -> out/"
+        ]
+    );
+    assert!(!stderr(&out).contains("nothing to do"), "{}", stderr(&out));
+    assert!(!dir.path().join("out").exists(), "the dry run copied");
+
+    // A line that is not a job still fails the run.
+    let out = mpt_with(
+        dir.path(),
+        "",
+        &["batch", "-", "--follow", "--dry-run"],
+        Some(b"c.txt out/\n\"unbalanced\n"),
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("1 line rejected"), "{}", stderr(&out));
+}
