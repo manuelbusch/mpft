@@ -49,7 +49,7 @@ relay server's.
 | Flag | `[relay]` key | Default | Meaning |
 |---|---|---|---|
 | `--listen [ADDR]` | – | `0.0.0.0:2222` | listen here instead of reading one upload from stdin |
-| `--host-key <PATH>` | `host_key` | `~/.local/state/mpt/relay_host_key` | the host key; generated when missing |
+| `--host-key <PATH>` | `host_key` | [by system](#where-the-host-key-is-kept) | the host key; generated when missing |
 | `--authorized-keys <PATH>` | `authorized_keys` | `~/.config/mpt/authorized_keys` | who may relay |
 | `--parallel <N>` | `parallel` | `4` | relays running concurrently; further sessions wait |
 | `--max-size <SIZE>` | `max_size` | `0` (no limit) | refuse larger uploads, and larger sources the relay reads; a source that does not state its size fails once it passes the limit |
@@ -67,6 +67,19 @@ stops accepting sessions, waits `--grace` for the running relays and then
 cancels them; a second one cancels them immediately, a third exits with 130
 without waiting any longer. A connection that was already open cannot start a relay once
 the shutdown has begun.
+
+### Where the host key is kept
+
+Without `--host-key` or `host_key`, the key is kept in the user's state
+directory, or where a system has none, in its local data directory:
+
+| System | Default path |
+|---|---|
+| Linux and other Unix systems | `$XDG_STATE_HOME/mpt/relay_host_key`, by default `~/.local/state/mpt/relay_host_key` |
+| macOS | `~/Library/Application Support/mpt/relay_host_key` |
+| Windows | `%LOCALAPPDATA%\mpt\relay_host_key` |
+
+The log names the path at start-up either way.
 
 ### Through an existing sshd
 

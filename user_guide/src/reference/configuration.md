@@ -150,7 +150,7 @@ Settings for [`mpt relay --listen`](../server/relay-host.md#on-the-relay-host)
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `host_key` | path | `~/.local/state/mpt/relay_host_key` | the server's host key; generated when the file is missing |
+| `host_key` | path | [by system](../server/relay-host.md#where-the-host-key-is-kept) | the server's host key; generated when the file is missing |
 | `authorized_keys` | path | `~/.config/mpt/authorized_keys` | who may relay, in OpenSSH format |
 | `parallel` | integer, at least 1 | `4` | relays running concurrently; further sessions wait |
 | `grace` | duration | `"30s"` | how long a shutdown waits for running relays |

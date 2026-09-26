@@ -223,7 +223,8 @@ struct RelayArgs {
     #[arg(long, value_name = "ADDR", num_args = 0..=1, default_missing_value = "0.0.0.0:2222")]
     listen: Option<String>,
     /// The server's host key; generated when the file is missing
-    /// (~/.local/state/mpt/relay_host_key)
+    /// (~/.local/state/mpt/relay_host_key on Linux, ~/Library/Application
+    /// Support/mpt/relay_host_key on macOS, %LOCALAPPDATA%\mpt\relay_host_key on Windows)
     #[arg(long, value_name = "PATH")]
     host_key: Option<PathBuf>,
     /// Who may connect, in OpenSSH format (~/.config/mpt/authorized_keys)
