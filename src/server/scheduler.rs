@@ -342,14 +342,8 @@ fn shown(loc: &Location, refs: &[(String, Location)]) -> String {
         if !same_endpoint(base) || base.scheme().is_mail() {
             continue;
         }
-        let head = url.split('?').next().unwrap_or(url);
-        let (dir, head) = if base.is_dir_target() {
-            (base.path(), head)
-        } else {
-            match (base.path().rsplit_once('/'), head.rsplit_once('/')) {
-                (Some((d, _)), Some((h, _))) => (&base.path()[..d.len() + 1], &head[..h.len() + 1]),
-                _ => continue,
-            }
+        let Some((dir, head)) = reference_dir(url, base) else {
+            continue;
         };
         if !dir.is_empty()
             && let Some(rest) = loc.path().strip_prefix(dir)
@@ -362,22 +356,58 @@ fn shown(loc: &Location, refs: &[(String, Location)]) -> String {
 
 /// An error message with every resolved location it mentions replaced by
 /// what the client submitted: the message of a listing that found
-/// nothing, of a target that refused, of two jobs on one file. Longest
-/// locations first, so a file under a directory reference is rewritten
-/// as a whole and not just its directory part.
+/// nothing, of a target that refused, of two jobs on one file. A file a
+/// pattern or a tree put in place of a reference is rewritten by its
+/// directory, as [`shown`] shows it (`sftp://h/data/in/a.csv` →
+/// `mpt://in/a.csv`), and so is the bare path an error of the far side
+/// may name (`/data/in/a.csv`). Longest first, so a file under a
+/// directory reference is rewritten as a whole and not just its
+/// directory part.
 pub(super) fn redact(mut error: ApiError, refs: &[(String, Location)]) -> ApiError {
-    let mut pairs: Vec<(String, &String)> = refs
-        .iter()
-        .filter(|(url, _)| is_profile_ref(url))
-        .map(|(url, loc)| (loc.to_string(), url))
-        .collect();
-    pairs.sort_by_key(|(text, _)| std::cmp::Reverse(text.len()));
-    for (text, url) in pairs {
-        if !text.is_empty() {
-            error.message = error.message.replace(&text, url);
+    let mut exact: Vec<(String, &str)> = Vec::new();
+    let mut prefixes: Vec<(String, &str)> = Vec::new();
+    let mut paths: Vec<(String, &str)> = Vec::new();
+    for (url, loc) in refs.iter().filter(|(url, _)| is_profile_ref(url)) {
+        exact.push((loc.to_string(), url.as_str()));
+        if loc.scheme().is_mail() {
+            continue;
+        }
+        let Some((dir, head)) = reference_dir(url, loc) else {
+            continue;
+        };
+        let full = loc.to_string();
+        let full = full.split('?').next().unwrap_or(&full);
+        if let Some(i) = full.rfind('/') {
+            prefixes.push((full[..=i].to_string(), head));
+        }
+        // A path alone says nothing when it is the root.
+        if dir.len() > 1 {
+            paths.push((dir.to_string(), head));
+        }
+    }
+    for mut pairs in [exact, prefixes, paths] {
+        pairs.sort_by_key(|(text, _)| std::cmp::Reverse(text.len()));
+        for (text, url) in pairs {
+            if !text.is_empty() {
+                error.message = error.message.replace(&text, url);
+            }
         }
     }
     error
+}
+
+/// The directory a reference names on its endpoint, with the reference's
+/// own spelling of it: `(/data/in/, mpt://in/)` for `mpt://in/*.csv`
+/// resolved to `sftp://h/data/in/*.csv`, or for `mpt://in/` itself.
+fn reference_dir<'a>(url: &'a str, base: &'a Location) -> Option<(&'a str, &'a str)> {
+    let head = url.split('?').next().unwrap_or(url);
+    if base.is_dir_target() {
+        return Some((base.path(), head));
+    }
+    match (base.path().rsplit_once('/'), head.rsplit_once('/')) {
+        (Some((d, _)), Some((h, _))) => Some((&base.path()[..d.len() + 1], &head[..h.len() + 1])),
+        _ => None,
+    }
 }
 
 /// The words of a collision error: `Targets::note` files it as an invalid
@@ -530,6 +560,19 @@ mod tests {
         assert_eq!(
             e.message,
             "mpt://in/*.csv matches no file; mpt://out/x is taken"
+        );
+        // A file the pattern matched, by its URL or by its bare path.
+        let e = redact(
+            ApiError::new(
+                "io",
+                "sftp://h/data/in/a.csv: permission denied (/data/in/a.csv); \
+                 /srv/out/sub/b.csv is not there",
+            ),
+            &refs,
+        );
+        assert_eq!(
+            e.message,
+            "mpt://in/a.csv: permission denied (mpt://in/a.csv); mpt://out/sub/b.csv is not there"
         );
     }
 
