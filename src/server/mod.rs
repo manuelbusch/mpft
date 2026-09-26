@@ -311,15 +311,31 @@ impl AppState {
         &self.store
     }
 
-    /// Take a job in and start it. The token the job runs under is a
-    /// child of the server's.
-    pub async fn submit(self: &Arc<Self>, submission: model::Submission) -> Result<JobId> {
-        let id = self
-            .store
-            .submit(submission, self.work.child_token())
-            .await?;
-        scheduler::spawn_job(Arc::clone(self), id.clone());
-        Ok(id)
+    /// Take a job in and start it, unless `max_queued` jobs are open. The
+    /// token the job runs under is a child of the server's.
+    ///
+    /// The submission runs in a task of its own, so a request that is
+    /// abandoned while the journal is written (the client went away) still
+    /// ends with the job taken and started, not with a journal record of a
+    /// job nobody runs.
+    pub async fn submit(
+        self: &Arc<Self>,
+        submission: model::Submission,
+    ) -> std::result::Result<JobId, store::SubmitError> {
+        let state = Arc::clone(self);
+        let task = tokio::spawn(async move {
+            let id = state
+                .store
+                .submit_within(submission, state.work.child_token(), state.cfg.max_queued)
+                .await?;
+            scheduler::spawn_job(Arc::clone(&state), id.clone());
+            Ok(id)
+        });
+        task.await.unwrap_or_else(|e| {
+            Err(store::SubmitError::Journal(Error::Io(
+                std::io::Error::other(format!("submitting: {e}")),
+            )))
+        })
     }
 
     /// What the server's settings say about a submission, before anything

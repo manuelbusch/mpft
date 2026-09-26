@@ -26,6 +26,7 @@ use tracing::debug;
 use super::model::{
     ApiError, JobId, JobKind, JobOptions, JobState, Submission, SubmitBatch, SubmitJob, specs_of,
 };
+use super::store::SubmitError;
 use super::{AppState, scheduler, ws};
 use crate::Error;
 use crate::batch::jobs::{Format, JobSpec, JsonJob};
@@ -428,21 +429,6 @@ async fn accept(state: &Arc<AppState>, submission: Submission) -> Result<Respons
         status: StatusCode::BAD_REQUEST,
         error,
     })?;
-    if state.store.unfinished() >= state.cfg.max_queued {
-        let mut resp = Reject::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "too_many_jobs",
-            format!(
-                "{} jobs are still open; the limit is {} ([server] max_queued)",
-                state.store.unfinished(),
-                state.cfg.max_queued
-            ),
-        )
-        .into_response();
-        resp.headers_mut()
-            .insert(header::RETRY_AFTER, HeaderValue::from_static("5"));
-        return Ok(resp);
-    }
     let mut jobs = Vec::with_capacity(submission.specs.len());
     // What was submitted next to what it resolved to, so a refusal can be
     // worded in the client's terms.
@@ -505,13 +491,30 @@ async fn accept(state: &Arc<AppState>, submission: Submission) -> Result<Respons
         }
     }
     let transfers = submission.specs.len();
-    let id = state.submit(submission).await.map_err(|e| {
-        Reject::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            e.kind(),
-            format!("cannot accept the job: {e}"),
-        )
-    })?;
+    let id = match state.submit(submission).await {
+        Ok(id) => id,
+        Err(SubmitError::Full(open)) => {
+            let mut resp = Reject::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too_many_jobs",
+                format!(
+                    "{open} jobs are still open; the limit is {} ([server] max_queued)",
+                    state.cfg.max_queued
+                ),
+            )
+            .into_response();
+            resp.headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("5"));
+            return Ok(resp);
+        }
+        Err(SubmitError::Journal(e)) => {
+            return Err(Reject::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                e.kind(),
+                format!("cannot accept the job: {e}"),
+            ));
+        }
+    };
     debug!(%id, transfers, "accepted");
     Ok((
         StatusCode::ACCEPTED,

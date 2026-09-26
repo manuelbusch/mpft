@@ -139,6 +139,46 @@ struct Inner {
     jobs: HashMap<JobId, JobEntry>,
     /// Submission order, oldest first.
     order: Vec<JobId>,
+    /// Submissions that have a place under the limit on open jobs and are
+    /// being written to the journal; they count as open.
+    reserved: usize,
+}
+
+impl Inner {
+    /// Jobs not over yet, the reserved places included.
+    fn open(&self) -> usize {
+        self.reserved + self.jobs.values().filter(|j| !j.state.is_final()).count()
+    }
+}
+
+/// Why [`Store::submit_within`] did not take a job.
+#[derive(Debug)]
+pub enum SubmitError {
+    /// This many jobs are open, the limit or more.
+    Full(usize),
+    /// The journal could not be written.
+    Journal(Error),
+}
+
+impl std::fmt::Display for SubmitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SubmitError::Full(n) => write!(f, "{n} jobs are still open"),
+            SubmitError::Journal(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+/// A place under the limit on open jobs, given back when dropped: once
+/// the job is in, or when the submission failed or was abandoned.
+struct Reservation<'a>(&'a Store);
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        let mut inner = self.0.lock();
+        inner.reserved -= 1;
+        self.0.unfinished.send_replace(inner.open());
+    }
 }
 
 /// The jobs the server knows about.
@@ -185,6 +225,7 @@ impl Store {
             inner: Mutex::new(Inner {
                 jobs: HashMap::new(),
                 order: Vec::new(),
+                reserved: 0,
             }),
             events,
             journal: journal.map(Arc::new),
@@ -207,19 +248,55 @@ impl Store {
         self.publish(event);
     }
 
-    fn insert(&self, id: JobId, entry: JobEntry) {
+    /// Put a job in. The count of open jobs is published under the lock,
+    /// so that two changes cannot publish their counts in the wrong order.
+    fn insert(&self, id: JobId, entry: JobEntry, reservation: Option<Reservation<'_>>) {
         let mut inner = self.lock();
         inner.order.push(id.clone());
         inner.jobs.insert(id.clone(), entry);
-        let n = inner.jobs.values().filter(|j| !j.state.is_final()).count();
+        if let Some(r) = reservation {
+            // The job now counts itself.
+            std::mem::forget(r);
+            inner.reserved -= 1;
+        }
+        self.unfinished.send_replace(inner.open());
         drop(inner);
-        self.unfinished.send_replace(n);
         self.emit(Event::Queued { id });
     }
 
     /// Take a new job, journal it, and say which id it got. The job is
     /// in the journal, on disk, before it is taken.
     pub async fn submit(&self, submission: Submission, cancel: CancellationToken) -> Result<JobId> {
+        self.submit_within(submission, cancel, usize::MAX)
+            .await
+            .map_err(|e| match e {
+                SubmitError::Journal(e) => e,
+                full @ SubmitError::Full(_) => Error::Io(std::io::Error::other(full.to_string())),
+            })
+    }
+
+    /// [`Store::submit`], unless `max_open` jobs are open already. The
+    /// check and the place it takes are one step, so submissions that
+    /// arrive together cannot all pass it. A future dropped while the
+    /// journal is written gives its place back, but the record may still
+    /// reach the journal; a caller that can be abandoned runs this in a
+    /// task of its own.
+    pub async fn submit_within(
+        &self,
+        submission: Submission,
+        cancel: CancellationToken,
+        max_open: usize,
+    ) -> std::result::Result<JobId, SubmitError> {
+        let reservation = {
+            let mut inner = self.lock();
+            let open = inner.open();
+            if open >= max_open {
+                return Err(SubmitError::Full(open));
+            }
+            inner.reserved += 1;
+            self.unfinished.send_replace(inner.open());
+            Reservation(self)
+        };
         let id = JobId::new();
         let now = SystemTime::now();
         let record = Record::Submitted {
@@ -229,7 +306,7 @@ impl Store {
             submission: submission.clone(),
         };
         if let Some(write) = self.journal_write(record) {
-            write.await?;
+            write.await.map_err(SubmitError::Journal)?;
         }
         self.insert(
             id.clone(),
@@ -245,6 +322,7 @@ impl Store {
                 transfers: Vec::new(),
                 cancel,
             },
+            Some(reservation),
         );
         Ok(id)
     }
@@ -265,6 +343,7 @@ impl Store {
                 transfers: Vec::new(),
                 cancel,
             },
+            None,
         );
     }
 
@@ -476,8 +555,6 @@ impl Store {
             }
         }
         let summary = j.snapshot(id, false);
-        let n = inner.jobs.values().filter(|j| !j.state.is_final()).count();
-        drop(inner);
         // Handed to the journal before the count drops, so a shutdown that
         // waits for the count and then for `flush` has the record on disk.
         // Nobody waits for it otherwise: the job is over either way, and a
@@ -500,7 +577,9 @@ impl Store {
                 Err(_) => futures::executor::block_on(write),
             }
         }
-        self.unfinished.send_replace(n);
+        // Under the lock, as in `insert`.
+        self.unfinished.send_replace(inner.open());
+        drop(inner);
         self.emit(Event::Done {
             id: id.clone(),
             state,
@@ -1107,6 +1186,55 @@ mod tests {
         assert_eq!(store.sweep(Duration::ZERO), 1);
         assert!(store.snapshot(&a, false).is_none());
         assert!(store.snapshot(&b, false).is_some());
+    }
+
+    #[tokio::test]
+    async fn the_limit_on_open_jobs_holds_for_submissions_that_arrive_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let (journal, _) = Journal::open(&dir.path().join("jobs.jsonl")).unwrap();
+        let (tx, _rx) = broadcast::channel(64);
+        let store = Store::new(Some(journal), tx);
+        // Each waits for its journal write, so all are under way at once.
+        let tries = (0..4).map(|_| {
+            store.submit_within(
+                submission("/tmp/a", "/tmp/out/"),
+                CancellationToken::new(),
+                2,
+            )
+        });
+        let results = futures::future::join_all(tries).await;
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 2);
+        assert!(
+            results
+                .iter()
+                .filter_map(|r| r.as_ref().err())
+                .all(|e| matches!(e, SubmitError::Full(2)))
+        );
+        assert_eq!(store.unfinished(), 2);
+        // A place is given back when a job ends, and by a submission that
+        // was abandoned while it waited for the journal.
+        let first = results[0].as_ref().unwrap();
+        store.finish(first, true);
+        assert_eq!(store.unfinished(), 1);
+        let abandoned = store.submit_within(
+            submission("/tmp/b", "/tmp/out/"),
+            CancellationToken::new(),
+            2,
+        );
+        let mut abandoned = Box::pin(abandoned);
+        assert!(futures::poll!(&mut abandoned).is_pending());
+        assert_eq!(store.unfinished(), 2);
+        drop(abandoned);
+        assert_eq!(store.unfinished(), 1);
+        store
+            .submit_within(
+                submission("/tmp/c", "/tmp/out/"),
+                CancellationToken::new(),
+                2,
+            )
+            .await
+            .unwrap();
+        store.flush().await;
     }
 
     #[tokio::test]
