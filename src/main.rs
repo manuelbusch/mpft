@@ -1000,15 +1000,26 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
         tracing::info!(signer = %s.identity(), "signing checksum files");
     }
 
-    // A relay does the copying for `--via`; every job goes through the
-    // batch machinery then, a single `cp` as a batch of one.
+    // A relay does the copying for `--via` and for the profiles that name
+    // one. Only `cp` and `batch` go through relays, and only the profiles
+    // the command uses count: a relay elsewhere in the configuration
+    // changes nothing here. A job list read as it arrives may use any.
     #[cfg(feature = "relay")]
-    let via = {
-        let no_via = cli.cmd.batch_args().is_some_and(|b| b.no_via);
-        match Via::table(&settings, no_via, &locate)? {
-            Some(table) => Some(Via::new(table, &opts, &settings)?),
-            None => None,
+    let via = match cli.cmd.batch_args() {
+        Some(b) if !b.no_via => {
+            let used = match &work {
+                Work::Follow => None,
+                w => Some(
+                    w.endpoint_urls()
+                        .into_iter()
+                        .filter_map(|u| locate(u).ok()?.profile().map(String::from))
+                        .collect::<std::collections::BTreeSet<_>>(),
+                ),
+            };
+            Via::table(&settings, used.as_ref(), &locate)?
+                .map(|table| Via::new(table, &opts, &settings))
         }
+        _ => None,
     };
     #[cfg(not(feature = "relay"))]
     let via: Option<()> = None;
@@ -1022,15 +1033,21 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
     // A pattern as the source of a plain `cp` is a batch of one line, and so
     // is any source with -r, since it may turn out to be a directory. A dry
     // run goes the same way, so that it prints the job the batch would run
-    // and runs nothing.
+    // and runs nothing, and so does a copy that a relay takes part in.
     let recursive = cli.cmd.batch_args().is_some_and(|b| b.recursive);
     let dry_run = cli.cmd.batch_args().is_some_and(|b| b.dry_run);
     let work = match work {
         Work::Single { src, dsts }
-            if via.is_some()
-                || recursive
+            if recursive
                 || dry_run
-                || mpt::batch::expand::has_pattern(&locate(&src)?) =>
+                || mpt::batch::expand::has_pattern(&locate(&src)?)
+                || runner.relays(&locate_job(
+                    &JobSpec {
+                        src: src.clone(),
+                        dsts: dsts.clone(),
+                    },
+                    &locate,
+                )?) =>
         {
             Work::Many(vec![JobSpec { src, dsts }])
         }
@@ -1458,6 +1475,9 @@ async fn do_batch(
         return Ok(());
     }
     mpt::batch::check_collisions(&jobs)?;
+    for job in &jobs {
+        runner.check(job)?;
+    }
     if args.dry_run {
         for (i, job) in jobs.iter().enumerate() {
             print_dry_run(job, i + 1, Some(n), settings.json);
@@ -1491,6 +1511,30 @@ enum JobRunner<'a> {
 }
 
 impl JobRunner<'_> {
+    /// Whether a relay takes part in `job`.
+    fn relays(&self, job: &mpt::Job) -> bool {
+        match self {
+            JobRunner::Local(_) => {
+                let _ = job;
+                false
+            }
+            #[cfg(feature = "relay")]
+            JobRunner::Via(via) => via.relays(job),
+        }
+    }
+
+    /// Refuse `job` when a flag asks for what its relay cannot do.
+    fn check(&self, job: &mpt::Job) -> anyhow::Result<()> {
+        match self {
+            JobRunner::Local(_) => {
+                let _ = job;
+                Ok(())
+            }
+            #[cfg(feature = "relay")]
+            JobRunner::Via(via) => via.check(job),
+        }
+    }
+
     fn run(&self, job: mpt::Job, copy: CopyOptions) -> mpt::batch::JobFuture<'_> {
         match self {
             JobRunner::Local(open) => Box::pin(async move {
@@ -1768,6 +1812,9 @@ async fn do_follow(
                         .map(|s| locate_job(s, locate))
                         .collect::<anyhow::Result<Vec<_>>>()?;
                     let jobs = prepare_jobs(jobs, &open, args).await?;
+                    for job in &jobs {
+                        runner.check(job)?;
+                    }
                     // All of the line's jobs or none: a rejected line
                     // leaves no target claimed.
                     r.targets.note_all(&jobs, r.index + 1)?;
@@ -2160,20 +2207,21 @@ struct Via {
     agent: bool,
     /// Let the relay forward it on to the relay of a chained target.
     agent_onward: bool,
+    /// A flag that asks for what only this side has, if one is set: a job
+    /// that a relay takes part in is refused with it.
+    refused: Option<&'static str>,
 }
 
 #[cfg(feature = "relay")]
 impl Via {
-    /// The relays in play: the default one and every profile's, resolved.
-    /// `None` when there is none, or `--no-via` said so.
+    /// The relays in play: the default one and the relay of every profile
+    /// in `used` (every profile when that is `None`), resolved. `None` when
+    /// there is none.
     fn table(
         settings: &Settings,
-        no_via: bool,
+        used: Option<&std::collections::BTreeSet<String>>,
         locate: &dyn Fn(&str) -> anyhow::Result<mpt::Location>,
     ) -> anyhow::Result<Option<mpt::relay::plan::ViaTable>> {
-        if no_via {
-            return Ok(None);
-        }
         let relay = |what: &str, url: &str| -> anyhow::Result<mpt::Location> {
             let relay = locate(url)?;
             if relay.scheme() != Scheme::Ssh {
@@ -2188,6 +2236,9 @@ impl Via {
             table.default = Some(relay("--via", url)?);
         }
         for (name, profile) in &mpt::config::global().profiles {
+            if used.is_some_and(|used| !used.contains(name)) {
+                continue;
+            }
             if let Some(url) = &profile.via {
                 table
                     .by_profile
@@ -2197,25 +2248,17 @@ impl Via {
         Ok((!table.is_empty()).then_some(table))
     }
 
-    fn new(
-        table: mpt::relay::plan::ViaTable,
-        opts: &CopyOptions,
-        settings: &Settings,
-    ) -> anyhow::Result<Via> {
-        for (flag, set) in [
+    fn new(table: mpt::relay::plan::ViaTable, opts: &CopyOptions, settings: &Settings) -> Via {
+        let refused = [
             ("--check", opts.check),
             ("--resume", opts.resume),
             ("--sign", opts.sign.is_some()),
-        ] {
-            if set {
-                return Err(usage(format!(
-                    "{flag} is not available with a relay: it needs what only this side has \
-                     (the checksum file, the source, the key)"
-                )));
-            }
-        }
-        Ok(Via {
+        ]
+        .into_iter()
+        .find_map(|(flag, set)| set.then_some(flag));
+        Via {
             table,
+            refused,
             credentials: settings.via_credentials,
             agent: settings.via_agent,
             agent_onward: settings.via_agent_onward,
@@ -2228,7 +2271,30 @@ impl Via {
                 timeout: Some(settings.timeout),
                 ..Default::default()
             },
-        })
+        }
+    }
+
+    /// Whether a relay takes part in `job`, or it is copied from here
+    /// alone.
+    fn relays(&self, job: &mpt::Job) -> bool {
+        use mpt::relay::plan::Part;
+        mpt::relay::plan::plan(job, &self.table)
+            .iter()
+            .any(|p| !matches!(p, Part::Local { .. }))
+    }
+
+    /// Refuse a job that a relay takes part in when a flag asks for what
+    /// only this side has.
+    fn check(&self, job: &mpt::Job) -> anyhow::Result<()> {
+        match self.refused {
+            Some(flag) if self.relays(job) => Err(usage(format!(
+                "{flag} is not available with a relay: it needs what only this side has \
+                 (the checksum file, the source, the key), and a relay takes part in \
+                 copying {}",
+                job.src
+            ))),
+            _ => Ok(()),
+        }
     }
 
     /// One job, its parts side by side: the targets without a relay from
@@ -2243,6 +2309,12 @@ impl Via {
 
         let started = std::time::Instant::now();
         let parts = mpt::relay::plan::plan(&job, &self.table);
+        // A job no relay takes part in is copied here, as without relays.
+        if parts.iter().all(|p| matches!(p, Part::Local { .. })) {
+            let open = |loc: &mpt::Location| mpt::protocols::open(loc.clone());
+            let result = mpt::batch::run_job(&job, &open, &copy).await;
+            return (job, result);
+        }
         // The source is deleted by whoever read it, once every target has
         // the file — which only the relay that reads it can know, and only
         // when it writes every target.
@@ -2701,6 +2773,7 @@ mod tests {
             credentials,
             agent: false,
             agent_onward: false,
+            refused: None,
         };
         let dsts = vec![
             mpt::Location::parse("ftp://u:s3cret@h/in/").unwrap(),

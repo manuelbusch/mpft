@@ -68,14 +68,18 @@ nothing but a line in its `authorized_keys` per client. The flags `--hash`,
 `--timeout`, `--cache` with `--retries`, `--skip-existing` and `--no-atomic`
 go along, as do the `?options` of the targets.
 
-Three flags need what only this side has and are refused with a relay:
+Three flags need what only this side has and are refused for a job that a
+relay takes part in:
 
 ```
 error: --check is not available with a relay: it needs what only this side has
-       (the checksum file, the source, the key)
+       (the checksum file, the source, the key), and a relay takes part in
+       copying report.pdf
 ```
 
-`--check`, `--sign` and `--resume` are those three. `--delete-source` is
+`--check`, `--sign` and `--resume` are those three. A job that no relay takes
+part in is copied from here as usual, with these flags and with the output of
+a plain `cp`. `--delete-source` is
 allowed in one case — when the relay reads the source itself, writes every
 target of the job and was started to allow it; see [Deleting a source the
 relay read](relay-topologies.md#deleting-a-source-the-relay-read).
@@ -177,7 +181,9 @@ error, and the relay finishes no target with what it got. The slowest target set
 
 `[defaults] via` sends every `cp` and `batch` through the relay; `--no-via`
 copies from here for once. A profile may name a relay of its own, which wins
-over the default — that is what puts an endpoint permanently behind a relay:
+over the default — that is what puts an endpoint permanently behind a relay.
+A profile's relay counts only for the commands that name that profile; a
+command that does not is copied from here:
 
 ```toml
 [defaults]
