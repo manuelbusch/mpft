@@ -2,7 +2,8 @@
 
 What passes over the SSH channel between `cp --via` and `mpt relay`, or over
 the standard input and output of `mpt relay` run directly. A session is a copy
-or, from version 3 on, the [listing of a directory](#listing-a-directory).
+or, from version 3 on, one of the [operations besides the
+copy](#operations-besides-the-copy): a listing, a size, directories created.
 
 ## The header
 
@@ -19,18 +20,19 @@ start; a relay that has no complete line by then refuses the session:
 | Field | Meaning |
 |---|---|
 | `v` | protocol version, `1`, `2` or `3`; **`3` when the field is absent** |
-| `op` | `"copy"` (the default) or `"list"` (v3) |
-| `src` | a URL the relay opens and reads itself, instead of a payload (v2); the directory of a listing |
+| `op` | `"copy"` (the default), `"list"`, `"size"` or `"mkdir"` (v3) |
+| `src` | a URL the relay opens and reads itself, instead of a payload (v2); what a listing or a size is about |
 | `name` | the file name the targets receive; required when there is no `src` |
 | `size` | how many payload bytes follow; required when there is no `src` |
-| `dst` | the targets of a copy: a URL string, or `{"url": …, "via": …}` for one the relay hands on to a second relay (v2); `dsts` is accepted as another name for it |
+| `dst` | the targets of a copy, or the directories of a `mkdir`: a URL string, or `{"url": …, "via": …}` for one the relay hands on to a second relay (v2); `dsts` is accepted as another name for it |
 | `credentials` | `"header"` (the default) or `"on-demand"` (v2) |
 | `agent` | `true` when the client forwards an ssh-agent for the SSH endpoints (v2) |
 | `agent_onward` | `true` lets the relay forward that agent on to the relays of chained targets; otherwise it only logs in to them with it (v2) |
 | `options` | the [job options](api.md#job-options) the relay honours; may be omitted |
 
 A client sends `"v": 2` for a copy, which needs nothing of version 3, so a
-relay of an older release still takes it, and `"v": 3` for a listing.
+relay of an older release still takes it, and `"v": 3` for the other
+operations.
 
 Everything is checked before a byte of the payload is read: the version, that
 there is either a `src` or a `name` with a `size`, that `dst` is not empty,
@@ -88,6 +90,8 @@ The relay writes JSON lines to its standard output, each at most 1 MiB; `cp
 {"need": "password", "id": 7, "dst": 0, "target": "ftp://upload@dc2.example/in/", "user": "upload", "attempt": 1}
 {"entry": {"name": "a.csv", "size": 3, "is_dir": false, "modified": "2026-09-01T10:00:00Z"}}   one entry of a listing (v3)
 {"listed": {"entries": 12}}                      the end of a listing (v3)
+{"size": 40000}                                  the answer to a size, null when there is none (v3)
+{"made": {"dirs": 1}}                            the directories of a mkdir exist (v3)
 {"report": { … }}                                the object --json prints, at the end
 {"error": {"kind": "…", "message": "…"}}         instead of a report, when the relay refused or could not read
 ```
@@ -124,25 +128,33 @@ second relay with a forwarded agent, and forwards the agent on only when the
 header says `agent_onward`. See [A target behind another
 relay](../server/relay-topologies.md#a-target-behind-another-relay).
 
-## Listing a directory
+## Operations besides the copy
 
-A header with `"op": "list"` and `"v": 3` asks the relay to list the
-directory `src` names:
+From version 3 on, `op` asks for something other than a copy. That is how the
+client reads and prepares what only the relay reaches: `mpt ls`, and the
+expansion of patterns and trees, for an endpoint whose profile names a relay.
+
+| `op` | About | The relay | The last line |
+|---|---|---|---|
+| `"list"` | `src` | lists the directory, an `entry` line per entry in the shape of `ls --json` | `{"listed": {"entries": n}}` |
+| `"size"` | `src` | tells its size: `null` for a directory, for a size the protocol does not tell, or for nothing there | `{"size": n}` |
+| `"mkdir"` | `dst` | creates each directory with its parents; a target without directories to create is an `unsupported_operation` | `{"made": {"dirs": n}}` |
 
 ```json
 {"v": 3, "op": "list", "src": "sftp://deploy@srv.example.com/in/", "options": {"timeout": 30}}
 ```
 
-The relay opens `src` by the rules of a copy's source: its own profiles, the
-credential mode, `need` lines for `"src": true`, the forwarded agent. A
-listing has no `dst`, no `name` or `size`, no `agent_onward`, and no option but
-`timeout`; any of them refuses the header. The client sends no payload
-frames, only control frames with answers, and keeps its input open until the
-relay is done: its end cancels the listing.
+The relay opens the endpoints by the rules of a copy: its own profiles, the
+credential mode, `need` lines (`"src": true`, or `"dst": <index>` for a
+`mkdir`), the forwarded agent. An operation has no `name` or `size`, no
+`agent_onward`, no chained target, no `dst` when it is about `src` and no
+`src` when it is about `dst`, and no option but `timeout`; any of them refuses
+the header. The client sends no payload frames, only control frames with
+answers, and keeps its input open until the relay is done: its end cancels the
+operation.
 
-The relay answers with an `entry` line for each entry, in the shape of `ls
---json`, and a `listed` line with their number; it exits with 0. A listing
-that fails ends with an `error` line instead, and the exit code of the
-failure. A relay of an older release refuses the header (`op` is a field it
-does not know, or `3` a version it does not speak), which the client reports
-as a relay too old for listing.
+The relay exits with 0 after the last line. One that fails ends with an
+`error` line instead, and the exit code of the failure. A relay of an older
+release refuses the header (`op` is a field it does not know, or `3` a version
+it does not speak), which the client reports as a relay too old for the
+operation.

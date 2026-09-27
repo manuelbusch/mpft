@@ -49,9 +49,25 @@ d            -  archive
 ```
 
 The listing is a session of its own, with the same credentials and the same
-forwarded agent a copy would use (see [Listing a
-directory](../reference/relay-protocol.md#listing-a-directory)). A relay of an
-older release cannot list, and says so.
+forwarded agent a copy would use (see [Operations besides the
+copy](../reference/relay-protocol.md#operations-besides-the-copy)). A relay of
+an older release cannot list, and says so.
+
+### Patterns and trees behind the relay
+
+A [pattern or `-r`](../guide/many-files.md) is expanded where the files are:
+a source whose profile names a relay is listed by that relay, and with `-r`
+the relay also tells whether the source is a file or a directory. The
+directories a tree needs on a target behind a relay — its profile's, or
+`--via` — are created by that relay. `--dry-run` lists the same way and
+creates nothing.
+
+```
+$ mpt cp -r mpt://inbox/ mpt://archive/2026/
+```
+
+Each listed directory, and each directory created, is one more SSH session
+with the relay, before the copies start.
 
 ### Deleting a source the relay read
 

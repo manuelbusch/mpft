@@ -12,10 +12,12 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use super::plan::{self, Part, PartOutcome, ViaTable};
-use super::{COPY_VERSION, Credentials, Dst, Header, agent, broker, client};
+use tokio_util::sync::CancellationToken;
+
+use super::{COPY_VERSION, Credentials, Dst, Header, Op, agent, broker, client};
 use crate::options::JobOptions;
 use crate::transfer::{CacheMode, CopyOptions, FanoutReport};
-use crate::{Entry, Error, Job, Location, Result, Scheme};
+use crate::{Endpoint, Entry, Error, Job, Location, Receiver, Result, Scheme, Sender};
 
 /// How the relays are used: the settings of `cp --via` and of
 /// `[defaults]` that are not options of the copy itself.
@@ -165,34 +167,12 @@ impl Via {
         &self,
         relay: &Location,
         dir: &Location,
-        cancel: &tokio_util::sync::CancellationToken,
+        cancel: &CancellationToken,
     ) -> Result<Vec<Entry>> {
-        let responder = self.responder(std::slice::from_ref(dir));
-        let header = Header {
-            credentials: self.credentials,
-            agent: responder.is_some(),
-            options: JobOptions {
-                timeout: self.options.timeout,
-                ..Default::default()
-            },
-            ..Header::list(self.header_url(dir)?)
-        };
-        let session = client::Session {
-            via: relay,
-            header: &header,
-            body: None,
-            cancel,
-            answer: Arc::new(broker::JobAnswerer {
-                src: Some(dir.clone()),
-                dsts: Vec::new(),
-                vias: Vec::new(),
-            }),
-            agent: responder.map(|r| Arc::new(r) as Arc<dyn crate::broker::AgentSource>),
-        };
         let mut entries = Vec::new();
         let mut bad = None;
-        let mut listed = false;
-        let outcome = client::send(session, |line| {
+        let header = Header::list(self.header_url(dir)?);
+        self.operation(relay, header, dir, cancel, |line| {
             if let Some(entry) = line.get("entry") {
                 match crate::report::entry_from_json(entry) {
                     Ok(e) => entries.push(e),
@@ -201,25 +181,130 @@ impl Via {
                     }
                 }
             }
-            listed |= line.get("listed").is_some();
+        })
+        .await?;
+        match bad {
+            Some(e) => Err(e),
+            None => Ok(entries),
+        }
+    }
+
+    /// The size of `src` as `relay` sees it: `None` for a directory, or
+    /// where the protocol does not tell (see [`crate::Receiver::size`]).
+    pub async fn size(
+        &self,
+        relay: &Location,
+        src: &Location,
+        cancel: &CancellationToken,
+    ) -> Result<Option<u64>> {
+        let header = Header::size_of(self.header_url(src)?);
+        let last = self.operation(relay, header, src, cancel, |_| {}).await?;
+        Ok(last["size"].as_u64())
+    }
+
+    /// Have `relay` create the directory `dir` and its parents.
+    pub async fn mkdir(
+        &self,
+        relay: &Location,
+        dir: &Location,
+        cancel: &CancellationToken,
+    ) -> Result<()> {
+        let header = Header::mkdir(vec![self.header_url(dir)?]);
+        self.operation(relay, header, dir, cancel, |_| {}).await?;
+        Ok(())
+    }
+
+    /// An endpoint for `loc` that lists it, and tells its size, through
+    /// the relay that reads it as a source, and creates it as a directory
+    /// through the relay that writes it as a target — what
+    /// [`crate::batch::prepare`] needs of the sources and targets of a
+    /// job list. Everything else is `loc`'s own endpoint, opened here.
+    pub fn open(
+        self: &Arc<Self>,
+        loc: &Location,
+        cancel: &CancellationToken,
+    ) -> Result<Box<dyn Endpoint>> {
+        let reads = self.table.for_source(loc).cloned();
+        let writes = self.table.for_target(loc).cloned();
+        let local = crate::protocols::open(loc.clone())?;
+        if reads.is_none() && writes.is_none() {
+            return Ok(local);
+        }
+        Ok(Box::new(Relayed {
+            via: Arc::clone(self),
+            reads,
+            writes,
+            local,
+            cancel: cancel.clone(),
+        }))
+    }
+
+    /// One session that is not a copy: `header` about `endpoint`, which is
+    /// the source of a listing or a size and the target of a mkdir. Every
+    /// line goes to `on_line`; the line that ends it is returned.
+    async fn operation(
+        &self,
+        relay: &Location,
+        header: Header,
+        endpoint: &Location,
+        cancel: &CancellationToken,
+        mut on_line: impl FnMut(&serde_json::Value),
+    ) -> Result<serde_json::Value> {
+        let op = header.op;
+        let responder = self.responder(std::slice::from_ref(endpoint));
+        let header = Header {
+            credentials: self.credentials,
+            agent: responder.is_some(),
+            options: JobOptions {
+                timeout: self.options.timeout,
+                ..Default::default()
+            },
+            ..header
+        };
+        let (src, dsts) = match op {
+            Op::Mkdir => (None, vec![endpoint.clone()]),
+            _ => (Some(endpoint.clone()), Vec::new()),
+        };
+        let session = client::Session {
+            via: relay,
+            header: &header,
+            body: None,
+            cancel,
+            answer: Arc::new(broker::JobAnswerer {
+                src,
+                dsts,
+                vias: Vec::new(),
+            }),
+            agent: responder.map(|r| Arc::new(r) as Arc<dyn crate::broker::AgentSource>),
+        };
+        let end = match op {
+            Op::List => "listed",
+            Op::Size => "size",
+            _ => "made",
+        };
+        let mut last = None;
+        let outcome = client::send(session, |line| {
+            if line.get(end).is_some() {
+                last = Some(line.clone());
+            }
+            on_line(line);
         })
         .await?;
         for line in outcome.stderr.lines().filter(|l| !l.trim().is_empty()) {
             tracing::debug!("relay: {line}");
         }
         if let Some(err) = &outcome.error {
-            return Err(too_old(relay, err).unwrap_or_else(|| crate::report::error_from_json(err)));
+            return Err(
+                too_old(relay, op, err).unwrap_or_else(|| crate::report::error_from_json(err))
+            );
         }
-        if let Some(e) = bad {
-            return Err(e);
-        }
-        if !listed {
-            return Err(Error::Remote(format!(
-                "the relay ended with exit {} and no listing",
-                outcome.exit
-            )));
-        }
-        Ok(entries)
+        last.ok_or_else(|| {
+            Error::Remote(format!(
+                "the relay ended with exit {} and no answer to {}",
+                outcome.exit,
+                op.as_str()
+            ))
+        })
     }
 
     /// One job, its parts side by side: the targets without a relay from
@@ -499,19 +584,103 @@ impl Via {
     }
 }
 
-/// The error a relay of an older release gives for a listing — its header
-/// has no `op`, or its protocol no version 3 — told as what it means.
-fn too_old(relay: &Location, err: &serde_json::Value) -> Option<Error> {
+/// The error a relay of an older release gives for an operation — its
+/// header has no `op`, or its protocol no version 3 — told as what it
+/// means.
+fn too_old(relay: &Location, op: Op, err: &serde_json::Value) -> Option<Error> {
     let message = err["message"].as_str().unwrap_or("");
     let old = err["kind"] == "invalid_option"
         && (message.contains("unknown field `op`") || message.starts_with("invalid option 'v'"));
     old.then(|| {
         Error::Remote(format!(
-            "the relay {relay} is too old for listing, which needs version {} of the relay \
-             protocol; update mpt on the relay",
+            "the relay {relay} is too old for {} (it needs version {} of the relay \
+             protocol); update mpt on the relay",
+            match op {
+                Op::List => "listing a directory",
+                Op::Size => "telling a size",
+                _ => "creating directories",
+            },
             super::VERSION
         ))
     })
+}
+
+/// A source or a target of a job list as [`Via::open`] hands it out.
+struct Relayed {
+    via: Arc<Via>,
+    /// The relay that reads it as a source.
+    reads: Option<Location>,
+    /// The relay that writes it as a target.
+    writes: Option<Location>,
+    local: Box<dyn Endpoint>,
+    cancel: CancellationToken,
+}
+
+impl Endpoint for Relayed {
+    fn location(&self) -> &Location {
+        self.local.location()
+    }
+
+    fn as_receiver(&self) -> Option<&dyn Receiver> {
+        match self.reads {
+            Some(_) => self.local.as_receiver().map(|_| self as &dyn Receiver),
+            None => self.local.as_receiver(),
+        }
+    }
+
+    fn as_sender(&self) -> Option<&dyn Sender> {
+        match self.writes {
+            Some(_) => self.local.as_sender().map(|_| self as &dyn Sender),
+            None => self.local.as_sender(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Receiver for Relayed {
+    async fn receive(&self) -> Result<crate::ByteStream> {
+        Err(Error::UnsupportedOperation {
+            scheme: "relay".into(),
+            op: "receive",
+        })
+    }
+
+    async fn list(&self) -> Result<Vec<Entry>> {
+        match &self.reads {
+            Some(relay) => self.via.list(relay, self.location(), &self.cancel).await,
+            None => self.local.receiver()?.list().await,
+        }
+    }
+
+    async fn size(&self) -> Result<Option<u64>> {
+        match &self.reads {
+            Some(relay) => self.via.size(relay, self.location(), &self.cancel).await,
+            None => self.local.receiver()?.size().await,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Sender for Relayed {
+    async fn send(&self, _body: crate::ByteStream, _meta: &crate::SendMeta) -> Result<()> {
+        Err(self.unsupported("send"))
+    }
+
+    fn scheme_name(&self) -> String {
+        self.location().scheme().to_string()
+    }
+
+    /// The relay answers for its target: one without directories says so.
+    fn supports_mkdir(&self) -> bool {
+        true
+    }
+
+    async fn mkdir_all(&self) -> Result<()> {
+        match &self.writes {
+            Some(relay) => self.via.mkdir(relay, self.location(), &self.cancel).await,
+            None => self.local.sender()?.mkdir_all().await,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -572,12 +741,12 @@ mod tests {
             "invalid option 'v': this relay speaks versions 1 and 2, not 3",
         ] {
             let err = serde_json::json!({ "kind": "invalid_option", "message": message });
-            let told = too_old(&relay, &err).unwrap().to_string();
+            let told = too_old(&relay, Op::List, &err).unwrap().to_string();
             assert!(told.contains("too old for listing"), "{told}");
         }
         let other =
             serde_json::json!({ "kind": "invalid_option", "message": "invalid option 'src': x" });
-        assert!(too_old(&relay, &other).is_none());
+        assert!(too_old(&relay, Op::List, &other).is_none());
     }
 
     #[test]

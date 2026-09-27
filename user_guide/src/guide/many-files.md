@@ -85,6 +85,8 @@ Rules:
   `.hidden`.
 - Directories are not matched, only files.
 - The targets must be directories.
+- A source whose profile names a relay is listed by that relay (see
+  [Patterns and trees behind the relay](../server/relay-topologies.md#patterns-and-trees-behind-the-relay)).
 
 A pattern that matches nothing is an error, on the assumption that you expected
 something:
@@ -124,6 +126,8 @@ as it does to a list.
 
 The source must be able to `list` and the target to `mkdir`; the [capability
 matrix](../protocols/overview.md#what-each-one-can-do) says which schemes can.
+A source or a target behind a [relay](../server/relay-topologies.md#patterns-and-trees-behind-the-relay)
+is listed, or has its directories created, by that relay.
 
 Symbolic links are whatever the source's listing says they are: a link that
 looks like a file has its content copied, a link that looks like a directory is

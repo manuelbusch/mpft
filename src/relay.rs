@@ -18,10 +18,9 @@
 //! that; a relay set to `header` refuses a client that asks for it, and
 //! the other way round.
 //!
-//! Version 3 adds a second kind of session: `"op": "list"` asks the relay
-//! to list the directory `src` names, which it answers with an `entry`
-//! line per entry. That is how a client reads a directory only the relay
-//! can reach.
+//! Version 3 adds sessions that are not copies ([`Op`]): a listing, a
+//! size, directories created. That is how a client expands a pattern or a
+//! tree that only the relay can reach.
 //!
 //! A target of the header may name a relay of its own. The relay then
 //! writes it through that one ([`endpoint`]), with the same protocol and
@@ -65,7 +64,8 @@ use broker::{RemoteBroker, Who};
 use protocol::{ChannelReader, Frame};
 
 /// The newest protocol version, which a relay speaks along with the older
-/// ones. Version 3 adds the listing ([`Op::List`]).
+/// ones. Version 3 adds the operations besides the copy: [`Op::List`],
+/// [`Op::Size`] and [`Op::Mkdir`].
 pub const VERSION: u32 = 3;
 
 /// The version a client sends for a copy. A copy needs nothing of version
@@ -99,7 +99,7 @@ pub struct Header {
     /// How many bytes the payload has, when one follows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
-    /// The targets of a copy; a listing has none.
+    /// The targets of a copy, or the directories of a `mkdir`.
     #[serde(default, alias = "dsts", skip_serializing_if = "Vec::is_empty")]
     pub dst: Vec<Dst>,
     /// Where the targets' passwords come from.
@@ -135,13 +135,27 @@ impl Header {
 
     /// A header that asks for the directory `src` to be listed.
     pub fn list(src: impl Into<String>) -> Header {
+        Header::op(Op::List, Some(src.into()), Vec::new())
+    }
+
+    /// A header that asks for the size of `src`.
+    pub fn size_of(src: impl Into<String>) -> Header {
+        Header::op(Op::Size, Some(src.into()), Vec::new())
+    }
+
+    /// A header that asks for the directories `dst` to be created.
+    pub fn mkdir(dst: Vec<String>) -> Header {
+        Header::op(Op::Mkdir, None, dst.into_iter().map(Dst::Url).collect())
+    }
+
+    fn op(op: Op, src: Option<String>, dst: Vec<Dst>) -> Header {
         Header {
             v: VERSION,
-            op: Op::List,
-            src: Some(src.into()),
+            op,
+            src,
             name: None,
             size: None,
-            dst: Vec::new(),
+            dst,
             credentials: Credentials::Header,
             agent: false,
             agent_onward: false,
@@ -169,6 +183,12 @@ pub enum Op {
     /// List the directory `src` names: an `entry` line for each of its
     /// entries, then a `listed` line (version 3).
     List,
+    /// The size of `src`, in a `size` line: `null` for a directory or a
+    /// size the protocol does not tell (version 3).
+    Size,
+    /// Create the directories `dst` names, with their parents, then a
+    /// `made` line (version 3).
+    Mkdir,
 }
 
 impl Op {
@@ -180,6 +200,8 @@ impl Op {
         match self {
             Op::Copy => "copy",
             Op::List => "list",
+            Op::Size => "size",
+            Op::Mkdir => "mkdir",
         }
     }
 }
@@ -423,8 +445,8 @@ where
         Credentials::OnDemand => Some(RemoteBroker::new(lines.clone(), cancel.clone())),
         Credentials::Header => None,
     };
-    if header.op == Op::List {
-        return listing(relay, header, reader, lines, broker, cancel, agent).await;
+    if header.op != Op::Copy {
+        return operation(relay, header, reader, lines, broker, cancel, agent).await;
     }
     let name = header.name.clone().unwrap_or_default();
     let size = header.size.unwrap_or(0);
@@ -537,10 +559,11 @@ where
     }
 }
 
-/// A listing session: the directory `src` names, one `entry` line per
-/// entry and a `listed` line at the end. The client's input carries
-/// control frames only, as with a source the relay reads itself.
-async fn listing<R>(
+/// A session that is not a copy: a listing (an `entry` line per entry,
+/// then `listed`), a size (`size`), or directories created (`made`). The
+/// client's input carries control frames only, as with a source the relay
+/// reads itself.
+async fn operation<R>(
     relay: &Relay,
     header: Header,
     reader: BufReader<R>,
@@ -568,21 +591,43 @@ where
             fault: Arc::clone(&fault),
         },
     ));
-    let listed = async {
-        let url = header.src.as_deref().unwrap_or_default();
-        let loc = (relay.locate)(url, &header.options)?;
+    let done = async {
         let agent = agent.filter(|_| header.agent);
-        let loc = with_agent(with_broker(loc, &broker, Who::Src)?, &agent);
-        info!(what = %loc, credentials = header.credentials.as_str(), "relay listing");
-        let source = crate::protocols::open(loc)?;
-        let entries = source.receiver()?.list().await?;
-        for e in &entries {
-            let _ = lines.send(json!({ "entry": crate::report::entry_json(e) }));
+        let open = |url: &str, who: Who| -> Result<Box<dyn Endpoint>> {
+            let loc = (relay.locate)(url, &header.options)?;
+            let loc = with_agent(with_broker(loc, &broker, who)?, &agent);
+            info!(what = %loc, op = header.op.as_str(), credentials = header.credentials.as_str(), "relay operation");
+            crate::protocols::open(loc)
+        };
+        let src = header.src.as_deref().unwrap_or_default();
+        match header.op {
+            Op::List => {
+                let entries = open(src, Who::Src)?.receiver()?.list().await?;
+                for e in &entries {
+                    let _ = lines.send(json!({ "entry": crate::report::entry_json(e) }));
+                }
+                Ok(json!({ "listed": { "entries": entries.len() } }))
+            }
+            Op::Size => {
+                let size = open(src, Who::Src)?.receiver()?.size().await?;
+                Ok(json!({ "size": size }))
+            }
+            Op::Mkdir => {
+                for (i, dst) in header.dst.iter().enumerate() {
+                    let target = open(dst.url(), Who::Dst(i))?;
+                    let sender = target.sender()?;
+                    if !sender.supports_mkdir() {
+                        return Err(sender.unsupported("create directories"));
+                    }
+                    sender.mkdir_all().await?;
+                }
+                Ok(json!({ "made": { "dirs": header.dst.len() } }))
+            }
+            Op::Copy => Err(Error::invalid_option("op", "a copy is not an operation")),
         }
-        Ok::<_, Error>(entries.len())
     };
     let outcome = tokio::select! {
-        r = listed => r,
+        r = done => r,
         () = cancel.cancelled() => Err(Error::Cancelled),
     };
     intake.abort();
@@ -592,7 +637,7 @@ where
     let fault = fault.lock().unwrap_or_else(|e| e.into_inner()).take();
     match (outcome, fault) {
         (_, Some(fault)) => refuse(fault),
-        (Ok(n), None) => (0, json!({ "listed": { "entries": n } })),
+        (Ok(last), None) => (0, last),
         (Err(e), None) => refuse(e),
     }
 }
@@ -774,22 +819,33 @@ async fn read_header<R: AsyncRead + Unpin>(
             }
         }
     }
-    if header.op == Op::List {
-        // The directory, and nothing that belongs to a copy.
-        if header.src.is_none() {
+    if header.op != Op::Copy {
+        // What the operation works on, and nothing that belongs to a copy:
+        // a source for a listing or a size, plain targets for mkdir.
+        let op = header.op.as_str();
+        let on_targets = header.op == Op::Mkdir;
+        if on_targets && header.dst.is_empty() {
+            return Err(Error::invalid_option("dst", "mkdir needs the directories"));
+        }
+        if !on_targets && header.src.is_none() {
             return Err(Error::invalid_option(
                 "src",
-                "a listing needs the directory",
+                format!("{op} needs the location"),
             ));
         }
         for (what, wrong) in [
             ("name", header.name.is_some()),
             ("size", header.size.is_some()),
-            ("dst", !header.dst.is_empty()),
+            ("src", on_targets && header.src.is_some()),
+            ("dst", !on_targets && !header.dst.is_empty()),
+            (
+                "via",
+                header.dst.iter().any(|d| matches!(d, Dst::Via { .. })),
+            ),
             ("agent_onward", header.agent_onward),
         ] {
             if wrong {
-                return Err(Error::invalid_option(what, "not in a listing"));
+                return Err(Error::invalid_option(what, format!("not in {op}")));
             }
         }
         let only_timeout = JobOptions {
@@ -799,7 +855,7 @@ async fn read_header<R: AsyncRead + Unpin>(
         if header.options != only_timeout {
             return Err(Error::invalid_option(
                 "options",
-                "a listing takes a timeout and nothing else",
+                format!("{op} takes a timeout and nothing else"),
             ));
         }
         relay.credentials.allows(header.credentials)?;
@@ -1403,20 +1459,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_size_and_directories_are_the_relays_to_find_and_make() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.csv"), b"12345").unwrap();
+        let (code, lines) = held_open(
+            &relay(0),
+            json!({ "op": "size", "src": dir.path().join("a.csv").display().to_string() }),
+        )
+        .await;
+        assert_eq!(code, 0, "{lines:?}");
+        assert_eq!(lines.last().unwrap()["size"], 5);
+        let (code, lines) = held_open(
+            &relay(0),
+            json!({ "op": "size", "src": dir.path().display().to_string() }),
+        )
+        .await;
+        assert_eq!(code, 0, "{lines:?}");
+        assert!(lines.last().unwrap()["size"].is_null(), "{lines:?}");
+
+        let made = [dir.path().join("x/y/"), dir.path().join("z/")];
+        let (code, lines) = held_open(
+            &relay(0),
+            json!({ "op": "mkdir", "dst": made.iter().map(|d| format!("{}/", d.display())).collect::<Vec<_>>() }),
+        )
+        .await;
+        assert_eq!(code, 0, "{lines:?}");
+        assert_eq!(lines.last().unwrap()["made"]["dirs"], 2);
+        assert!(made.iter().all(|d| d.is_dir()));
+
+        // A target without directories says so, as it would from here.
+        let (code, lines) = held_open(
+            &relay(0),
+            json!({ "op": "mkdir", "dst": ["http://127.0.0.1:9/in/"] }),
+        )
+        .await;
+        assert_eq!(code, 2, "{lines:?}");
+        assert_eq!(
+            lines.last().unwrap()["error"]["kind"],
+            "unsupported_operation"
+        );
+    }
+
+    #[tokio::test]
     async fn a_listing_header_is_checked_like_any_other() {
         for (header, what) in [
             (
                 json!({ "v": 2, "op": "list", "src": "/tmp/" }),
                 "not in version 2",
             ),
-            (json!({ "v": 3, "op": "list" }), "needs the directory"),
+            (json!({ "v": 3, "op": "list" }), "list needs the location"),
             (
                 json!({ "op": "list", "src": "/tmp/", "dst": ["/tmp/x/"] }),
-                "'dst': not in a listing",
+                "'dst': not in list",
             ),
             (
-                json!({ "op": "list", "src": "/tmp/", "name": "x", "size": 1 }),
-                "'name': not in a listing",
+                json!({ "op": "size", "src": "/tmp/", "name": "x", "size": 1 }),
+                "'name': not in size",
+            ),
+            (json!({ "op": "mkdir" }), "mkdir needs the directories"),
+            (
+                json!({ "op": "mkdir", "src": "/tmp/", "dst": ["/tmp/x/"] }),
+                "'src': not in mkdir",
+            ),
+            (
+                json!({ "op": "mkdir", "dst": [{ "url": "/tmp/x/", "via": "ssh://r/" }] }),
+                "'via': not in mkdir",
             ),
             (
                 json!({ "op": "list", "src": "/tmp/", "options": { "delete_source": true } }),

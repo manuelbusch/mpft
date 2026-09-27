@@ -1238,7 +1238,7 @@ async fn the_relay_lists_a_directory_for_the_client() {
         .collect();
     assert_eq!(seen[0], ("a.csv", Some(3), false));
     assert_eq!((seen[1].0, seen[1].2), ("sub", true));
-    assert!(relay.log().contains("relay listing"), "{}", relay.log());
+    assert!(relay.log().contains("relay operation"), "{}", relay.log());
 
     let missing = mpt::Location::parse("nope/").unwrap();
     let err = via.list(&at, &missing, &cancel).await.unwrap_err();
@@ -1302,9 +1302,93 @@ fn ls_lists_a_directory_behind_a_relay() {
     assert_ne!(code, 0);
     assert!(err.contains("listing in/"), "{err}");
     assert_eq!(
-        relay.log().matches("relay listing").count(),
+        relay.log().matches("relay operation").count(),
         2,
         "{}",
         relay.log()
     );
+}
+
+/// A pattern and a tree whose source is behind a relay are expanded by
+/// listing through that relay, and the directories of a tree behind a
+/// relay are created by it: none of the paths exists on this side, which
+/// runs in a directory of its own.
+#[test]
+fn patterns_and_trees_behind_a_relay_are_expanded_by_it() {
+    let relay = Relay::start(&[]);
+    std::fs::create_dir_all(relay.path("in/sub")).unwrap();
+    for (name, body) in [
+        ("in/a.csv", "a"),
+        ("in/b.csv", "bb"),
+        ("in/c.txt", "c"),
+        ("in/sub/d.csv", "d"),
+    ] {
+        std::fs::write(relay.path(name), body).unwrap();
+    }
+    std::fs::write(
+        relay.path("expand.toml"),
+        format!(
+            "[profiles.relay]\nurl = \"{}\"\n\
+             [profiles.src]\nurl = \"in/\"\nvia = \"mpt://relay\"\n\
+             [profiles.out]\nurl = \"out/\"\nvia = \"mpt://relay\"\n",
+            relay.via("client"),
+        ),
+    )
+    .unwrap();
+    let here = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
+            .env_remove("MPT_CONFIG")
+            .current_dir(here.path())
+            .arg("--config")
+            .arg(relay.path("expand.toml"))
+            .args(["--color", "never", "cp"])
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let (code, out, err) = run(&["mpt://src/*.csv", "mpt://out/pattern/"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(
+        std::fs::read(relay.path("out/pattern/a.csv")).unwrap(),
+        b"a"
+    );
+    assert_eq!(
+        std::fs::read(relay.path("out/pattern/b.csv")).unwrap(),
+        b"bb"
+    );
+    assert!(!relay.path("out/pattern/c.txt").exists());
+
+    // A dry run lists as well, and creates nothing.
+    let (code, out, err) = run(&["--dry-run", "-r", "mpt://src", "mpt://out/dry/"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("sub/d.csv"), "{out}");
+    assert!(!relay.path("out/dry").exists());
+
+    let (code, out, err) = run(&["-r", "mpt://src", "mpt://out/tree/"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(
+        std::fs::read(relay.path("out/tree/sub/d.csv")).unwrap(),
+        b"d"
+    );
+    assert_eq!(std::fs::read(relay.path("out/tree/c.txt")).unwrap(), b"c");
+    assert!(
+        relay.log().contains("op=\"mkdir\""),
+        "the relay made the directories: {}",
+        relay.log()
+    );
+
+    // A file with -r is a file: the relay tells its size.
+    let (code, out, err) = run(&["-r", "mpt://src/b.csv", "mpt://out/one/"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(std::fs::read(relay.path("out/one/b.csv")).unwrap(), b"bb");
+    assert!(relay.log().contains("op=\"size\""), "{}", relay.log());
+
+    assert!(!here.path().join("out").exists());
+    assert!(!here.path().join("in").exists());
 }

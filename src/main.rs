@@ -1093,7 +1093,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
             };
             let locate = |url: &str| rules.locate(url, None);
             via_table(settings.via.as_deref(), used.as_ref(), &locate)?
-                .map(|table| Via::new(table, &opts, &settings.via_settings()))
+                .map(|table| std::sync::Arc::new(Via::new(table, &opts, &settings.via_settings())))
         }
         _ => None,
     };
@@ -1595,7 +1595,8 @@ async fn do_batch(
         .enumerate()
         .map(|(i, spec)| locate_job(spec, locate).with_context(|| format!("job {}", i + 1)))
         .collect::<anyhow::Result<Vec<_>>>()?;
-    let open = |loc: &mpt::Location| mpt::protocols::open(loc.clone());
+    let cancel = opts.cancel.clone().unwrap_or_default();
+    let open = |loc: &mpt::Location| runner.open(loc, &cancel);
     let jobs = prepare_jobs(jobs, &open, args).await?;
     let n = jobs.len();
     if n == 0 {
@@ -1635,7 +1636,7 @@ async fn do_batch(
 enum JobRunner<'a> {
     Local(&'a (dyn Fn(&mpt::Location) -> mpt::Result<Box<dyn mpt::Endpoint>> + Sync)),
     #[cfg(feature = "relay")]
-    Via(&'a Via),
+    Via(&'a std::sync::Arc<Via>),
 }
 
 #[cfg(feature = "relay")]
@@ -1683,6 +1684,23 @@ impl JobRunner<'_> {
                 }
                 e => e.into(),
             }),
+        }
+    }
+
+    /// An endpoint for the expansion of patterns and trees: listed, and
+    /// created as a directory, by the relay that reads or writes it.
+    fn open(
+        &self,
+        loc: &mpt::Location,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> mpt::Result<Box<dyn mpt::Endpoint>> {
+        match self {
+            JobRunner::Local(open) => {
+                let _ = cancel;
+                open(loc)
+            }
+            #[cfg(feature = "relay")]
+            JobRunner::Via(via) => via.open(loc, cancel),
         }
     }
 
@@ -1883,7 +1901,8 @@ async fn do_follow(
     use futures::StreamExt;
     use tokio::io::AsyncBufReadExt;
 
-    let open = |loc: &mpt::Location| mpt::protocols::open(loc.clone());
+    let cancelled = opts.cancel.clone().unwrap_or_default();
+    let open = |loc: &mpt::Location| runner.open(loc, &cancelled);
     let out = std::sync::Mutex::new(BatchOutput::new(None, settings.json));
     // Jobs a dry run printed instead of running them.
     let printed = std::sync::atomic::AtomicUsize::new(0);
