@@ -632,3 +632,134 @@ async fn an_interrupt_stops_the_server_cleanly() {
     assert!(exit.0.success(), "{:?}\n{}", exit.0, exit.1);
     assert!(exit.1.contains("stopped"), "{}", exit.1);
 }
+
+/// Start `mpt relay --listen` in `dir` (its working directory) with a
+/// fresh host key and one authorized client key, `keys/client`; the child
+/// and the `ssh://` URL a client reaches it with.
+#[cfg(feature = "relay")]
+fn start_relay(dir: &Path) -> (Child, String) {
+    std::fs::create_dir_all(dir.join("keys")).unwrap();
+    let keygen = |name: &str| {
+        let status = Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", ""])
+            .arg("-f")
+            .arg(dir.join("keys").join(name))
+            .stdout(Stdio::null())
+            .status()
+            .expect("ssh-keygen is available");
+        assert!(status.success());
+    };
+    keygen("client");
+    std::fs::copy(dir.join("keys/client.pub"), dir.join("authorized_keys")).unwrap();
+    let port_file = dir.join("relay.port");
+    let child = Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .env_remove("MPT_CONFIG")
+        .current_dir(dir)
+        .args(["-vv", "relay", "--listen", "127.0.0.1:0", "--host-key"])
+        .arg(dir.join("keys/host"))
+        .arg("--authorized-keys")
+        .arg(dir.join("authorized_keys"))
+        .arg("--port-file")
+        .arg(&port_file)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(dir.join("relay.log")).unwrap())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    let port = loop {
+        if let Ok(text) = std::fs::read_to_string(&port_file)
+            && let Ok(p) = text.trim().parse::<u16>()
+        {
+            break p;
+        }
+        assert!(started.elapsed() < Duration::from_secs(20), "no relay port");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let url = format!(
+        "ssh://relay@127.0.0.1:{port}/?key={}&known_hosts=off",
+        dir.join("keys/client").display()
+    );
+    (child, url)
+}
+
+/// A job whose profiles name a relay goes through it, as `cp` would: a
+/// source behind it is read by it, patterns and trees are listed by it,
+/// and a target behind it is written by it. What needs this side (--check)
+/// is refused for such a job before it runs.
+#[cfg(feature = "relay")]
+#[tokio::test]
+async fn a_profiles_relay_serves_the_jobs_that_name_it() {
+    let far = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(far.path().join("in/sub")).unwrap();
+    std::fs::write(far.path().join("in/a.bin"), payload(50_000)).unwrap();
+    std::fs::write(far.path().join("in/sub/c.bin"), payload(10)).unwrap();
+    let (mut relay, via) = start_relay(far.path());
+    let server = Server::start_with_profiles(
+        tempfile::tempdir().unwrap(),
+        &[],
+        &format!(
+            "[profiles.relay]\nurl = \"{via}\"\n\
+             [profiles.far]\nurl = \"in/\"\nvia = \"mpt://relay\"\n\
+             [profiles.farout]\nurl = \"out/\"\nvia = \"mpt://relay\"\n"
+        ),
+    );
+    std::fs::write(server.path().join("src/up.bin"), payload(3_000)).unwrap();
+    let run = |body: &'static str| {
+        let server = &server;
+        async move {
+            let (status, answer) = server
+                .post("/v1/jobs", "application/json", body.into())
+                .await;
+            assert_eq!(status, 202, "{answer}");
+            server.wait(answer["url"].as_str().unwrap()).await
+        }
+    };
+
+    // Read and written by the relay, where only it sees the paths.
+    let job = run(r#"{"src": "mpt://far/a.bin", "dst": "mpt://farout/"}"#).await;
+    assert_eq!(job["state"], "done", "{job}\n{}", server.log());
+    assert_eq!(
+        std::fs::read(far.path().join("out/a.bin")).unwrap(),
+        payload(50_000)
+    );
+    assert_eq!(
+        job["transfers"][0]["report"]["source"], "mpt://far/a.bin",
+        "{job}"
+    );
+
+    // A tree, listed and made by the relay.
+    let job = run(
+        r#"{"src": "mpt://far/", "dst": "mpt://farout/tree/", "options": {"recursive": true}}"#,
+    )
+    .await;
+    assert_eq!(job["state"], "done", "{job}\n{}", server.log());
+    assert_eq!(
+        std::fs::read(far.path().join("out/tree/sub/c.bin")).unwrap(),
+        payload(10)
+    );
+
+    // Uploaded from here.
+    let job = run(r#"{"src": "mpt://src/up.bin", "dst": "mpt://farout/up/"}"#).await;
+    assert_eq!(job["state"], "done", "{job}\n{}", server.log());
+    assert_eq!(
+        std::fs::read(far.path().join("out/up/up.bin")).unwrap(),
+        payload(3_000)
+    );
+
+    // What only this side has is refused before the job runs.
+    let job = run(
+        r#"{"src": "mpt://far/a.bin", "dst": "mpt://farout/again/", "options": {"check": true}}"#,
+    )
+    .await;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert_eq!(job["error"]["kind"], "invalid_option", "{job}");
+    let message = job["error"]["message"].as_str().unwrap();
+    assert!(message.contains("not available with a relay"), "{message}");
+    assert!(message.ends_with("copying mpt://far/a.bin"), "{message}");
+    assert!(!far.path().join("out/again").exists());
+    assert!(!Path::new("in/a.bin").exists() && !Path::new("out").exists());
+
+    let _ = relay.kill();
+    let _ = relay.wait();
+}

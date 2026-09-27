@@ -229,7 +229,8 @@ Both are library modules with the binary as a thin caller.
 
 `mpt::server` (feature `server`) runs the [HTTP API](../reference/api.md).
 `serve()` takes a `ServerConfig`, a `Runtime` holding the copy options every
-job starts from, and two cancellation tokens for drain and abort. `router()`
+job starts from (and, with feature `relay`, the `Via` of the profiles'
+relays), and two cancellation tokens for drain and abort. `router()`
 hands the routes to an axum application of your own, so the API can sit
 beside other routes under one listener.
 

@@ -215,6 +215,35 @@ Two further points of the design:
   matched), not by what the profile resolves to. A URL given in full under
   `urls = "any"` appears with its password masked.
 
+## Jobs through a relay
+
+A profile's [`via`](../server/relay-topologies.md) holds for the jobs the
+server runs, as it does for `cp`: a source behind a relay is read by that
+relay, a target behind one is written by it, and patterns and trees behind a
+relay are listed, and their directories created, by it. The server builds the
+list of relays from every profile of its configuration when it starts, and a
+`via` that is not an SSH URL stops it with exit 2. `--via` and `[defaults]
+via` do not apply: a job's endpoint goes through a relay only when its
+profile names one.
+
+The server is the relay's client. `[defaults] via_credentials` decides whether
+the targets' passwords travel in the header (the default) or are asked for at
+every login; on demand, the server answers the relay's questions from its own
+configuration, and no client of the API takes part. `[defaults] via_agent`
+forwards an agent serving the server's own keys.
+
+A job that asks for what only this side can do, when a relay takes part in
+it, fails before it runs with `invalid_option`: `check`, `resume`, and
+signing (`--sign` on `mpt serve`):
+
+```
+{"kind":"invalid_option","message":"invalid option 'check': not available with a relay: it needs what only this side has (the checksum file, the source, the key), and a relay takes part in copying mpt://far/a.bin"}
+```
+
+`delete_source` over a relay needs the source and every target behind the
+relay that reads the source, as [with
+`cp`](relay-topologies.md#deleting-a-source-the-relay-read).
+
 ## Securing the listener
 
 The server speaks plain HTTP. For anything beyond the local machine put a

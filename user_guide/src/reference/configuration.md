@@ -41,7 +41,9 @@ Values for the flags of the same name. A flag on the command line wins.
 
 `via`, `via_credentials` and `via_agent` are not read from a [file in the
 working directory](../configuration/file.md#the-file-in-the-working-directory):
-they decide where the targets' credentials go.
+they decide where the targets' credentials go. `mpt serve` takes
+`via_credentials` and `via_agent` for the relays its profiles name, but not
+`via` (see [Jobs through a relay](../server/serve.md#jobs-through-a-relay)).
 
 ## `[policy]`
 

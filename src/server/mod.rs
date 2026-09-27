@@ -175,6 +175,11 @@ pub struct Runtime {
     pub signing: bool,
     /// Transfers of one job in flight at once, unless the job says.
     pub parallel: usize,
+    /// The relays of the profiles that name one: a job's source or target
+    /// behind a relay is read, listed or written by it. `None` copies
+    /// every job from here.
+    #[cfg(feature = "relay")]
+    pub via: Option<Arc<crate::relay::via::Via>>,
 }
 
 impl Runtime {
@@ -195,6 +200,8 @@ impl Runtime {
             }),
             signing: false,
             parallel: 4,
+            #[cfg(feature = "relay")]
+            via: None,
         }
     }
 }

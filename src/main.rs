@@ -1297,8 +1297,19 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                      add --allow-delete (or [server] allow_delete) if that is meant",
                 ));
             }
+            // Jobs come later and may name any profile: every profile's
+            // relay is in play. `--via` and `[defaults] via` are not.
+            #[cfg(feature = "relay")]
+            let via = {
+                let locate = |url: &str| rules.locate(url, None);
+                via_table(None, None, &locate)?.map(|table| {
+                    std::sync::Arc::new(Via::new(table, &base, &settings.via_settings()))
+                })
+            };
             let rules = rules.clone();
             let rt = mpt::server::Runtime {
+                #[cfg(feature = "relay")]
+                via,
                 copy: base,
                 cache_limit: settings.cache_limit,
                 locate: std::sync::Arc::new(move |url, o: &mpt::server::model::JobOptions| {

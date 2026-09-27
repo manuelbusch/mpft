@@ -51,7 +51,8 @@ cargo fmt --check
 
 `tests/cli.rs` runs the binary on local files only: what it prints, with
 and without `--json`, and how it exits. `tests/server.rs` starts the binary as a server and moves local files over
-HTTP and WebSocket; `tests/relay.rs` starts it as a relay and sends files
+HTTP and WebSocket (one case, with feature `relay`, starts a relay beside it
+and needs `ssh-keygen`); `tests/relay.rs` starts it as a relay and sends files
 through it with the binary as the client, and needs `ssh-keygen` for the
 client keys. A few relay cases start two relays, to cover a target that one
 relay hands on to the other; the ones that need a real target behind the

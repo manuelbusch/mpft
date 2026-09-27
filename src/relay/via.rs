@@ -37,9 +37,8 @@ pub struct ViaSettings {
 /// The relays that copy instead of this process, and how they are used.
 pub struct Via {
     table: ViaTable,
-    /// What the header carries: the flags of this side that a relay can
-    /// honour.
-    options: JobOptions,
+    /// The timeout in seconds the relay applies to its endpoints.
+    timeout: u64,
     /// Whether the targets' passwords travel in the header or are asked
     /// for at every login.
     credentials: Credentials,
@@ -99,15 +98,21 @@ impl Via {
             credentials: settings.credentials,
             agent: settings.agent,
             agent_onward: settings.agent_onward,
-            options: JobOptions {
-                hash: opts.hash.map(|h| h.name().to_string()),
-                atomic: (!opts.atomic).then_some(false),
-                skip_existing: opts.skip_existing.then_some(true),
-                cache: matches!(opts.cache, CacheMode::Memory { .. }).then_some(true),
-                retries: (opts.retries > 0).then_some(opts.retries),
-                timeout: Some(settings.timeout),
-                ..Default::default()
-            },
+            timeout: settings.timeout,
+        }
+    }
+
+    /// What the header carries of `copy`: the options that a relay can
+    /// honour.
+    fn header_options(&self, copy: &CopyOptions) -> JobOptions {
+        JobOptions {
+            hash: copy.hash.map(|h| h.name().to_string()),
+            atomic: (!copy.atomic).then_some(false),
+            skip_existing: copy.skip_existing.then_some(true),
+            cache: matches!(copy.cache, CacheMode::Memory { .. }).then_some(true),
+            retries: (copy.retries > 0).then_some(copy.retries),
+            timeout: Some(self.timeout),
+            ..Default::default()
         }
     }
 
@@ -256,7 +261,7 @@ impl Via {
             credentials: self.credentials,
             agent: responder.is_some(),
             options: JobOptions {
-                timeout: self.options.timeout,
+                timeout: Some(self.timeout),
                 ..Default::default()
             },
             ..header
@@ -452,7 +457,7 @@ impl Via {
             }
         }
         let responder = self.responder(&everyone);
-        let mut options = self.options.clone();
+        let mut options = self.header_options(copy);
         options.delete_source = copy.delete_source.then_some(true);
         let header = Header {
             v: COPY_VERSION,
@@ -554,7 +559,7 @@ impl Via {
         let header = Header {
             credentials: self.credentials,
             agent: responder.is_some(),
-            options: self.options.clone(),
+            options: self.header_options(copy),
             ..Header::stream(name, size, dst)
         };
         // The upload is what the progress line counts.
@@ -693,7 +698,7 @@ mod tests {
     fn the_header_carries_passwords_only_when_asked_to() {
         let via = |credentials| Via {
             table: Default::default(),
-            options: Default::default(),
+            timeout: 0,
             credentials,
             agent: false,
             agent_onward: false,

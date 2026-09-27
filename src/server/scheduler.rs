@@ -17,6 +17,7 @@ use super::model::{ApiError, JobId, JobOptions, Submission, TransferState};
 use super::store::{Prepared, transfer_error};
 use crate::batch::{self, Job, JobReport, PrepareOptions};
 use crate::config::is_profile_ref;
+use crate::transfer::{CopyOptions, FanoutReport};
 use crate::{Error, Location, Result};
 
 /// Start the job's task.
@@ -192,8 +193,7 @@ async fn run(state: Arc<AppState>, id: JobId) {
                         let mut copy = options.apply(&state.rt.copy, state.rt.cache_limit)?;
                         copy.cancel = Some(token.child_token());
                         copy.progress = Some(progress);
-                        let open = |l: &Location| crate::protocols::open(l.clone());
-                        batch::run_job(&job, &open, &copy).await
+                        run_job(&state, &job, copy).await
                     }
                     .await;
                     JobReport { index, job, result }
@@ -225,6 +225,17 @@ async fn run(state: Arc<AppState>, id: JobId) {
     }
     let state_after = state.store.finish(&id, journal(&state));
     info!(%id, state = ?state_after, "over");
+}
+
+/// Copy one file job: through the relays its endpoints name, or from here.
+async fn run_job(state: &AppState, job: &Job, copy: CopyOptions) -> Result<FanoutReport> {
+    #[cfg(feature = "relay")]
+    if let Some(via) = &state.rt.via {
+        return via.run(job.clone(), copy).await.1;
+    }
+    let _ = state;
+    let open = |l: &Location| crate::protocols::open(l.clone());
+    batch::run_job(job, &open, &copy).await
 }
 
 /// Whether a job's end goes into the journal: not when the server's
@@ -279,7 +290,18 @@ async fn prepare(
             }
         }
     }
-    let open = |l: &Location| crate::protocols::open(l.clone());
+    // A source behind a relay is listed by it, and a target's directories
+    // are created by the relay that writes it. Cancelling drops this
+    // future, and the sessions with it.
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let open = |l: &Location| -> Result<Box<dyn crate::Endpoint>> {
+        #[cfg(feature = "relay")]
+        if let Some(via) = &state.rt.via {
+            return via.open(l, &cancel);
+        }
+        let _ = &cancel;
+        crate::protocols::open(l.clone())
+    };
     let opts = PrepareOptions {
         allow_empty: submission.options.allow_empty.unwrap_or(false),
         recursive: submission.options.recursive.unwrap_or(false),
@@ -299,6 +321,20 @@ async fn prepare(
             return Err(fail(ApiError::new(kind, &e), &refs));
         }
     };
+    // What only this side can do (a checksum check, a resume, a
+    // signature) is refused for a job a relay takes part in.
+    #[cfg(feature = "relay")]
+    if let Some(via) = &state.rt.via {
+        let refused = submission
+            .options
+            .apply(&state.rt.copy, state.rt.cache_limit)
+            .map(|copy| crate::relay::via::Via::refusal(&copy));
+        let checked = refused
+            .and_then(|refused| jobs.iter().try_for_each(|job| via.check_with(job, refused)));
+        if let Err(e) = checked {
+            return Err(fail(ApiError::new(e.kind(), &e), &refs));
+        }
+    }
     // All or nothing: a job refused here holds no target afterwards.
     let noted = state
         .targets
