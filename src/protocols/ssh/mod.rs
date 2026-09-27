@@ -2,7 +2,10 @@
 //!
 //! Authentication order: explicit key (`?key=` / `MPT_SSH_KEY`) → the
 //! ssh-agent a relay client forwarded → the local ssh-agent (`SSH_AUTH_SOCK`)
-//! → default key files in `~/.ssh` → password.
+//! → default key files in `~/.ssh` → password. A URL a relay's client named
+//! ([`Location::is_client_named`]) may not name a key file, and skips the
+//! local agent, the default keys and the configured key unless the relay
+//! runs with `--own-keys` ([`Location::own_keys`]).
 //! Host keys are verified against `~/.ssh/known_hosts` according to the
 //! `known_hosts` option: `strict` (default), `accept-new` or `off`.
 //! `?hostkey=SHA256:…` pins one or more expected host keys and then replaces
@@ -187,19 +190,37 @@ impl SshConfig {
             .or_else(|| cfg.ssh.user.clone())
             .or_else(|| std::env::var("USER").ok())
             .ok_or_else(|| Error::Auth("no user name in URL and $USER is unset".into()))?;
+        // A URL a relay's client named may not point at files on the relay
+        // host, and gets the relay's own identity only when the relay
+        // allows it; the forwarded agent and a password remain.
+        if loc.is_client_named() {
+            for opt in ["key", "cert", "passphrase"] {
+                if loc.opt(opt).is_some() {
+                    return Err(Error::invalid_option(
+                        opt,
+                        format!(
+                            "{loc}: names a file on the relay host, which a client may not use; \
+                             let the relay use the forwarded agent, or give the target a password"
+                        ),
+                    ));
+                }
+            }
+        }
+        let own = loc.own_keys();
+        let configured = |value: Option<String>| value.filter(|_| own);
         let key_file = loc
             .opt("key")
             .map(String::from)
-            .or_else(|| std::env::var("MPT_SSH_KEY").ok())
-            .or_else(|| cfg.ssh.key.clone())
+            .or_else(|| configured(std::env::var("MPT_SSH_KEY").ok()))
+            .or_else(|| configured(cfg.ssh.key.clone()))
             .filter(|s| !s.is_empty())
             .map(|s| PathBuf::from(expand_tilde(&s)));
         // OpenSSH looks for <key>-cert.pub next to the key; so do we.
         let cert_file = loc
             .opt("cert")
             .map(String::from)
-            .or_else(|| std::env::var("MPT_SSH_CERT").ok())
-            .or_else(|| cfg.ssh.cert.clone())
+            .or_else(|| configured(std::env::var("MPT_SSH_CERT").ok()))
+            .or_else(|| configured(cfg.ssh.cert.clone()))
             .filter(|s| !s.is_empty())
             .map(|s| PathBuf::from(expand_tilde(&s)))
             .or_else(|| {
@@ -209,9 +230,9 @@ impl SshConfig {
         let key_passphrase = loc
             .opt("passphrase")
             .map(String::from)
-            .or_else(|| std::env::var("MPT_SSH_KEY_PASSPHRASE").ok())
+            .or_else(|| configured(std::env::var("MPT_SSH_KEY_PASSPHRASE").ok()))
             .map(SecretString::from)
-            .or_else(|| cfg.resolved.ssh_passphrase.clone());
+            .or_else(|| cfg.resolved.ssh_passphrase.clone().filter(|_| own));
         let known_hosts = KnownHostsPolicy::for_location(loc)?;
         let mut pinned = Vec::new();
         for v in loc.opts("hostkey") {
@@ -334,8 +355,10 @@ impl SshConfig {
                     Err(e) => warn!("forwarded ssh-agent: {e}"),
                 }
             }
-            // 3. the local ssh-agent
-            if agent::available() {
+            // 3. the local ssh-agent — this process's own identity, which
+            // a URL a relay's client named gets only when the relay allows
+            // it (`--own-keys`); the same goes for the default key files.
+            if self.loc.own_keys() && agent::available() {
                 tried.push("ssh-agent".into());
                 match agent::connect_raw().await {
                     Ok(stream) => match self.try_agent(handle, rsa_hash, Box::new(stream)).await {
@@ -350,7 +373,9 @@ impl SshConfig {
                 }
             }
             // 4. default key files
-            if let Some(home) = dirs::home_dir() {
+            if self.loc.own_keys()
+                && let Some(home) = dirs::home_dir()
+            {
                 for name in ["id_ed25519", "id_ecdsa", "id_rsa"] {
                     let path = home.join(".ssh").join(name);
                     if path.exists() {
@@ -761,6 +786,42 @@ mod tests {
             cfg.key_passphrase.as_ref().map(|p| p.expose_secret()),
             Some("letmein")
         );
+    }
+
+    /// A URL a relay's client named may not point at a key file on the
+    /// relay host, and gets the relay's own identity only with `--own-keys`.
+    #[test]
+    fn a_client_named_url_gets_none_of_the_relays_identity() {
+        for opt in [
+            "key=~/.ssh/id_ed25519",
+            "cert=/etc/mpt/c.pub",
+            "passphrase=x",
+        ] {
+            let mut loc = Location::parse(&format!("sftp://u@example.com/x?{opt}")).unwrap();
+            loc.set_client_named(true);
+            let err = SshConfig::from_location(&loc).unwrap_err().to_string();
+            assert!(
+                err.contains("names a file on the relay host"),
+                "{opt}: {err}"
+            );
+            assert!(!err.contains("passphrase=x"), "{err}");
+        }
+        // The relay's own settings: `MPT_SSH_KEY_PASSPHRASE` stands in for
+        // `[ssh] key`, which the global configuration would carry.
+        unsafe { std::env::set_var("MPT_SSH_KEY_PASSPHRASE", "relay-secret") };
+        let mut loc = Location::parse("sftp://u@example.com/x").unwrap();
+        loc.set_client_named(false);
+        let cfg = SshConfig::from_location(&loc).unwrap();
+        assert!(cfg.key_passphrase.is_none());
+        assert!(!cfg.loc.own_keys());
+        loc.set_client_named(true);
+        let cfg = SshConfig::from_location(&loc).unwrap();
+        assert_eq!(
+            cfg.key_passphrase.as_ref().map(|p| p.expose_secret()),
+            Some("relay-secret")
+        );
+        assert!(cfg.loc.own_keys());
+        unsafe { std::env::remove_var("MPT_SSH_KEY_PASSPHRASE") };
     }
 
     #[test]

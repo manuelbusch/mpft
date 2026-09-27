@@ -112,13 +112,15 @@ If the server refuses the certificate, the bare key still gets its turn.
 ### Authentication through a relay
 
 A target written by a [relay](../server/relay.md) is logged into from there,
-so the order is the relay's: the key its own configuration names, then the
-**agent the client forwarded**, then the relay's own agent and default keys,
-then a password. The client takes `?key=`, `?cert=` and `?passphrase=` out of
-the URL before it sends it — the file stays here — and answers the relay's
-signature requests from the agent it runs for that session. A certificate is
-offered as a certificate there too, so a CA-signed login works through a relay
-exactly as it does from here.
+with the **agent the client forwarded**, then the password the client sent.
+The client takes `?key=`, `?cert=` and `?passphrase=` out of the URL before
+it sends it — the file stays here — and answers the relay's signature
+requests from the agent it runs for that session. A certificate is offered as
+a certificate there too, so a CA-signed login works through a relay exactly
+as it does from here. The relay's own identity — the key its configuration
+names, its agent, its default keys — serves a target the client named only
+when the relay runs with [`--own-keys`](../server/relay-host.md#trust); it
+serves the relay's own profiles always, in the order above.
 
 ## Host keys
 

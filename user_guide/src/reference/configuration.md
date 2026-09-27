@@ -160,9 +160,12 @@ Settings for [`mpt relay --listen`](../server/relay-host.md#on-the-relay-host)
 | `parallel` | integer, at least 1 | `4` | relays running concurrently; further sessions wait |
 | `grace` | duration | `"30s"` | how long a shutdown waits for running relays |
 | `max_size` | size | `"0"` (no limit) | refuse larger uploads and sources |
+| `max_entries` | integer | `100000` | refuse to list a directory with more entries; `0` for no limit |
 | `credentials` | `"header"`, `"on-demand"`, `"any"` | `"header"` | which way a client may send the targets' passwords |
 | `agent_forwarding` | boolean | `true` | take the ssh-agent a client forwards |
 | `allow_delete` | boolean | `false` | let a client have the source deleted that the relay read for it; never a file on the relay host |
+| `own_keys` | boolean | `false` | log in to the SSH hosts a client names with the relay's own identity too (its agent, `~/.ssh/id_*`, `[ssh] key`); see [Trust](../server/relay-host.md#trust) |
+| `local_files` | boolean | `false` | let a client name files on the relay host; off, only the relay's own profiles reach its disk |
 
 ## `[profiles.<name>]`
 

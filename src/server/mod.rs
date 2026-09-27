@@ -134,7 +134,7 @@ impl ServerConfig {
                 // Options in the reference replace the profile's (`?key=`,
                 // `?known_hosts=off`, `?endpoint=`), which would let a
                 // client undo what the profile fixes.
-                if url.contains('?') {
+                if crate::config::profile_ref_has_options(url) {
                     return Err(Error::InvalidUrl(format!(
                         "{url}: a job may not add ?options to a profile; set them in the profile"
                     )));
@@ -165,8 +165,6 @@ pub use crate::options::LocateFn;
 pub struct Runtime {
     /// The options a job's own lay over (see [`JobOptions::apply`]).
     pub copy: CopyOptions,
-    /// Bound for the memory cache when a job asks for `cache`.
-    pub cache_limit: u64,
     /// URL to location, with whatever the server adds (a default timeout,
     /// `insecure`, a password from a flag). The job's options are there
     /// for `timeout`.
@@ -188,7 +186,6 @@ impl Runtime {
     pub fn new(copy: CopyOptions) -> Runtime {
         Runtime {
             copy,
-            cache_limit: 256 << 20,
             locate: Arc::new(|url, opts| {
                 let mut loc = crate::config::locate(url)?;
                 if let Some(t) = opts.timeout
@@ -230,8 +227,9 @@ pub struct AppState {
     watchers: AtomicUsize,
     /// Jobs the journal handed over, to start with [`AppState::run`].
     recovered: Mutex<Vec<JobId>>,
-    /// Held while a wrong token is answered, so guesses queue up.
-    guesses: tokio::sync::Mutex<()>,
+    /// Held while a wrong token is answered: only so many guesses wait
+    /// at once, the rest are refused outright (see `api::slow_down`).
+    guesses: tokio::sync::Semaphore,
 }
 
 impl AppState {
@@ -264,7 +262,7 @@ impl AppState {
             accepting: AtomicBool::new(true),
             watchers: AtomicUsize::new(0),
             recovered: Mutex::new(ids),
-            guesses: tokio::sync::Mutex::new(()),
+            guesses: tokio::sync::Semaphore::new(api::GUESSES_AT_ONCE),
         }))
     }
 
@@ -350,9 +348,7 @@ impl AppState {
     /// number of transfers and every URL. Checked when a job is taken and
     /// again when the journal hands one over after a restart.
     pub fn admit(&self, submission: &model::Submission) -> std::result::Result<(), ApiError> {
-        submission
-            .options
-            .apply(&self.rt.copy, self.rt.cache_limit)?;
+        submission.options.apply(&self.rt.copy)?;
         if submission.options.delete_source == Some(true) && !self.cfg.allow_delete {
             return Err(ApiError::new(
                 "invalid_option",

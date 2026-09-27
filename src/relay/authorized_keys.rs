@@ -301,16 +301,36 @@ fn in_network(addr: IpAddr, net: IpAddr, len: u8) -> bool {
     }
 }
 
-/// `*` for any run of characters, `?` for one, case-insensitive.
+/// `*` for any run of characters, `?` for one, case-insensitive. Linear
+/// in the pattern and the text: on a mismatch the match falls back to the
+/// last `*` and lets it take one more character, which is the only way a
+/// star's span ever needs to change, so a pattern from `authorized_keys`
+/// cannot make a login take exponential time.
 fn wildcard(pattern: &[u8], text: &[u8]) -> bool {
-    match pattern.split_first() {
-        None => text.is_empty(),
-        Some((b'*', rest)) => (0..=text.len()).any(|i| wildcard(rest, &text[i..])),
-        Some((&p, rest)) => match text.split_first() {
-            Some((&t, text)) if p == b'?' || p.eq_ignore_ascii_case(&t) => wildcard(rest, text),
-            _ => false,
-        },
+    let (mut p, mut t) = (0, 0);
+    // The last `*` seen and where in the text it started matching.
+    let mut star: Option<(usize, usize)> = None;
+    while t < text.len() {
+        match pattern.get(p) {
+            Some(b'*') => {
+                star = Some((p, t));
+                p += 1;
+            }
+            Some(&c) if c == b'?' || c.eq_ignore_ascii_case(&text[t]) => {
+                p += 1;
+                t += 1;
+            }
+            _ => match star {
+                Some((sp, st)) => {
+                    p = sp + 1;
+                    t = st + 1;
+                    star = Some((sp, t));
+                }
+                None => return false,
+            },
+        }
     }
+    pattern[p..].iter().all(|&c| c == b'*')
 }
 
 #[cfg(test)]
@@ -388,6 +408,43 @@ mod tests {
 
         let (other, _) = key();
         assert!(plain.grants(&other, ip("192.0.2.1"), now).is_none());
+    }
+
+    /// The wildcard match takes the same time whatever the pattern: a row
+    /// of stars against a long non-match once took exponential time.
+    #[test]
+    fn wildcards_match_in_linear_time() {
+        for (pattern, text, hit) in [
+            ("*", "", true),
+            ("", "", true),
+            ("", "a", false),
+            ("a*", "abc", true),
+            ("*c", "abc", true),
+            ("a*c", "abc", true),
+            ("a*c", "abd", false),
+            ("a?c", "aBc", true),
+            ("a?c", "ac", false),
+            ("**a**b**", "xxaxxbxx", true),
+            ("*.example", "host.example", true),
+            ("*.example", "host.example.com", false),
+            ("10.0.*.?", "10.0.5.7", true),
+            ("10.0.*.?", "10.0.5.77", false),
+        ] {
+            assert_eq!(
+                wildcard(pattern.as_bytes(), text.as_bytes()),
+                hit,
+                "{pattern} against {text}"
+            );
+        }
+        let pattern = "*a".repeat(30) + "b";
+        let text = "a".repeat(3_000);
+        let started = std::time::Instant::now();
+        assert!(!wildcard(pattern.as_bytes(), text.as_bytes()));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

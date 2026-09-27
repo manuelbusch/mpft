@@ -80,6 +80,15 @@ pub const MAX_HEADER: usize = 64 * 1024;
 /// slot for as long as its connection lives.
 pub const HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Entries a relay lists at most unless told otherwise (`--max-entries`).
+pub const DEFAULT_MAX_ENTRIES: usize = 100_000;
+
+/// How long a relay waits for the client to take one of its lines. A
+/// client that reads nothing would otherwise hold the slot after the copy
+/// is done, with the report stuck in the pipe; past this the rest of the
+/// lines are dropped and the session ends when the copy does.
+pub const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The first line on stdin: what to call the file, how many bytes follow,
 /// where they go and how.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -329,18 +338,25 @@ pub struct Relay {
     /// The options a header's own lay over (see [`JobOptions::apply`]).
     /// `cancel` and `progress` are set per job.
     pub copy: CopyOptions,
-    /// Bound for the memory cache when a header asks for `cache`.
-    pub cache_limit: u64,
     /// URL to location, with what the process adds (`--insecure`, a
     /// default timeout).
     pub locate: Arc<LocateFn>,
     /// Refuse a header whose `size` is larger; 0 sets no limit.
     pub max_size: u64,
+    /// Refuse to send a listing with more entries than this
+    /// (`--max-entries`); 0 sets no limit. A listing is held in memory
+    /// and sent as a line per entry, so a directory of millions would
+    /// take the relay's memory and the client's time.
+    pub max_entries: usize,
     /// Which way the passwords may come.
     pub credentials: RelayCredentials,
     /// A header may ask for the source to be deleted (`--allow-delete`).
     /// Only a source the relay read itself, and never a local file.
     pub allow_delete: bool,
+    /// A client may name files on the relay host (`--allow-local`): a
+    /// local path as a source, a target or a directory to list or make.
+    /// Off, only a profile of the relay's own reaches its disk.
+    pub local_files: bool,
     /// Stops the running copy: Ctrl-C on the relay.
     pub cancel: CancellationToken,
 }
@@ -392,7 +408,9 @@ where
 }
 
 /// Write the lines as they come, the session's last one after every line
-/// that came before it, and return once that is written.
+/// that came before it, and return once that is written. A client that
+/// takes none of them within [`WRITE_TIMEOUT`] gets no more: the copy still
+/// finishes, its report goes nowhere, and the slot is freed when it does.
 async fn write_lines<W: AsyncWrite + Unpin>(
     writer: &mut W,
     mut lines: mpsc::UnboundedReceiver<Value>,
@@ -404,21 +422,37 @@ async fn write_lines<W: AsyncWrite + Unpin>(
         tokio::select! {
             biased;
             Some(value) = lines.recv() => {
-                if reading && line(writer, &value).await.is_err() {
-                    // Nobody is listening any more: the copy still
-                    // finishes, its report goes nowhere.
-                    debug!("relay: the client stopped reading");
-                    reading = false;
+                if reading {
+                    reading = write_line(writer, &value).await;
                 }
             }
             value = &mut last => {
                 if let Ok(value) = value
                     && reading
                 {
-                    let _ = line(writer, &value).await;
+                    write_line(writer, &value).await;
                 }
                 return;
             }
+        }
+    }
+}
+
+/// One line for the client, given up after [`WRITE_TIMEOUT`]: whether the
+/// client is still taking them.
+async fn write_line<W: AsyncWrite + Unpin>(writer: &mut W, value: &Value) -> bool {
+    match tokio::time::timeout(WRITE_TIMEOUT, line(writer, value)).await {
+        Ok(Ok(())) => true,
+        Ok(Err(_)) => {
+            debug!("relay: the client stopped reading");
+            false
+        }
+        Err(_) => {
+            debug!(
+                "relay: the client took no line for {}s; the rest are dropped",
+                WRITE_TIMEOUT.as_secs()
+            );
+            false
         }
     }
 }
@@ -594,7 +628,7 @@ where
     let done = async {
         let agent = agent.filter(|_| header.agent);
         let open = |url: &str, who: Who| -> Result<Box<dyn Endpoint>> {
-            let loc = (relay.locate)(url, &header.options)?;
+            let loc = client_url(relay, url, &header.options)?;
             let loc = with_agent(with_broker(loc, &broker, who)?, &agent);
             info!(what = %loc, op = header.op.as_str(), credentials = header.credentials.as_str(), "relay operation");
             crate::protocols::open(loc)
@@ -603,6 +637,16 @@ where
         match header.op {
             Op::List => {
                 let entries = open(src, Who::Src)?.receiver()?.list().await?;
+                if relay.max_entries > 0 && entries.len() > relay.max_entries {
+                    return Err(Error::invalid_option(
+                        "src",
+                        format!(
+                            "{} entries is more than this relay lists ({}, --max-entries)",
+                            entries.len(),
+                            relay.max_entries
+                        ),
+                    ));
+                }
                 for e in &entries {
                     let _ = lines.send(json!({ "entry": crate::report::entry_json(e) }));
                 }
@@ -642,12 +686,24 @@ where
     }
 }
 
-/// The session's `error` line for `e`, with its exit code.
+/// The session's `error` line for `e`, with its exit code. What a
+/// configuration error says is for the operator — it names the relay's
+/// files, profile URLs and credential commands — so that goes to the log,
+/// and the client is told only that a profile of the relay's is at fault.
 fn refuse(e: Error) -> (u8, Value) {
-    debug!("relay: {e}");
+    let shown = match e {
+        Error::Config(detail) => {
+            warn!("relay: refused: configuration: {detail}");
+            Error::Config("a profile of the relay is misconfigured; see the relay's log".into())
+        }
+        e => {
+            debug!("relay: {e}");
+            e
+        }
+    };
     (
-        e.exit_code(),
-        json!({ "error": crate::report::error_json(&e) }),
+        shown.exit_code(),
+        json!({ "error": crate::report::error_json(&shown) }),
     )
 }
 
@@ -931,7 +987,7 @@ async fn prepare(
              (or [relay] allow_delete) if that is meant",
         ));
     }
-    let mut copy = header.options.apply(&relay.copy, relay.cache_limit)?;
+    let mut copy = header.options.apply(&relay.copy)?;
     copy.check = false;
     copy.verify = None;
     copy.delete_source = delete_source;
@@ -947,7 +1003,7 @@ async fn prepare(
     };
     let mut targets = Vec::with_capacity(header.dst.len());
     for (i, dst) in header.dst.iter().enumerate() {
-        let loc = (relay.locate)(dst.url(), &header.options)?;
+        let loc = client_url(relay, dst.url(), &header.options)?;
         match dst {
             Dst::Url(_) => {
                 let loc = with_broker(loc, broker, Who::Dst(i))?;
@@ -957,7 +1013,7 @@ async fn prepare(
             // its password — if one is asked for — is the client's to give.
             Dst::Via { url, via } => {
                 no_password_on_demand(&loc, broker)?;
-                let hop = (relay.locate)(via, &header.options)?;
+                let hop = client_url(relay, via, &header.options)?;
                 if hop.scheme() != crate::Scheme::Ssh {
                     return Err(Error::invalid_option(
                         "via",
@@ -996,7 +1052,7 @@ async fn prepare(
     let source = match &header.src {
         None => None,
         Some(url) => {
-            let loc = (relay.locate)(url, &header.options)?;
+            let loc = client_url(relay, url, &header.options)?;
             if delete_source && loc.scheme() == crate::Scheme::File {
                 return Err(Error::invalid_option(
                     "delete_source",
@@ -1034,6 +1090,38 @@ async fn prepare(
         source,
         targets,
     })
+}
+
+/// A URL a client named, as the relay's location for it. A profile of the
+/// relay's own is resolved as `cp` resolves it, but no `?options` may come
+/// with it: they would replace what the profile fixes (`?insecure=true`,
+/// `?known_hosts=off`, `?endpoint=`) with the profile's credentials still
+/// attached — the rule the server keeps for its clients as well. A path
+/// on the relay host is the relay's to give, through such a profile, unless
+/// it runs with `--allow-local`: a client that could read and write any
+/// file of the relay's account could rewrite its configuration.
+fn client_url(relay: &Relay, url: &str, options: &JobOptions) -> Result<Location> {
+    let profile = crate::config::is_profile_ref(url);
+    if profile && crate::config::profile_ref_has_options(url) {
+        return Err(Error::invalid_option(
+            "url",
+            format!(
+                "{}: a client may not add ?options to a profile of the relay; set them in the profile",
+                crate::location::mask_url(url)
+            ),
+        ));
+    }
+    let loc = (relay.locate)(url, options)?;
+    if !profile && !relay.local_files && loc.scheme() == crate::Scheme::File {
+        return Err(Error::invalid_option(
+            "url",
+            format!(
+                "{loc}: a file on the relay host; this relay serves none to its clients \
+                 (start it with --allow-local or [relay] local_files, or name a profile of the relay)"
+            ),
+        ));
+    }
+    Ok(loc)
 }
 
 /// A source the relay reads, cut off with an error past `--max-size`.
@@ -1161,11 +1249,12 @@ mod tests {
     fn relay(max_size: u64) -> Relay {
         Relay {
             copy: CopyOptions::default(),
-            cache_limit: 1 << 20,
             locate: Arc::new(|url, _| crate::Location::parse(url)),
             max_size,
+            max_entries: 0,
             credentials: RelayCredentials::Header,
             allow_delete: false,
+            local_files: true,
             cancel: CancellationToken::new(),
         }
     }
@@ -1500,6 +1589,28 @@ mod tests {
         );
     }
 
+    /// A listing beyond `--max-entries` is refused as a whole, not sent
+    /// in part.
+    #[tokio::test]
+    async fn a_listing_is_held_to_max_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a", "b", "c"] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        let src = format!("{}/", dir.path().display());
+        let mut r = relay(0);
+        r.max_entries = 2;
+        let (code, lines) = held_open(&r, json!({ "op": "list", "src": src.clone() })).await;
+        assert_eq!(code, 2, "{lines:?}");
+        assert!(lines.iter().all(|l| l.get("entry").is_none()), "{lines:?}");
+        let message = lines.last().unwrap()["error"]["message"].as_str().unwrap();
+        assert!(message.contains("--max-entries"), "{message}");
+        r.max_entries = 3;
+        let (code, lines) = held_open(&r, json!({ "op": "list", "src": src })).await;
+        assert_eq!(code, 0, "{lines:?}");
+        assert_eq!(lines.last().unwrap()["listed"]["entries"], 3);
+    }
+
     #[tokio::test]
     async fn a_listing_header_is_checked_like_any_other() {
         for (header, what) in [
@@ -1727,6 +1838,38 @@ mod tests {
         assert!(text.contains("\"report\""), "{text}");
     }
 
+    /// A client that never reads the relay's lines does not keep the slot
+    /// after the copy: the report is given up after a while and the
+    /// session ends.
+    #[tokio::test(start_paused = true)]
+    async fn a_client_that_never_reads_does_not_keep_the_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = vec![7u8; 50_000];
+        let header = json!({
+            "v": 1, "name": "unread.bin", "size": payload.len(),
+            "dst": [format!("{}/", dir.path().display())]
+        });
+        let (mut client_in, server_in) = duplex(64 << 10);
+        // Room for nothing: the first line already sticks.
+        let (server_out, _client_out) = duplex(8);
+        tokio::spawn(async move {
+            let mut line = header.to_string();
+            line.push('\n');
+            client_in.write_all(line.as_bytes()).await.unwrap();
+            client_in.write_all(&payload).await.unwrap();
+        });
+        let started = tokio::time::Instant::now();
+        let code = tokio::time::timeout(WRITE_TIMEOUT * 4, run(&relay(0), server_in, server_out))
+            .await
+            .expect("the session ends although nothing is read");
+        assert_eq!(code, 0);
+        assert!(started.elapsed() >= WRITE_TIMEOUT);
+        assert_eq!(
+            std::fs::read(dir.path().join("unread.bin")).unwrap().len(),
+            50_000
+        );
+    }
+
     /// A version 2 client that stops before the size is reached fails the
     /// targets like a short version 1 payload does.
     #[tokio::test]
@@ -1815,6 +1958,7 @@ mod tests {
             (json!({ "name": "x", "size": 1, "dst": ["ftp://u:pw@h/"], "credentials": "on-demand" }).to_string(), "credentials"),
             (json!({ "name": "x", "size": 1, "dst": [target.clone()], "options": { "check": true } }).to_string(), "check"),
             (json!({ "name": "x", "size": 1, "dst": [target.clone()], "options": { "retries": 2 } }).to_string(), "retries"),
+            (json!({ "name": "x", "size": 1, "dst": [target.clone()], "options": { "cache": true } }).to_string(), "--cache"),
             (json!({ "name": "x", "size": 1, "dst": [target.clone()], "nope": 1 }).to_string(), "header"),
             (json!({ "name": "x", "size": 5_000, "dst": [target.clone()] }).to_string(), "size"),
             (json!({ "name": "x", "size": 1, "dst": [{ "url": target.clone(), "via": "ssh://r/", "hop": 2 }] }).to_string(), "header"),
@@ -1858,6 +2002,113 @@ mod tests {
         let message = lines[0]["error"]["message"].as_str().unwrap();
         assert!(message.contains("asked for on demand"), "{message}");
         assert!(!message.contains("the-relays-own"), "{message}");
+    }
+
+    /// A profile of the relay's own is a client's to name, not to change:
+    /// `?options` on it would replace what the profile fixes, with the
+    /// profile's credentials still attached.
+    #[tokio::test]
+    async fn a_client_may_not_add_options_to_a_profile_of_the_relay() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = crate::Config::parse(&format!(
+            "[profiles.out]\nurl = \"{}/\"\n",
+            dir.path().display()
+        ))
+        .unwrap();
+        let mut r = relay(0);
+        r.locate = Arc::new(move |url, _| match cfg.resolve(url)? {
+            Some(loc) => Ok(loc),
+            None => crate::Location::parse(url),
+        });
+        let header = |dst: &str| json!({ "name": "x.txt", "size": 5, "dst": [dst] }).to_string();
+        let (code, lines) = relay_run(&r, &header("mpt://out/?insecure=true"), b"hello").await;
+        assert_eq!(code, 2, "{lines:?}");
+        let message = lines[0]["error"]["message"].as_str().unwrap();
+        assert!(message.contains("?options"), "{message}");
+        assert!(!dir.path().join("x.txt").exists());
+        // The same for an operation, and the profile as it is goes through.
+        let (code, lines) =
+            held_open(&r, json!({ "op": "list", "src": "mpt://out/?timeout=1" })).await;
+        assert_eq!(code, 2, "{lines:?}");
+        let payload = protocol::frame(protocol::DATA, b"hello");
+        let (code, lines) = relay_run(&r, &header("mpt://out/"), &payload).await;
+        assert_eq!(code, 0, "{lines:?}");
+        assert_eq!(std::fs::read(dir.path().join("x.txt")).unwrap(), b"hello");
+    }
+
+    /// What is wrong with a profile of the relay's is the operator's to
+    /// read, in the log: the client is told that much and nothing of the
+    /// relay's files, commands or URLs.
+    #[tokio::test]
+    async fn a_configuration_error_stays_in_the_relays_log() {
+        let mut r = relay(0);
+        r.locate = Arc::new(|_, _| {
+            Err(Error::Config(
+                "profile 'out': credentials: /home/relay/.config/mpt/secret.sh: exit 1".into(),
+            ))
+        });
+        let header = json!({ "name": "x", "size": 1, "dst": ["mpt://out/"] }).to_string();
+        let (code, lines) = relay_run(&r, &header, b"x").await;
+        assert_eq!(code, 2, "{lines:?}");
+        let error = &lines[0]["error"];
+        assert_eq!(error["kind"], "config");
+        let message = error["message"].as_str().unwrap();
+        assert!(message.contains("see the relay's log"), "{message}");
+        assert!(!message.contains("secret.sh"), "{message}");
+        assert!(!message.contains("out"), "{message}");
+    }
+
+    /// A path on the relay host is the relay's to give: a client names one
+    /// only with `--allow-local`, or through a profile of the relay's.
+    #[tokio::test]
+    async fn a_local_file_needs_allow_local_or_a_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = crate::Config::parse(&format!(
+            "[profiles.out]\nurl = \"{}/\"\n",
+            dir.path().display()
+        ))
+        .unwrap();
+        let mut r = relay(0);
+        r.local_files = false;
+        r.locate = Arc::new(move |url, _| match cfg.resolve(url)? {
+            Some(loc) => Ok(loc),
+            None => crate::Location::parse(url),
+        });
+        let local = format!("{}/", dir.path().display());
+        let header = |dst: &str| json!({ "name": "x.txt", "size": 5, "dst": [dst] }).to_string();
+        let (code, lines) = relay_run(&r, &header(&local), b"hello").await;
+        assert_eq!(code, 2, "{lines:?}");
+        let message = lines[0]["error"]["message"].as_str().unwrap();
+        assert!(message.contains("--allow-local"), "{message}");
+        assert!(!dir.path().join("x.txt").exists());
+        // As a source, and for an operation, the same.
+        let src = dir.path().join("in.txt");
+        std::fs::write(&src, b"hello").unwrap();
+        let (code, lines) = relay_run(
+            &r,
+            &json!({ "src": src.to_str().unwrap(), "dst": ["mpt://out/"] }).to_string(),
+            b"",
+        )
+        .await;
+        assert_eq!(code, 2, "{lines:?}");
+        let (code, lines) = held_open(&r, json!({ "op": "list", "src": local })).await;
+        assert_eq!(code, 2, "{lines:?}");
+        // The relay's own profile reaches its disk.
+        let payload = protocol::frame(protocol::DATA, b"hello");
+        let (code, lines) = relay_run(&r, &header("mpt://out/"), &payload).await;
+        assert_eq!(code, 0, "{lines:?}");
+        assert_eq!(std::fs::read(dir.path().join("x.txt")).unwrap(), b"hello");
+        // And so does a client's path once the relay allows it.
+        r.local_files = true;
+        let payload = protocol::frame(protocol::DATA, b"hello");
+        let (code, lines) = relay_run(
+            &r,
+            &json!({ "name": "y.txt", "size": 5, "dst": [local] }).to_string(),
+            &payload,
+        )
+        .await;
+        assert_eq!(code, 0, "{lines:?}");
+        assert_eq!(std::fs::read(dir.path().join("y.txt")).unwrap(), b"hello");
     }
 
     #[tokio::test]

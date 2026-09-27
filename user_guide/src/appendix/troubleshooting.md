@@ -340,13 +340,27 @@ An S3 store binds its key when it is built, so there is nothing to ask for at
 login time. Send that target's credentials in the header, or let the relay use
 its own AWS credential chain.
 
+**`invalid option 'cache': this side holds no payload in memory for a job; start it with --cache if that is meant`** [2] (400)
+
+A job or a relay client asked for the memory cache (`cache`, or `cp --via
+--cache`, which `--retries` needs) on a server or relay that runs without
+`--cache`. The memory is the operator's to give: start the process with
+`--cache`, or drop the option.
+
+**`invalid option 'url': /srv/in/: a file on the relay host; this relay serves none to its clients (start it with --allow-local or [relay] local_files, or name a profile of the relay)`** [2]
+
+A URL sent to the relay is a path on the relay host, which the relay hands
+out only through a profile of its own or when started with `--allow-local`;
+see [Trust](../server/relay-host.md#trust).
+
 **`authentication failed`** for an SSH target behind a relay [4]
 
 The forwarded agent had no key for it. Check that the target's key is one this
 side can offer (`?key=`, `[ssh] key`, `MPT_SSH_KEY` or `~/.ssh/id_*`, or your
 own agent), that the relay was not started with `--no-agent-forwarding`, and —
 under an ordinary `sshd` — that the `authorized_keys` line says
-`agent-forwarding`.
+`agent-forwarding`. A key on the relay itself serves a target you name only
+when the relay runs with `--own-keys`.
 
 **``the server does not run `mpt relay` (not a relay, or not in its PATH)``** [1]
 

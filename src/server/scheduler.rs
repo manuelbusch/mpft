@@ -190,7 +190,7 @@ async fn run(state: Arc<AppState>, id: JobId) {
                 Some(_permits) => {
                     state.store.transfer_started(&id, index);
                     let result = async {
-                        let mut copy = options.apply(&state.rt.copy, state.rt.cache_limit)?;
+                        let mut copy = options.apply(&state.rt.copy)?;
                         copy.cancel = Some(token.child_token());
                         copy.progress = Some(progress);
                         run_job(&state, &job, copy).await
@@ -327,7 +327,7 @@ async fn prepare(
     if let Some(via) = &state.rt.via {
         let refused = submission
             .options
-            .apply(&state.rt.copy, state.rt.cache_limit)
+            .apply(&state.rt.copy)
             .map(|copy| crate::relay::via::Via::refusal(&copy));
         let checked = refused
             .and_then(|refused| jobs.iter().try_for_each(|job| via.check_with(job, refused)));

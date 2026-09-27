@@ -65,6 +65,8 @@ impl Relay {
             .arg(d.join("authorized_keys"))
             .arg("--port-file")
             .arg(&port_file)
+            // The targets `a` and `b` are directories of the relay's.
+            .arg("--allow-local")
             .args(extra)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -999,7 +1001,7 @@ fn the_relay_reads_stdin_without_a_server() {
     let run = |header: serde_json::Value, body: &[u8]| {
         let mut child = Command::new(env!("CARGO_BIN_EXE_mpt"))
             .env_remove("MPT_CONFIG")
-            .arg("relay")
+            .args(["relay", "--allow-local"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -1045,6 +1047,63 @@ fn the_relay_reads_stdin_without_a_server() {
         std::fs::read(dir.path().join("framed.txt")).unwrap(),
         b"hello\n"
     );
+}
+
+/// A client's URL may not name a key file on the relay host: the header is
+/// refused before the payload is read, with exit code 2.
+#[test]
+fn the_relay_refuses_a_key_file_a_client_names() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .env_remove("MPT_CONFIG")
+        .arg("relay")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().unwrap();
+        writeln!(
+            stdin,
+            r#"{{"v": 1, "name": "k.txt", "size": 6, "dst": ["sftp://u@127.0.0.1:1/x/?key=~/.ssh/id_ed25519"]}}"#
+        )
+        .unwrap();
+        let _ = stdin.write_all(b"hello\n");
+    }
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(text.contains("names a file on the relay host"), "{text}");
+    assert!(text.contains("invalid option 'key'"), "{text}");
+}
+
+/// Without `--allow-local` a client's path on the relay host is refused,
+/// so a stranger to the account cannot read or write its files.
+#[test]
+fn the_relay_serves_no_local_file_unless_allowed() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = format!("{}/", dir.path().display());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mpt"))
+        .env_remove("MPT_CONFIG")
+        .arg("relay")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        let header = serde_json::json!({ "v": 1, "name": "x.txt", "size": 6, "dst": [&target] });
+        let mut stdin = child.stdin.take().unwrap();
+        writeln!(stdin, "{header}").unwrap();
+        let _ = stdin.write_all(b"hello\n");
+    }
+    let out = child.wait_with_output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.status.code(), Some(2), "{text}");
+    assert!(text.contains("--allow-local"), "{text}");
+    assert!(!dir.path().join("x.txt").exists());
 }
 
 /// An HTTP server on a free port that takes every request with `200 OK`

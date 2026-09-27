@@ -62,9 +62,9 @@ flags and `[defaults]`.
 | `delete_source` | boolean | `--delete-source` | needs `[server] allow_delete` |
 | `atomic` | boolean | `--no-atomic` inverts it | |
 | `resume` | boolean | `--resume` | needs `atomic` |
-| `cache` | boolean | `--cache` | bounded by the server's `--cache-limit` |
-| `retries` | integer | `--retries` | needs the memory cache: `cache`, or the server's own `--cache` |
-| `timeout` | integer, seconds | `--timeout` | `0` disables it |
+| `cache` | boolean | `--cache` | `true` only where the server runs with `--cache`, which holds every payload already (bounded by its `--cache-limit`); `false` switches it off for this job |
+| `retries` | integer | `--retries` | needs the memory cache: the server's own `--cache` |
+| `timeout` | integer, seconds | `--timeout` | held to the server's own `--timeout`: a shorter one is taken, a longer one or `0` becomes the server's; `0` disables it only where the server has none |
 | `allow_empty` | boolean | `--allow-empty` | |
 | `recursive` | boolean | `-r` | |
 | `parallel` | integer, at least 1 | `--parallel` | transfers of this job in flight; capped by the server's `parallel` |
@@ -115,7 +115,7 @@ stable part.
 |---|---|---|
 | 400 | `invalid_body` | the body could not be read: not JSON (or not UTF-8), a field the request does not have, a batch without jobs |
 | 400 | `invalid_url` | a URL is malformed, is not an allowed profile, or adds `?options` to one; a line of a job list that does not parse |
-| 400 | `invalid_option` | an option the server does not know, in the body's `options` or in the query string; a value of the wrong type; or one that cannot work with the server's own settings: `retries` without a memory cache, `resume` where transfers are not atomic, `delete_source` on a server without `allow_delete` |
+| 400 | `invalid_option` | an option the server does not know, in the body's `options` or in the query string; a value of the wrong type; or one that cannot work with the server's own settings: `cache` or `retries` on a server without `--cache`, `resume` where transfers are not atomic, `delete_source` on a server without `allow_delete` |
 | 400 | `config` | a profile the job names is misconfigured; the message names the profile, the server's log says what is wrong |
 | 400 | `too_many_transfers` | the list is longer than `[server] max_transfers` |
 | 400, 426 | `invalid_upgrade` | a request on an event route that is not a WebSocket upgrade |
@@ -127,6 +127,7 @@ stable part.
 | 413 | `too_large` | the body exceeds `[server] max_body` |
 | 415 | `unsupported_media_type` | a body type the route does not take |
 | 429 | `too_many_jobs` | `[server] max_queued` jobs are open; the `Retry-After` header says when to try again |
+| 429 | `too_many_guesses` | eight wrong tokens are already [being answered late](../server/serve.md#securing-the-listener); this one was refused at once, `Retry-After` says when to try again |
 | 500 | the failure's own, often `io` | the job could not be written to the journal; it was not taken |
 | 503 | `shutting_down` | the server is draining and takes no new jobs |
 

@@ -54,3 +54,14 @@ or a field the server does not know, never silent acceptance; a newer relay
 takes an older client's version 1 header as it always did, and an older
 relay tells a newer client which version it speaks. Upgrade the relay and the
 server first, then the clients.
+
+What a relay or a server grants a client is a default that may tighten in a
+minor release, as [Defaults](#what-may-change) says, and each such change
+comes with a flag that restores the old grant. A relay of this release no
+longer takes a client's local path on the relay host, its own SSH keys for a
+host a client names, `?options` on one of its profiles, `?key=` on a target,
+or `cache` and a `timeout` beyond its own; `--allow-local`, `--own-keys` and
+`--cache` on the relay bring the first, second and fifth back, and the server
+holds `cache` and `timeout` the same way. A client that relied on one of
+these gets an `invalid_option` error naming the flag, never a silently
+different transfer.

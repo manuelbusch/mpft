@@ -332,6 +332,14 @@ pub struct Location {
     /// False when the environment's passwords are not for this location:
     /// a URL a relay's client names.
     env_password: bool,
+    /// True for a URL a relay's client named: `?key=`, `?cert=` and
+    /// `?passphrase=` would name files on the relay host, so they are
+    /// refused.
+    client_named: bool,
+    /// Whether an SSH login here may use this process's own identity: its
+    /// ssh-agent, the default key files, `[ssh] key` and `MPT_SSH_KEY`. Off
+    /// for a URL a relay's client named unless the relay allows it.
+    own_keys: bool,
 }
 
 impl Location {
@@ -434,6 +442,8 @@ impl Location {
             brokers: Brokers::default(),
             profile: None,
             env_password: true,
+            client_named: false,
+            own_keys: true,
         })
     }
 
@@ -446,8 +456,10 @@ impl Location {
     }
 
     /// A bare local path: no scheme, no host, and a trailing separator marks
-    /// a directory (on Windows `\` counts as one).
-    fn local(path: &str) -> Location {
+    /// a directory (on Windows `\` counts as one). Never parsed as a URL,
+    /// so a name that looks like one (`mailto:x`, `ftp:x`) stays a file
+    /// name.
+    pub(crate) fn local(path: &str) -> Location {
         Location {
             scheme: Scheme::File,
             username: None,
@@ -462,6 +474,8 @@ impl Location {
             brokers: Brokers::default(),
             profile: None,
             env_password: true,
+            client_named: false,
+            own_keys: true,
         }
     }
 
@@ -556,6 +570,26 @@ impl Location {
     /// its own `MPT_PASSWORD` is not for whichever host a client picks.
     pub fn set_env_password(&mut self, allowed: bool) {
         self.env_password = allowed;
+    }
+
+    /// Mark this as a URL a relay's client named: an SSH login to it may
+    /// not name a key file, a certificate or a passphrase (they would be
+    /// files on the relay host), and uses this process's own identity —
+    /// its agent, default keys, `[ssh] key` — only when `own_keys` says so.
+    pub fn set_client_named(&mut self, own_keys: bool) {
+        self.client_named = true;
+        self.own_keys = own_keys;
+    }
+
+    /// Whether a relay's client named this URL (see
+    /// [`Location::set_client_named`]).
+    pub fn is_client_named(&self) -> bool {
+        self.client_named
+    }
+
+    /// Whether an SSH login here may use this process's own identity.
+    pub fn own_keys(&self) -> bool {
+        self.own_keys
     }
 
     /// Whether the password was written into the URL, where the process list

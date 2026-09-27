@@ -245,6 +245,10 @@ struct RelayArgs {
     /// Refuse uploads larger than this, e.g. 10G; 0 for no limit
     #[arg(long, value_name = "SIZE", value_parser = parse_size)]
     max_size: Option<u64>,
+    /// Refuse to list a directory with more entries than this (100000);
+    /// 0 for no limit
+    #[arg(long, value_name = "N")]
+    max_entries: Option<usize>,
     /// How clients may send the targets' passwords: header (in the URLs,
     /// the default), on-demand (asked of the client at every login, never
     /// held here) or any
@@ -258,6 +262,17 @@ struct RelayArgs {
     /// (delete_source); never a file on this host. Off unless given
     #[arg(long)]
     allow_delete: bool,
+    /// Log in to the SSH hosts a client names with this side's own identity
+    /// too: its ssh-agent, ~/.ssh/id_*, [ssh] key and MPT_SSH_KEY. Off unless
+    /// given: then only the client's forwarded agent and the passwords it
+    /// sends serve such a host
+    #[arg(long)]
+    own_keys: bool,
+    /// Let a client name files on this host: a local path as a source, a
+    /// target or a directory to list or make. Off unless given: then only
+    /// a profile of this side's configuration reaches its disk
+    #[arg(long)]
+    allow_local: bool,
     /// Write the port actually bound to this file (for --listen 127.0.0.1:0)
     #[arg(long, value_name = "PATH")]
     port_file: Option<PathBuf>,
@@ -893,7 +908,8 @@ struct LocateRules {
 
 impl LocateRules {
     /// A URL as a location, `mpt://` profiles resolved. `timeout` is a
-    /// per-job override of the flag (the server's jobs may set one).
+    /// per-job override of the flag (the server's jobs and a relay's
+    /// clients may set one), held to the flag's own limit.
     fn locate(&self, url: &str, timeout: Option<u64>) -> mpt::Result<mpt::Location> {
         let mut loc = mpt::config::locate(url)?;
         if self.insecure {
@@ -901,7 +917,10 @@ impl LocateRules {
         }
         // --timeout is the default; ?timeout= in the URL wins.
         if loc.opt("timeout").is_none() {
-            loc.set_option("timeout", timeout.unwrap_or(self.timeout).to_string());
+            let timeout = timeout.map_or(self.timeout, |t| {
+                mpt::options::hold_timeout(t, self.timeout)
+            });
+            loc.set_option("timeout", timeout.to_string());
         }
         if self.retries > 0 && loc.opt("connect_retries").is_none() {
             loc.set_option("connect_retries", self.retries.to_string());
@@ -923,10 +942,18 @@ impl LocateRules {
     /// clients name. Such a URL gets nothing of this side's credentials:
     /// not `--password` and its siblings, not `MPT_PASSWORD` or
     /// `MPT_SMTP_PASSWORD` — those are for the hosts this side picks, not
-    /// for whichever host a client names. A profile of the relay's own
-    /// configuration (`mpt://`) is one of those hosts and keeps them.
+    /// for whichever host a client names. The same goes for this side's SSH
+    /// identity — its agent, `~/.ssh/id_*`, `[ssh] key` — unless the relay
+    /// runs with `--own-keys`; and a client's URL may not name a key file on
+    /// this host. A profile of the relay's own configuration (`mpt://`) is
+    /// one of those hosts and keeps them all.
     #[cfg(feature = "relay")]
-    fn locate_relayed(&self, url: &str, timeout: Option<u64>) -> mpt::Result<mpt::Location> {
+    fn locate_relayed(
+        &self,
+        url: &str,
+        timeout: Option<u64>,
+        own_keys: bool,
+    ) -> mpt::Result<mpt::Location> {
         if mpt::config::is_profile_ref(url) {
             return self.locate(url, timeout);
         }
@@ -935,7 +962,16 @@ impl LocateRules {
             ..self.clone()
         };
         let mut loc = rules.locate(url, timeout)?;
+        // `?timeout=` in the URL wins over the header's, but is held to
+        // this side's limit all the same: a client may not pin a slot.
+        if let Some(t) = loc.opt("timeout").and_then(|t| t.parse::<u64>().ok()) {
+            loc.set_option(
+                "timeout",
+                mpt::options::hold_timeout(t, self.timeout).to_string(),
+            );
+        }
         loc.set_env_password(false);
+        loc.set_client_named(own_keys);
         Ok(loc)
     }
 }
@@ -1311,7 +1347,6 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                 #[cfg(feature = "relay")]
                 via,
                 copy: base,
-                cache_limit: settings.cache_limit,
                 locate: std::sync::Arc::new(move |url, o: &mpt::server::model::JobOptions| {
                     rules.locate(url, o.timeout)
                 }),
@@ -1342,11 +1377,11 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
             base.progress = None;
             let section = &mpt::config::global().relay;
             let rules = rules.clone();
+            let own_keys = args.own_keys || section.own_keys.unwrap_or(false);
             let relay = mpt::relay::Relay {
                 copy: base,
-                cache_limit: settings.cache_limit,
                 locate: std::sync::Arc::new(move |url, o: &mpt::options::JobOptions| {
-                    rules.locate_relayed(url, o.timeout)
+                    rules.locate_relayed(url, o.timeout, own_keys)
                 }),
                 max_size: match (args.max_size, &section.max_size) {
                     (Some(n), _) => n,
@@ -1354,6 +1389,10 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                         .map_err(|e| usage(format!("[relay] max_size: {e}")))?,
                     (None, None) => 0,
                 },
+                max_entries: args
+                    .max_entries
+                    .or(section.max_entries)
+                    .unwrap_or(mpt::relay::DEFAULT_MAX_ENTRIES),
                 credentials: match (args.credentials, &section.credentials) {
                     (Some(mode), _) => mode,
                     (None, Some(v)) => v
@@ -1362,6 +1401,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                     (None, None) => mpt::relay::RelayCredentials::Header,
                 },
                 allow_delete: args.allow_delete || section.allow_delete.unwrap_or(false),
+                local_files: args.allow_local || section.local_files.unwrap_or(false),
                 cancel: cancel.clone(),
             };
             match &args.listen {
@@ -2563,9 +2603,12 @@ fn show_config(cfg: &mpt::Config) {
         "relay".parallel = cfg.relay.parallel,
         "relay".grace = cfg.relay.grace,
         "relay".max_size = cfg.relay.max_size,
+        "relay".max_entries = cfg.relay.max_entries,
         "relay".credentials = cfg.relay.credentials,
         "relay".agent_forwarding = cfg.relay.agent_forwarding,
         "relay".allow_delete = cfg.relay.allow_delete,
+        "relay".own_keys = cfg.relay.own_keys,
+        "relay".local_files = cfg.relay.local_files,
     );
     if !cfg.server.profiles.is_empty() {
         rows.push(("[server] profiles".into(), cfg.server.profiles.join(", ")));

@@ -159,7 +159,7 @@ serve` and `[defaults]` apply to every job it runs, so a server started with
 says otherwise. `--sign` on the server signs every job's checksum file. The
 [options table](../reference/api.md#job-options) has the full list.
 
-Two things a job may not do without the operator's say-so:
+Three things a job may not do without the operator's say-so:
 
 - **Delete its source.** `delete_source` is refused unless the server runs
   with `--allow-delete` or `[server] allow_delete = true`:
@@ -176,6 +176,16 @@ Two things a job may not do without the operator's say-so:
   `too_many_transfers`, and the listing stops there rather than reading a huge
   tree to the end. `max_queued` caps the jobs not yet finished; a `POST`
   beyond it gets `429` with a `Retry-After` header.
+- **Hold the server's memory or a slot for ever.** `cache: true` is refused
+  unless the server runs with `--cache` (it then holds every payload in
+  memory already, and `retries` work); `cache: false` switches it off for
+  one job. A job's `timeout` is held to the server's own `--timeout`: shorter
+  is fine, longer or `0` becomes the server's, and `0` disables it only on a
+  server that has none.
+
+  ```
+  {"error":{"kind":"invalid_option","message":"invalid option 'cache': this side holds no payload in memory for a job; start it with --cache if that is meant"}}
+  ```
 
 ## What a client can reach
 
@@ -249,10 +259,12 @@ relay that reads the source, as [with
 The server speaks plain HTTP. For anything beyond the local machine put a
 reverse proxy with TLS in front of it, and let the proxy do rate limiting per
 client address. The server itself only slows guessing down: a wrong token,
-on any route including the health check, is answered after 250 ms, and
-wrong tokens are answered one at a time over the whole server, so parallel
-requests guess no faster. A client that is refused slows down the other
-refused clients, never one with the right token.
+on any route including the health check, is answered after 250 ms, and at
+most eight wrong tokens wait for that over the whole server; any beyond
+those are refused at once with `429` and kind `too_many_guesses`, so
+parallel requests guess no faster and cannot pile up connections. A client
+that is refused slows down the other refused clients, never one with the
+right token.
 
 Requests that carry an `Origin` header are refused with `403`. Such a request
 comes from a browser acting for a web page, and the API is not for pages:

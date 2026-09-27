@@ -173,10 +173,12 @@ async fn auth(State(state): State<Arc<AppState>>, req: Request, next: Next) -> R
     }
     match bearer(&state, req.headers()) {
         Bearer::Ok => next.run(req).await,
-        Bearer::Wrong => {
-            slow_down(&state).await;
-            Reject::new(StatusCode::UNAUTHORIZED, "unauthorized", "wrong token").into_response()
-        }
+        Bearer::Wrong => match slow_down(&state).await {
+            Ok(()) => {
+                Reject::new(StatusCode::UNAUTHORIZED, "unauthorized", "wrong token").into_response()
+            }
+            Err(refused) => too_many_guesses(refused),
+        },
         Bearer::Missing => Reject::new(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
@@ -188,14 +190,35 @@ async fn auth(State(state): State<Arc<AppState>>, req: Request, next: Next) -> R
 
 const WRONG_TOKEN_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// Wrong tokens answered at once over the whole server. Beyond that a
+/// guess is refused at once with `429`: a queue of them would otherwise
+/// hold a connection and a task each for as long as the flood lasts.
+pub(super) const GUESSES_AT_ONCE: usize = 8;
+
 /// Slow a guess down: a wrong token is answered after
-/// [`WRONG_TOKEN_DELAY`], and one at a time over the whole server, so
-/// parallel requests do not guess any faster. Four tries a second is
-/// nothing against a random token, and costs a client with the right one
-/// nothing.
-async fn slow_down(state: &AppState) {
-    let _turn = state.guesses.lock().await;
+/// [`WRONG_TOKEN_DELAY`], and at most [`GUESSES_AT_ONCE`] of them are
+/// waiting for that over the whole server, so parallel requests guess no
+/// faster and cannot pile up. A guess beyond that is refused with
+/// `too_many_guesses` and `Retry-After`. Neither costs a client with the
+/// right token anything.
+async fn slow_down(state: &AppState) -> std::result::Result<(), Reject> {
+    let Ok(_turn) = state.guesses.try_acquire() else {
+        return Err(Reject::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too_many_guesses",
+            "too many wrong tokens at once; try again later",
+        ));
+    };
     tokio::time::sleep(WRONG_TOKEN_DELAY).await;
+    Ok(())
+}
+
+/// The `429` for a guess beyond [`GUESSES_AT_ONCE`], with when to retry.
+fn too_many_guesses(reject: Reject) -> Response {
+    let mut resp = reject.into_response();
+    resp.headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    resp
 }
 
 enum Bearer {
@@ -247,8 +270,10 @@ async fn healthz(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Resp
     let bearer = bearer(&state, &headers);
     // The details tell a right token from a wrong one, so a wrong one is
     // slowed down here as on every other route.
-    if matches!(bearer, Bearer::Wrong) {
-        slow_down(&state).await;
+    if matches!(bearer, Bearer::Wrong)
+        && let Err(refused) = slow_down(&state).await
+    {
+        return too_many_guesses(refused);
     }
     let accepting = state.accepting();
     let body = if matches!(bearer, Bearer::Ok) {
@@ -713,19 +738,34 @@ mod tests {
             started.elapsed() >= WRONG_TOKEN_DELAY,
             "a wrong token is slowed down"
         );
-        // Also where the answer only differs, and in parallel one at a time.
+        // Also where the answer only differs. In parallel, only so many
+        // wait for their answer; the rest are refused at once, and there
+        // is room again once the first are answered.
         let started = std::time::Instant::now();
-        let guesses =
-            (0..3).map(|_| call(&app, Method::GET, "/v1/healthz", Some("guess"), None, ""));
-        for (status, body) in futures::future::join_all(guesses).await {
-            assert_eq!(status, StatusCode::OK);
-            assert_eq!(body, serde_json::json!({ "ok": true }));
-        }
+        let guesses = (0..GUESSES_AT_ONCE + 3)
+            .map(|_| call(&app, Method::GET, "/v1/healthz", Some("guess"), None, ""));
+        let answers = futures::future::join_all(guesses).await;
         assert!(
-            started.elapsed() >= 3 * WRONG_TOKEN_DELAY,
-            "parallel guesses are answered one at a time: {:?}",
+            started.elapsed() >= WRONG_TOKEN_DELAY,
+            "guesses are slowed down: {:?}",
             started.elapsed()
         );
+        let slowed = answers
+            .iter()
+            .filter(|(status, body)| {
+                *status == StatusCode::OK && *body == serde_json::json!({ "ok": true })
+            })
+            .count();
+        let refused = answers
+            .iter()
+            .filter(|(status, body)| {
+                *status == StatusCode::TOO_MANY_REQUESTS
+                    && body["error"]["kind"] == "too_many_guesses"
+            })
+            .count();
+        assert_eq!((slowed, refused), (GUESSES_AT_ONCE, 3), "{answers:?}");
+        let (status, _) = call(&app, Method::GET, "/v1/jobs", Some("guess"), None, "").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "room again");
         let (status, body) = call(&app, Method::GET, "/v1/jobs", None, None, "").await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(body["error"]["kind"], "unauthorized");

@@ -250,6 +250,9 @@ pub struct RelaySection {
     pub grace: Option<String>,
     /// Refuse uploads larger than this, with a unit: `10G`; 0 for no limit.
     pub max_size: Option<String>,
+    /// Refuse to list a directory with more entries than this (default
+    /// 100000); 0 for no limit.
+    pub max_entries: Option<usize>,
     /// Which way a client may send the targets' passwords: `header` (the
     /// default), `on-demand` or `any`.
     pub credentials: Option<String>,
@@ -257,6 +260,11 @@ pub struct RelaySection {
     pub agent_forwarding: Option<bool>,
     /// Let a session delete the source the relay read (default false).
     pub allow_delete: Option<bool>,
+    /// Log in to the SSH hosts a client names with the relay's own identity
+    /// too — its agent, default keys, `[ssh] key` (default false).
+    pub own_keys: Option<bool>,
+    /// Let a client name files on the relay host (default false).
+    pub local_files: Option<bool>,
 }
 
 /// Which URLs the server accepts in a job.
@@ -637,6 +645,15 @@ impl Config {
                 ));
             }
         }
+        // A directory one happens to stand in must not turn every copy
+        // into a move: the source is gone once the copy is done.
+        if local.defaults.delete_source.take().is_some() {
+            local.warnings.push(format!(
+                "{}: ignoring [defaults] delete_source — a configuration file in the working \
+                 directory may not have sources deleted",
+                path.display()
+            ));
+        }
         if !ignored.is_empty() {
             local.warnings.push(format!(
                 "{}: ignoring [{}] — a configuration file in the working directory \
@@ -754,18 +771,24 @@ impl Config {
             parallel,
             grace,
             max_size,
+            max_entries,
             credentials,
             agent_forwarding,
             allow_delete,
+            own_keys,
+            local_files,
         } = &self.relay;
         if host_key.is_some()
             || authorized_keys.is_some()
             || parallel.is_some()
             || grace.is_some()
             || max_size.is_some()
+            || max_entries.is_some()
             || credentials.is_some()
             || agent_forwarding.is_some()
             || allow_delete.is_some()
+            || own_keys.is_some()
+            || local_files.is_some()
         {
             out.push("relay");
         }
@@ -1206,6 +1229,18 @@ pub fn profile_name(url: &str) -> Option<&str> {
 /// to case, as a URL scheme is.
 pub fn is_profile_ref(url: &str) -> bool {
     strip_profile_prefix(url).is_some()
+}
+
+/// Whether a profile reference carries `?options` of its own. They replace
+/// what the profile fixes (`?key=`, `?known_hosts=off`, `?endpoint=`) with
+/// the profile's credentials still attached, which is why neither a
+/// server's nor a relay's clients may send them.
+pub fn profile_ref_has_options(url: &str) -> bool {
+    strip_profile_prefix(url).is_some_and(|rest| {
+        rest.split_once('#')
+            .map_or(rest, |(before, _)| before)
+            .contains('?')
+    })
 }
 
 /// What follows `mpt://`, if `url` starts with it in any case.
@@ -1810,6 +1845,18 @@ mod tests {
     }
 
     #[test]
+    fn a_local_file_may_not_have_sources_deleted() {
+        let (_dir, cfg) = local("[defaults]\ntimeout = 5\ndelete_source = true\n");
+        assert_eq!(cfg.defaults.timeout, Some(5));
+        assert!(cfg.defaults.delete_source.is_none());
+        assert!(
+            cfg.warnings.iter().any(|w| w.contains("delete_source")),
+            "{:?}",
+            cfg.warnings
+        );
+    }
+
+    #[test]
     fn a_local_file_only_contributes_defaults_and_policy() {
         let (_dir, cfg) = local(
             "[defaults]\ntimeout = 5\n[policy]\nknown_hosts = \"off\"\n[ssh]\nuser = \"nobody\"\n",
@@ -2016,8 +2063,8 @@ mod tests {
     }
 
     /// Every key of `[defaults]` a working directory may set reaches the
-    /// merged configuration; the three relay keys are dropped earlier, in
-    /// `read_local`.
+    /// merged configuration; the three relay keys and `delete_source` are
+    /// dropped earlier, in `read_local`.
     #[test]
     fn every_local_default_is_merged() {
         let (_dir, mut local) = local(
@@ -2073,7 +2120,7 @@ mod tests {
         assert_eq!(atomic, Some(false));
         assert_eq!(resume, Some(true));
         assert_eq!(skip_existing, Some(true));
-        assert_eq!(delete_source, Some(true));
+        assert_eq!(delete_source, None, "dropped by read_local");
         assert_eq!(log.as_deref(), Some("debug"));
         assert_eq!(json, Some(true));
         assert_eq!(parallel, Some(7));

@@ -1,8 +1,10 @@
 //! The relay's own SSH server: a host key, an `authorized_keys` file, and
 //! nothing but `exec "mpt relay"` on a session channel. No shell, no port
 //! forwarding, no sftp — a client that is in the file may relay, and that
-//! is all. Agent forwarding is taken, unless switched off: it is how the
-//! relay authenticates against the SSH targets with the client's keys.
+//! is all. The user name of the login is not looked at: the key decides,
+//! as the file has no accounts to tell apart, and the name is only logged.
+//! Agent forwarding is taken, unless switched off: it is how the relay
+//! authenticates against the SSH targets with the client's keys.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,6 +23,15 @@ use tracing::{debug, info, warn};
 use super::Relay;
 use super::authorized_keys::Keys;
 use crate::{Error, Result};
+
+/// Relays one connection may have running or waiting for a slot at once.
+/// Each holds a `--parallel` slot or a place in its queue; without a bound
+/// one client could open sessions until nobody else gets a turn.
+pub const MAX_SESSIONS_PER_CONNECTION: usize = 4;
+
+/// Authentication attempts before the connection is dropped: what `sshd`
+/// allows by default, enough for a client that offers several keys.
+const MAX_AUTH_ATTEMPTS: usize = 6;
 
 /// What `mpt relay --listen` needs.
 #[derive(Debug, Clone)]
@@ -71,6 +82,7 @@ pub async fn serve(
         keys: vec![key],
         auth_rejection_time: Duration::from_millis(500),
         auth_rejection_time_initial: Some(Duration::ZERO),
+        max_auth_attempts: MAX_AUTH_ATTEMPTS,
         inactivity_timeout: Some(Duration::from_secs(600)),
         keepalive_interval: Some(Duration::from_secs(15)),
         ..Default::default()
@@ -103,6 +115,7 @@ pub async fn serve(
             shared: Arc::clone(&shared),
             peer,
             channel: None,
+            sessions: Arc::new(AtomicUsize::new(0)),
             agent: false,
             agent_allowed: false,
         };
@@ -162,12 +175,16 @@ struct Shared {
     agent_forwarding: bool,
 }
 
-/// One client connection: authenticated by a key in the file, then one
-/// session channel that runs the relay.
+/// One client connection: authenticated by a key in the file, then session
+/// channels that run relays, at most [`MAX_SESSIONS_PER_CONNECTION`] at a
+/// time.
 struct Connection {
     shared: Arc<Shared>,
     peer: std::net::SocketAddr,
+    /// A session channel opened and not yet started.
     channel: Option<Channel<Msg>>,
+    /// Relays of this connection running or waiting for a slot.
+    sessions: Arc<AtomicUsize>,
     /// The client forwarded its agent and this server took it.
     agent: bool,
     /// The key the client logged in with may forward an agent (no
@@ -217,7 +234,10 @@ impl Handler for Connection {
         reply: ChannelOpenHandle,
         _session: &mut Session,
     ) -> std::result::Result<(), Self::Error> {
-        if self.channel.is_some() {
+        if self.channel.is_some()
+            || self.sessions.load(Ordering::SeqCst) >= MAX_SESSIONS_PER_CONNECTION
+        {
+            debug!(peer = %self.peer, "session refused: too many at once on this connection");
             reply
                 .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
                 .await;
@@ -328,6 +348,8 @@ impl Connection {
         session.channel_success(id)?;
         let handle = session.handle();
         let shared = Arc::clone(&self.shared);
+        let sessions = Arc::clone(&self.sessions);
+        sessions.fetch_add(1, Ordering::SeqCst);
         let peer = self.peer;
         let agent: Option<Arc<dyn crate::broker::AgentSource>> = self.agent.then(|| {
             Arc::new(ForwardedAgent {
@@ -336,6 +358,7 @@ impl Connection {
         });
         tokio::spawn(async move {
             let code = relay_on(&shared, channel, &handle, id, agent).await;
+            sessions.fetch_sub(1, Ordering::SeqCst);
             debug!(%peer, code, "relay over");
         });
         Ok(())
@@ -371,11 +394,12 @@ async fn relay_on(
                 let (reader, mut writer) = tokio::io::split(channel.into_stream());
                 let relay = Relay {
                     copy: shared.relay.copy.clone(),
-                    cache_limit: shared.relay.cache_limit,
                     locate: Arc::clone(&shared.relay.locate),
                     max_size: shared.relay.max_size,
+                    max_entries: shared.relay.max_entries,
                     credentials: shared.relay.credentials,
                     allow_delete: shared.relay.allow_delete,
+                    local_files: shared.relay.local_files,
                     cancel: shared.abort.child_token(),
                 };
                 let code = super::run_with(&relay, reader, &mut writer, agent).await;
@@ -508,11 +532,12 @@ mod tests {
             };
             let relay = Arc::new(Relay {
                 copy: CopyOptions::default(),
-                cache_limit: 1 << 20,
                 locate: Arc::new(|url, _| crate::Location::parse(url)),
                 max_size: 0,
+                max_entries: 0,
                 credentials: super::super::RelayCredentials::Header,
                 allow_delete: false,
+                local_files: true,
                 cancel: CancellationToken::new(),
             });
             let cancel = CancellationToken::new();
@@ -806,6 +831,41 @@ mod tests {
                 );
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
+        }
+        f.stop().await;
+    }
+
+    /// One connection may have only so many relays running or waiting:
+    /// past that, a session channel is refused until one is over.
+    #[tokio::test]
+    async fn a_connection_gets_only_so_many_sessions_at_once() {
+        let f = Fixture::start(1).await;
+        let cfg = SshConfig::from_location(&f.via("client_key")).unwrap();
+        let handle = cfg.connect().await.unwrap();
+        let mut held = Vec::new();
+        for _ in 0..MAX_SESSIONS_PER_CONNECTION {
+            let channel = handle.channel_open_session().await.unwrap();
+            // Started (`exec` waits for the channel reply), so it holds a
+            // place; the header never comes.
+            channel.exec(true, "mpt relay").await.unwrap();
+            held.push(channel);
+        }
+        assert!(
+            handle.channel_open_session().await.is_err(),
+            "one session too many was accepted"
+        );
+        // Once a session is over — its header never came — there is room
+        // again.
+        let started = std::time::Instant::now();
+        loop {
+            if handle.channel_open_session().await.is_ok() {
+                break;
+            }
+            assert!(
+                started.elapsed() < super::super::HEADER_TIMEOUT + Duration::from_secs(10),
+                "no room again"
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
         f.stop().await;
     }

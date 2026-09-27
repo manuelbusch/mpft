@@ -821,8 +821,9 @@ pub struct ReaderEndpoint {
 
 impl ReaderEndpoint {
     /// `name` is what the targets call the file (reduced to a single path
-    /// component); `size` is how many bytes the reader must yield —
-    /// fewer are an error, so a source that ends early fails the copy.
+    /// component, and never read as a URL: `mailto:x` is a file called
+    /// that); `size` is how many bytes the reader must yield — fewer are
+    /// an error, so a source that ends early fails the copy.
     pub fn new(
         name: &str,
         size: u64,
@@ -830,7 +831,7 @@ impl ReaderEndpoint {
     ) -> Result<ReaderEndpoint> {
         let name = crate::location::safe_name(name)?;
         Ok(ReaderEndpoint {
-            location: crate::Location::parse(&name)?,
+            location: crate::Location::local(&name),
             size,
             reader: std::sync::Mutex::new(Some(boxed(reader))),
         })
@@ -969,6 +970,16 @@ mod reader_endpoint_tests {
         .unwrap();
         assert_eq!(ep.location.filename(), Some("report.pdf"));
         assert_eq!(ep.size().await.unwrap(), Some(5));
+        // A name is a name, whatever it looks like.
+        for name in ["mailto:a@b.c", "ftp:x", "s3://bucket/key"] {
+            let ep = ReaderEndpoint::new(name, 1, std::io::Cursor::new(b"x".to_vec())).unwrap();
+            assert_eq!(ep.location.scheme(), crate::Scheme::File, "{name}");
+            assert_eq!(
+                ep.location.filename(),
+                Some(name.rsplit('/').next().unwrap()),
+                "{name}"
+            );
+        }
         let mut out = Vec::new();
         ep.receive()
             .await

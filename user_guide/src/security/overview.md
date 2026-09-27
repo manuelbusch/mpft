@@ -10,15 +10,20 @@ page is the map for a review.
 |---|---|---|
 | **the client** (`mpt cp`, `batch`) | every URL, every resolved credential, the file | — |
 | **a relay** (`cp --via`) | the targets, the file as it passes, and either the passwords for the length of the transfer (`header`) or one password for the length of one login (`on-demand`) | a key file; with `on-demand`, a password between logins |
+| **a client of a relay** | what the relay's own profiles reach, named as they are; any other host with the credentials the client brings | the relay's disk (unless `--allow-local`), the relay's SSH keys and agent (unless `--own-keys`), its `?options` on a profile, its configuration errors in detail |
 | **a second relay** in a chain | its own target and the file; its questions go back through the first relay | anything about the other targets |
 | **the server** (`mpt serve`) | the profiles it is allowed to use, with their credentials, as the server's own user | a password from a client, unless `urls = "any"` is set |
 | **a client of the server** | job states, progress and reports, with endpoints named as submitted | what a profile resolves to, why a provider failed |
 | **a target** | what its protocol sends: the file, the checksum file, the credentials for that endpoint | anything about the other targets |
 
-Whoever can log in to a relay can make it write wherever a URL says; whoever
-holds the server's token can use every allowed profile as the server's user.
-Both are to be trusted like a shell account, and both have the switches under
-[Hardening](#hardening-checklist) to narrow what that account reaches. See
+Whoever can log in to a relay can make it write wherever a URL says, with the
+credentials the client brings; whoever holds the server's token can use every
+allowed profile as the server's user. Both are to be trusted with what the
+relay's or the server's own configuration hands out, and both have the
+switches under [Hardening](#hardening-checklist) to widen or narrow that. What
+a relay does not hand out by default is what belongs to its account rather
+than to the job: its files, its SSH identity, the settings its profiles fix,
+its memory (`cache`) and its slots (`timeout`). See
 [Trust](../server/relay-host.md#trust) and [What a client can
 reach](../server/serve.md#what-a-client-can-reach).
 
@@ -29,8 +34,8 @@ reach](../server/serve.md#what-a-client-can-reach).
 | plaintext credentials, password in the URL | before connecting | [Credentials in the clear](../trust/connections.md#credentials-in-the-clear) |
 | TLS certificate | during the handshake | [TLS certificates](../trust/connections.md#tls-certificates) |
 | SSH host key | during the handshake, before authentication | [SSH host keys](../trust/connections.md#ssh-host-keys) |
-| relay: credential mode of both sides, passwords in URLs, size | before a byte of the payload is read | [Relay protocol](../reference/relay-protocol.md#the-header) |
-| server: token, `Origin` header, allowed profiles, options on a reference | before a job is accepted | [Securing the listener](../server/serve.md#securing-the-listener) |
+| relay: credential mode of both sides, passwords in URLs, size, options on a profile of the relay's, key files and local paths on the relay host, `cache` and `timeout` against the relay's own | before a byte of the payload is read | [Relay protocol](../reference/relay-protocol.md#the-header) |
+| server: token, `Origin` header, allowed profiles, options on a reference, `cache` and `timeout` against the server's own | before a job is accepted | [Securing the listener](../server/serve.md#securing-the-listener) |
 | signature on the source's checksum file | before any data is copied | [Verifying](../trust/signatures.md#verifying) |
 | checksum | while the data streams | [Checksums](../trust/checksums.md) |
 | colliding targets in a batch | before the first byte moves | [Colliding targets](../guide/many-files.md#colliding-targets) |
@@ -106,15 +111,20 @@ For a machine that runs `mpt` unattended, or for anyone else's jobs:
 | the configuration where the account cannot rewrite it, named with `--config` | a policy is a control, not a suggestion | [Where to put a policy](../configuration/policies.md#where-to-put-a-policy) |
 | `--via-credentials on-demand`, the forwarded agent left on | a relay holds one password per login and no key | [Passwords on demand](../server/relay.md#passwords-in-the-header-or-asked-for-at-every-login) |
 | `mpt relay --credentials on-demand` | the relay refuses clients that would send passwords in the header | [Running a relay](../server/relay-host.md) |
+| `mpt relay` without `--cache`, with `--timeout` and `--max-entries` | a client cannot pin the relay's memory, hold a slot for ever or have a huge directory listed | [Running a relay](../server/relay-host.md#on-the-relay-host) |
+| `mpt serve` without `--cache`, with `--timeout` | the same for a job of the server | [What a job may set](../server/serve.md#what-a-job-may-set) |
 | `command="mpt relay",restrict,agent-forwarding` in `authorized_keys` | a relay account under `sshd` can do nothing else | [Through an existing sshd](../server/relay-host.md#through-an-existing-sshd) |
 | `[server] urls = "profiles"` (the default) and `profiles = […]` | the API reaches only the named profiles, and no request carries a password | [What a client can reach](../server/serve.md#what-a-client-can-reach) |
 | the server behind a reverse proxy with TLS | the token never crosses the network in the clear | [Securing the listener](../server/serve.md#securing-the-listener) |
 | `[server] allow_delete` left off | no job may delete its source | [What a job may set](../server/serve.md#what-a-job-may-set) |
 | `[relay] allow_delete` left off | no client may have a relay delete the source it read | [Deleting a source the relay read](../server/relay-topologies.md#deleting-a-source-the-relay-read) |
+| `[relay] own_keys` left off | the relay's own SSH keys and agent never log in to a host a client names | [Trust](../server/relay-host.md#trust) |
+| `[relay] local_files` left off | a client reaches the relay's disk only through the relay's own profiles | [Trust](../server/relay-host.md#trust) |
 
 A [`./mpt.toml`](../configuration/file.md#the-file-in-the-working-directory)
 in the working directory cannot loosen any of this: it contributes only
-`[defaults]` and `[policy]`, never a profile, a credential command or a relay.
+`[defaults]` and `[policy]`, never a profile, a credential command, a relay
+or `delete_source`.
 
 ## Reporting a vulnerability
 

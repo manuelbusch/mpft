@@ -30,6 +30,12 @@ The progress this side prints is the relay's, counted as it reads. Only a
 profile's own `via` makes a source travel this way; `[defaults] via` and
 `--via` decide where targets are written, never where a source is read.
 
+A path on the relay host, as above, is one the relay hands out only when it
+runs with `--allow-local` ([Trust](relay-host.md#trust)). Otherwise name a
+profile of the relay's own — `url = "mpt://incoming"` here, with
+`[profiles.incoming] url = "in/report.pdf"` in the relay's configuration —
+or a source on a third host, as in the examples below.
+
 ### Listing a directory behind the relay
 
 `mpt ls` asks the relay as well when the directory's profile names one: the
@@ -51,7 +57,8 @@ d            -  archive
 The listing is a session of its own, with the same credentials and the same
 forwarded agent a copy would use (see [Operations besides the
 copy](../reference/relay-protocol.md#operations-besides-the-copy)). A relay of
-an older release cannot list, and says so.
+an older release cannot list, and says so; one lists at most `--max-entries`
+(100000) entries and refuses a larger directory as a whole.
 
 ### Patterns and trees behind the relay
 

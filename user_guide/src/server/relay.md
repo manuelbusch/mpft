@@ -66,7 +66,10 @@ The targets are resolved on the client: profiles, [credential
 references](../configuration/credentials.md), `--password`. The relay needs
 nothing but a line in its `authorized_keys` per client. The flags `--hash`,
 `--timeout`, `--cache` with `--retries`, `--skip-existing` and `--no-atomic`
-go along, as do the `?options` of the targets.
+go along, as do the `?options` of the targets. Two of them are the relay's
+to grant: `--cache` (and so `--retries`) needs a relay that runs with
+`--cache` itself, and `--timeout` cannot exceed the relay's own, nor switch
+it off ([Running a relay](relay-host.md#on-the-relay-host)).
 
 Three flags need what only this side has and are refused for a job that a
 relay takes part in:
@@ -160,8 +163,9 @@ invalid option 'key': sftp://deploy@srv.example.com/data/?key=~/.ssh/prod_ed2551
 ```
 
 A relay may refuse to take an agent (`--no-agent-forwarding`); the targets
-then fall back to the relay's own keys and passwords, and a target that has
-neither fails with an authentication error.
+then have the passwords the client sends, and the relay's own keys only when
+it runs with [`--own-keys`](relay-host.md#trust). A target that has neither
+fails with an authentication error.
 
 ### The connection is the transfer
 
@@ -222,4 +226,7 @@ Two things the relay can do without the client touching the file are on
 their own page, [Relay topologies](relay-topologies.md): reading a source
 that sits behind it, and handing a target on to a second relay. [Running a
 relay](relay-host.md) is the operator's side — starting the server, the
-flags, an existing `sshd`, and what a relay holds and what it does not.
+flags, an existing `sshd`, and what a relay holds and what it does not. Its
+[Trust](relay-host.md#trust) section says what of the relay's own a client
+gets: its profiles as they are, and neither its disk nor its keys unless the
+relay was started to give them.

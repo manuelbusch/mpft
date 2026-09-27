@@ -38,9 +38,12 @@ Everything is checked before a byte of the payload is read: the version, that
 there is either a `src` or a `name` with a `size`, that `dst` is not empty,
 that the credential modes of both sides match, that no endpoint brings a
 password along when `credentials` is `on-demand` (in its URL, or from a
-profile of the relay's own), and `size` or the source's size against
-`--max-size`. A source that does not state its size is held to `--max-size`
-as it is read, and fails its targets once it passes it.
+profile of the relay's own), that no `mpt://` profile of the relay's carries
+`?options`, no SSH URL names a key file on the relay host (`?key=`,
+`?cert=`, `?passphrase=`) and no URL is a local path of the relay host unless
+it runs with `--allow-local` (see [Trust](../server/relay-host.md#trust)), and `size` or the
+source's size against `--max-size`. A source that does not state its size is
+held to `--max-size` as it is read, and fails its targets once it passes it.
 
 ## The payload
 
@@ -96,9 +99,18 @@ The relay writes JSON lines to its standard output, each at most 1 MiB; `cp
 {"error": {"kind": "…", "message": "…"}}         instead of a report, when the relay refused or could not read
 ```
 
+A client is expected to keep reading them. One that takes no line for 30
+seconds gets no more: the copy still finishes and the relay exits with its
+exit status, but the remaining lines, the report among them, are dropped, so
+the session does not hold a `--parallel` slot after the copy for a client that
+has gone away.
+
 An `error` of kind `io` may add `"io": "not_found"` or
 `"io": "permission_denied"`, so that a missing file or a refusal comes back to
-the client as that, and is treated as it would be without the relay.
+the client as that, and is treated as it would be without the relay. An
+`error` of kind `config` says only that a profile of the relay's is
+misconfigured: the detail — a file, a command, a URL of the relay's — is in
+the relay's log, as the [server](api.md#errors) keeps it too.
 
 A `need` line names the endpoint it is about by position, never by URL:
 `"dst": <index>` for a target of the header, `"src": true` for the source, or
@@ -136,7 +148,7 @@ expansion of patterns and trees, for an endpoint whose profile names a relay.
 
 | `op` | About | The relay | The last line |
 |---|---|---|---|
-| `"list"` | `src` | lists the directory, an `entry` line per entry in the shape of `ls --json` | `{"listed": {"entries": n}}` |
+| `"list"` | `src` | lists the directory, an `entry` line per entry in the shape of `ls --json`; a directory with more entries than `--max-entries` (100000) is refused as a whole | `{"listed": {"entries": n}}` |
 | `"size"` | `src` | tells its size: `null` for a directory, for a size the protocol does not tell, or for nothing there | `{"size": n}` |
 | `"mkdir"` | `dst` | creates each directory with its parents; a target without directories to create is an `unsupported_operation` | `{"made": {"dirs": n}}` |
 

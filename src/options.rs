@@ -68,8 +68,11 @@ impl JobOptions {
     }
 
     /// The options of a copy: the server's, with what the job set laid over.
-    /// `cache_limit` bounds the memory cache when the job switches it on.
-    pub fn apply(&self, base: &CopyOptions, cache_limit: u64) -> Result<CopyOptions> {
+    /// What holds the process's resources stays the process's to give: a
+    /// job's `timeout` is held to the process's own ([`hold_timeout`]), and
+    /// `cache` is honoured only where the process runs with `--cache`, so
+    /// a job cannot pin a slot for ever or the payload in memory unasked.
+    pub fn apply(&self, base: &CopyOptions) -> Result<CopyOptions> {
         self.validate()?;
         let mut out = base.clone();
         if let Some(h) = &self.hash {
@@ -92,7 +95,10 @@ impl JobOptions {
         }
         match self.cache {
             Some(true) if out.cache == CacheMode::Stream => {
-                out.cache = CacheMode::Memory { limit: cache_limit };
+                return Err(Error::invalid_option(
+                    "cache",
+                    "this side holds no payload in memory for a job; start it with --cache if that is meant",
+                ));
             }
             Some(false) => out.cache = CacheMode::Stream,
             _ => {}
@@ -101,6 +107,8 @@ impl JobOptions {
             out.retries = r;
         }
         if let Some(t) = self.timeout {
+            let own = base.tee.send_timeout.map_or(0, |d| d.as_secs());
+            let t = hold_timeout(t, own);
             out.tee.send_timeout = (t > 0).then(|| std::time::Duration::from_secs(t));
         }
         if out.retries > 0 && out.cache == CacheMode::Stream {
@@ -124,28 +132,44 @@ impl JobOptions {
     }
 }
 
+/// A job's inactivity timeout in seconds, held to the process's own: `0`
+/// means none on either side, and a job may ask for less than the process
+/// allows but not for more, nor for none where the process has one.
+pub fn hold_timeout(asked: u64, own: u64) -> u64 {
+    match (asked, own) {
+        (asked, 0) => asked,
+        (0, own) => own,
+        (asked, own) => asked.min(own),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn options_are_checked_and_laid_over_the_base() {
-        let base = CopyOptions::default();
+        let base = CopyOptions {
+            cache: CacheMode::Memory { limit: 1024 },
+            ..CopyOptions::default()
+        };
         let opts: JobOptions = serde_json::from_str(
             r#"{"hash": "sha256", "cache": true, "retries": 2, "timeout": 0, "skip_existing": true}"#,
         )
         .unwrap();
-        let copy = opts.apply(&base, 1024).unwrap();
+        let copy = opts.apply(&base).unwrap();
         assert_eq!(copy.hash, Some(HashAlgo::Sha256));
         assert_eq!(copy.cache, CacheMode::Memory { limit: 1024 });
         assert_eq!(copy.retries, 2);
-        assert!(copy.tee.send_timeout.is_none());
+        // `0` does not switch the process's own timeout off.
+        assert_eq!(copy.tee.send_timeout, base.tee.send_timeout);
         assert!(copy.skip_existing);
 
+        let base = CopyOptions::default();
         let bad: JobOptions = serde_json::from_str(r#"{"retries": 1}"#).unwrap();
-        assert!(bad.apply(&base, 1024).is_err(), "retries without cache");
+        assert!(bad.apply(&base).is_err(), "retries without cache");
         let bad: JobOptions = serde_json::from_str(r#"{"resume": true, "atomic": false}"#).unwrap();
-        assert!(bad.apply(&base, 1024).is_err());
+        assert!(bad.apply(&base).is_err());
         let bad: JobOptions = serde_json::from_str(r#"{"hash": "crc"}"#).unwrap();
         assert!(bad.validate().is_err());
         let bad: JobOptions = serde_json::from_str(r#"{"parallel": 0}"#).unwrap();
@@ -164,16 +188,62 @@ mod tests {
         };
         let retries: JobOptions = serde_json::from_str(r#"{"retries": 2}"#).unwrap();
         assert!(retries.validate().is_ok());
-        assert_eq!(retries.apply(&cached, 1024).unwrap().retries, 2);
+        assert_eq!(retries.apply(&cached).unwrap().retries, 2);
         let off: JobOptions = serde_json::from_str(r#"{"retries": 2, "cache": false}"#).unwrap();
-        assert!(off.apply(&cached, 1024).is_err());
+        assert!(off.apply(&cached).is_err());
 
         let not_atomic = CopyOptions {
             atomic: false,
             ..CopyOptions::default()
         };
         let resume: JobOptions = serde_json::from_str(r#"{"resume": true}"#).unwrap();
-        assert!(resume.apply(&not_atomic, 1024).is_err());
-        assert!(resume.apply(&CopyOptions::default(), 1024).is_ok());
+        assert!(resume.apply(&not_atomic).is_err());
+        assert!(resume.apply(&CopyOptions::default()).is_ok());
+    }
+
+    /// A job may not hold more of the process than the process gives: no
+    /// memory cache where there is none, and no longer a timeout than its
+    /// own.
+    #[test]
+    fn a_job_cannot_loosen_what_the_process_holds() {
+        let base = CopyOptions::default();
+        let cache: JobOptions = serde_json::from_str(r#"{"cache": true}"#).unwrap();
+        let err = cache.apply(&base).unwrap_err().to_string();
+        assert!(err.contains("--cache"), "{err}");
+        let cached = CopyOptions {
+            cache: CacheMode::Memory { limit: 1024 },
+            ..CopyOptions::default()
+        };
+        assert_eq!(
+            cache.apply(&cached).unwrap().cache,
+            CacheMode::Memory { limit: 1024 }
+        );
+        let off: JobOptions = serde_json::from_str(r#"{"cache": false}"#).unwrap();
+        assert_eq!(off.apply(&cached).unwrap().cache, CacheMode::Stream);
+
+        assert_eq!(hold_timeout(0, 0), 0);
+        assert_eq!(hold_timeout(30, 0), 30);
+        assert_eq!(hold_timeout(0, 10), 10);
+        assert_eq!(hold_timeout(30, 10), 10);
+        assert_eq!(hold_timeout(5, 10), 5);
+        let limited = CopyOptions {
+            tee: crate::stream::TeeOptions {
+                send_timeout: Some(std::time::Duration::from_secs(10)),
+                ..Default::default()
+            },
+            ..CopyOptions::default()
+        };
+        let secs = |json: &str| {
+            let o: JobOptions = serde_json::from_str(json).unwrap();
+            o.apply(&limited)
+                .unwrap()
+                .tee
+                .send_timeout
+                .map(|d| d.as_secs())
+        };
+        assert_eq!(secs(r#"{"timeout": 0}"#), Some(10));
+        assert_eq!(secs(r#"{"timeout": 30}"#), Some(10));
+        assert_eq!(secs(r#"{"timeout": 5}"#), Some(5));
+        assert_eq!(secs("{}"), Some(10));
     }
 }

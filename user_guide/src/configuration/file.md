@@ -222,14 +222,18 @@ dropped here as well. A `[profiles.…]` block in `./mpt.toml` therefore cannot
 redirect `mpt://prod/` to somewhere else, and a `password = { cmd = … }` inside
 one never runs.
 
-Three keys of `[defaults]` are dropped too: `via`, which names the
+Four keys of `[defaults]` are dropped too: `via`, which names the
 [relay](../server/relay.md) that receives every target's credentials, and
-`via_credentials` and `via_agent`, which decide how much of them it gets. All
-three say as much about where credentials go as a profile does.
+`via_credentials` and `via_agent`, which decide how much of them it gets — all
+three say as much about where credentials go as a profile does — and
+`delete_source`, which would turn every copy run from that directory into a
+move.
 
 ```
 warning mpt.toml: ignoring [defaults] via — a configuration file in the working
         directory may not choose the relay that receives the targets' credentials
+warning mpt.toml: ignoring [defaults] delete_source — a configuration file in the
+        working directory may not have sources deleted
 ```
 
 Keep credentials out of `./mpt.toml` in any case; a file in a repository is a
