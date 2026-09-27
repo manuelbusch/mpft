@@ -1982,7 +1982,7 @@ async fn do_follow(
                 let line = r.line;
                 let before = r.index;
                 let jobs = async {
-                    let specs = mpt::batch::jobs::parse(&text, format)?;
+                    let specs = mpt::batch::jobs::parse_entry(&text, format)?;
                     let urls: Vec<&str> = specs
                         .iter()
                         .flat_map(|j| {

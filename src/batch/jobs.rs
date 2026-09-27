@@ -100,8 +100,28 @@ pub fn parse(text: &str, format: Format) -> Result<Vec<JobSpec>> {
     }
 }
 
+/// Parse one entry of a list that is read as it arrives (`batch
+/// --follow`), a line or a CSV row after its header. The caller knows
+/// which line of the input that is, so an error says what is wrong, not
+/// which line of `text` it was on.
+pub fn parse_entry(text: &str, format: Format) -> Result<Vec<JobSpec>> {
+    parse(text, format).map_err(|e| match e {
+        Error::InvalidUrl(m) => match m
+            .strip_prefix(LINE_PREFIX)
+            .and_then(|rest| rest.split_once(": "))
+        {
+            Some((_, what)) => Error::InvalidUrl(format!("job list: {what}")),
+            None => Error::InvalidUrl(m),
+        },
+        e => e,
+    })
+}
+
+/// What a parse error starts with, before the number of the line.
+const LINE_PREFIX: &str = "job list line ";
+
 fn bad(line: usize, what: impl std::fmt::Display) -> Error {
-    Error::InvalidUrl(format!("job list line {line}: {what}"))
+    Error::InvalidUrl(format!("{LINE_PREFIX}{line}: {what}"))
 }
 
 fn parse_lines(text: &str) -> Result<Vec<JobSpec>> {
@@ -252,6 +272,28 @@ mod tests {
             src: src.into(),
             dsts: dsts.iter().map(|d| d.to_string()).collect(),
         }
+    }
+
+    /// An entry read on its own is not numbered: its line in the input is
+    /// the caller's to tell.
+    #[test]
+    fn an_entry_is_not_numbered() {
+        let err = parse_entry("'unbalanced x/", Format::Lines)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, "invalid URL: job list: unbalanced quotes");
+        let err = parse_entry("src,dst\n,x/", Format::Csv)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, "invalid URL: job list: empty src");
+        let err = parse_entry("{\"src\": 1}", Format::Jsonl)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.starts_with("invalid URL: job list: invalid type"),
+            "{err}"
+        );
+        assert!(parse_entry("a b/", Format::Lines).is_ok());
     }
 
     #[test]

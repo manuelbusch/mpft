@@ -266,6 +266,27 @@ fn a_following_dry_run_numbers_every_job() {
     assert!(stderr(&out).contains("1 line rejected"), "{}", stderr(&out));
 }
 
+/// A line that `batch --follow` cannot parse is named by its line in the
+/// input, once; it was once also called line 1, of the one line parsed.
+#[test]
+fn a_following_batch_names_the_line_it_rejects() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("c.txt"), "c").unwrap();
+    let out = mpt_with(
+        dir.path(),
+        "",
+        &["batch", "-", "--follow", "--dry-run"],
+        Some(b"c.txt out/\n\n'unbalanced out/\n"),
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains("line 3: invalid URL: job list: unbalanced quotes"),
+        "{err}"
+    );
+    assert!(!err.contains("job list line"), "{err}");
+}
+
 /// `config check` lists the profiles and masks the SMTP password; it once
 /// printed `smtp://u:pw@…` as written and counted the profiles without
 /// printing them.
