@@ -169,7 +169,7 @@ targets](../configuration/profiles.md).
 | `url` | URL | **required**: what the name stands for |
 | `password` | secret | password for this endpoint |
 | `sign` | string | sign transfers to this target, in `--sign` syntax |
-| `via` | `ssh://` URL or `mpt://` profile | the relay this endpoint is reached through; as a source, the relay reads it |
+| `via` | `ssh://` URL or `mpt://` profile | the relay this endpoint is reached through; as a source, and in `ls`, the relay reads it |
 | `hash` | string | checksum algorithm for this target |
 | `atomic` | boolean | finish through a part file; `false` switches it off |
 | *anything else* | string or list | becomes a URL option on the profile's URL |

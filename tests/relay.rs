@@ -1244,3 +1244,67 @@ async fn the_relay_lists_a_directory_for_the_client() {
     let err = via.list(&at, &missing, &cancel).await.unwrap_err();
     assert!(err.is_not_found(), "{err}");
 }
+
+/// `ls` of a directory whose profile names a relay asks the relay, and
+/// prints what a local `ls` would; `--no-via` lists from here.
+#[test]
+fn ls_lists_a_directory_behind_a_relay() {
+    let relay = Relay::start(&[]);
+    std::fs::create_dir_all(relay.path("in/sub")).unwrap();
+    std::fs::write(relay.path("in/a.csv"), b"abc").unwrap();
+    std::fs::write(
+        relay.path("ls.toml"),
+        format!(
+            "[profiles.relay]\nurl = \"{}\"\n\
+             [profiles.in]\nurl = \"in/\"\nvia = \"mpt://relay\"\n",
+            relay.via("client"),
+        ),
+    )
+    .unwrap();
+    let ls = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
+            .env_remove("MPT_CONFIG")
+            .arg("--config")
+            .arg(relay.path("ls.toml"))
+            .args(["--color", "never"])
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let (code, out, err) = ls(&["ls", "mpt://in/"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("- ") && l.ends_with("  a.csv")),
+        "{out}"
+    );
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("d ") && l.ends_with("  sub")),
+        "{out}"
+    );
+
+    let (code, out, err) = ls(&["--json", "ls", "mpt://in/"]);
+    assert_eq!(code, 0, "{err}");
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+    let file = rows.iter().find(|r| r["name"] == "a.csv").unwrap();
+    assert_eq!(file["size"], 3);
+    assert_eq!(file["is_dir"], false);
+    assert!(file["modified"].is_string(), "{file}");
+
+    // From here there is no such directory.
+    let (code, _, err) = ls(&["ls", "--no-via", "mpt://in/"]);
+    assert_ne!(code, 0);
+    assert!(err.contains("listing in/"), "{err}");
+    assert_eq!(
+        relay.log().matches("relay listing").count(),
+        2,
+        "{}",
+        relay.log()
+    );
+}

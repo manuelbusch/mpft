@@ -13,7 +13,7 @@ mpt [OPTIONS] <COMMAND>
 |---|---|
 | `mpt cp <URL>...` | copy the first URL to the rest; with `-t`, copy every URL into the target |
 | `mpt batch <FILE\|->` | run a job list from a file or standard input |
-| `mpt ls <URL>` | list a directory |
+| `mpt ls [--no-via] <URL>` | list a directory |
 | `mpt schemes` | print the supported schemes and their options |
 | `mpt profiles` | list the profiles the configuration defines |
 | `mpt config check` | read the configuration and print what it sets |
@@ -42,6 +42,16 @@ Without `-t` the first URL is the source and the rest are its targets. With
 mpt batch [OPTIONS] <FILE>
 mpt batch [OPTIONS] -        # read the list from standard input
 ```
+
+### `ls`
+
+```
+mpt ls [--no-via] <URL>
+```
+
+A directory whose profile names a relay (`via`) is listed by that relay;
+`--no-via` lists it from here. See [Listing a directory behind the
+relay](../server/relay-topologies.md#listing-a-directory-behind-the-relay).
 
 ### `serve`
 

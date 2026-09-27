@@ -30,6 +30,29 @@ The progress this side prints is the relay's, counted as it reads. Only a
 profile's own `via` makes a source travel this way; `[defaults] via` and
 `--via` decide where targets are written, never where a source is read.
 
+### Listing a directory behind the relay
+
+`mpt ls` asks the relay as well when the directory's profile names one: the
+relay lists it and this side prints the entries as a local `ls` would, with
+`--json` too. `mpt ls --no-via` lists from here instead.
+
+```toml
+[profiles.inbox]
+url = "in/"
+via = "mpt://relay"
+```
+
+```
+$ mpt ls mpt://inbox/
+-        40000  report.pdf
+d            -  archive
+```
+
+The listing is a session of its own, with the same credentials and the same
+forwarded agent a copy would use (see [Listing a
+directory](../reference/relay-protocol.md#listing-a-directory)). A relay of an
+older release cannot list, and says so.
+
 ### Deleting a source the relay read
 
 This is also what makes `--delete-source` possible over a relay, which then

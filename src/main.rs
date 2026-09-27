@@ -184,8 +184,14 @@ enum Cmd {
         #[command(flatten)]
         batch: BatchArgs,
     },
-    /// List a directory
-    Ls { url: String },
+    /// List a directory; one whose profile names a relay is listed by it
+    Ls {
+        url: String,
+        /// List from here even though the profile names a relay
+        #[cfg(feature = "relay")]
+        #[arg(long)]
+        no_via: bool,
+    },
     /// Show supported URL schemes and their options
     Schemes,
     /// Print a completion script for a shell (bash, zsh, fish, elvish, powershell)
@@ -451,7 +457,7 @@ impl Cmd {
                 tracing::debug!(%format, "job list");
                 Work::Many(mpt::batch::jobs::parse(&text, format)?)
             }
-            Cmd::Ls { url } => Work::Urls(vec![url.clone()]),
+            Cmd::Ls { url, .. } => Work::Urls(vec![url.clone()]),
             _ => Work::Urls(Vec::new()),
         })
     }
@@ -1183,13 +1189,38 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
             }
             Work::Urls(_) => unreachable!("cp and batch always have work"),
         },
-        Cmd::Ls { url } => {
-            let ep = open(url)?;
-            let entries = ep
-                .receiver()?
-                .list()
-                .await
-                .with_context(|| format!("listing {}", ep.location()))?;
+        Cmd::Ls { url, .. } => {
+            let dir = locate(url)?;
+            // A directory whose profile names a relay is the relay's to
+            // read, as it would be as a source.
+            #[cfg(feature = "relay")]
+            let via = match &cli.cmd {
+                Cmd::Ls { no_via: false, .. } => {
+                    let used = dir.profile().map(String::from).into_iter().collect();
+                    let locate = |url: &str| rules.locate(url, None);
+                    via_table(None, Some(&used), &locate)?
+                        .map(|table| Via::new(table, &opts, &settings.via_settings()))
+                }
+                _ => None,
+            };
+            #[cfg(feature = "relay")]
+            let through = via
+                .as_ref()
+                .and_then(|v| Some((v, v.source_relay(&dir)?.clone())));
+            #[cfg(not(feature = "relay"))]
+            let through: Option<((), ())> = None;
+            let entries = match through {
+                #[cfg(feature = "relay")]
+                Some((via, relay)) => via.list(&relay, &dir, &cancel).await,
+                _ => {
+                    async {
+                        let ep = mpt::protocols::open(dir.clone())?;
+                        ep.receiver()?.list().await
+                    }
+                    .await
+                }
+            }
+            .with_context(|| format!("listing {dir}"))?;
             if settings.json {
                 let rows: Vec<serde_json::Value> =
                     entries.iter().map(mpt::report::entry_json).collect();
