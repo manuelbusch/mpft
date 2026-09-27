@@ -1,18 +1,18 @@
 # Environment variables
 
 Every variable `mpt` reads. A URL option always wins over a variable, and a
-variable wins over the configuration file — except where noted.
+variable wins over the configuration file, with the exceptions under
+[Variables and the configuration file](#variables-and-the-configuration-file).
 
 ## Credentials
 
 | Variable | Meaning |
 |---|---|
-| `MPT_PASSWORD` | password for `sftp`, `scp`, `ftp`, `ftps`, `http(s)`, `webdav(s)` when the URL has none; never for `s3`, `ssh` or mail |
-| `MPT_SMTP_PASSWORD` | password for `mailto:`, `smtp://` and `smtps://` |
-| `MPT_REFUSE_PLAINTEXT_AUTH` | `1` makes unencrypted credentials an error instead of a warning |
+| `MPT_PASSWORD` | password for `sftp`, `scp`, `ftp`, `ftps`, `http(s)`, `webdav(s)` when neither the URL nor its profile has one; never for `s3`, `ssh` or mail |
+| `MPT_SMTP_PASSWORD` | password for `mailto:`, `smtp://` and `smtps://`; before `[mail] password` |
+| `MPT_REFUSE_PLAINTEXT_AUTH` | `1` makes unencrypted credentials an error instead of a warning; it can only switch the refusal on |
 
-`--password`, `--password-file` and `--password-stdin` override
-`MPT_PASSWORD`. A password already in the URL is never replaced. A relay
+A password already in the URL is never replaced. A relay
 applies none of these to the URLs its clients name, only to its own
 profiles; see [Trust](../server/relay-host.md#trust).
 
@@ -24,7 +24,7 @@ profiles; see [Trust](../server/relay-host.md#trust).
 | `MPT_SSH_KEY` | private key file. Naming a key means the agent and the default keys are not tried |
 | `MPT_SSH_KEY_PASSPHRASE` | passphrase for it |
 | `MPT_SSH_CERT` | OpenSSH certificate for that key; `<key>-cert.pub` is found without it |
-| `MPT_SSH_KNOWN_HOSTS` | host-key policy: `strict` (the default), `accept-new`, `off` |
+| `MPT_SSH_KNOWN_HOSTS` | host-key policy: `strict` (the default), `accept-new`, `off`; no less than `[policy] known_hosts` |
 | `MPT_SSH_HOSTKEY` | pinned fingerprints, comma-separated |
 | `SSH_AUTH_SOCK` | ssh-agent socket; on Windows a named-pipe path |
 | `USER` | the fallback login name |
@@ -76,6 +76,21 @@ Read by `{ vault = "…" }` references (feature `vault`).
 | `XDG_CONFIG_HOME` | where `mpt/config.toml` is looked for, if `--config` and `MPT_CONFIG` are unset |
 | `RUST_LOG` | log filter. **Overrides `-v` and `[defaults] log`** |
 | `NO_COLOR` | any value switches colour off under `--color auto`; `--color always` still wins |
+
+## Variables and the configuration file
+
+The rule is URL option, then variable, then configuration file: `?key=` beats
+`MPT_SSH_KEY`, which beats `[ssh] key`. These are the exceptions:
+
+| Variable | Against the configuration |
+|---|---|
+| `MPT_PASSWORD` | a profile's `password` wins over it: the profile names this endpoint, the variable every endpoint. `--password`, `--password-file` and `--password-stdin` win over both |
+| `MPT_REFUSE_PLAINTEXT_AUTH` | the stricter side wins: `1` holds even where `[policy] refuse_plaintext_auth = false`, and unset or `0` does not undo `refuse_plaintext_auth = true` |
+| `MPT_SSH_KNOWN_HOSTS` | chooses the host-key policy, but no weaker one than `[policy] known_hosts`; a weaker one is refused (see [Policies](../configuration/policies.md#the-host-key-policy-for-the-machine)) |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | `[s3] access_key_id` and `secret_access_key` win over them |
+
+No variable loosens a [`[policy]`](../configuration/policies.md) rule; the two
+above can only make one stricter for a run.
 
 ## Settings that are not environment variables
 

@@ -31,6 +31,13 @@ The server offers a different key from the one in `known_hosts`. Either the
 machine was rebuilt or someone is in the middle, and both look the same from
 here. Find out which before editing the line the message names.
 
+**`known_hosts=off would check host keys less than policy.known_hosts = "strict" allows`** [2]
+
+`[policy] known_hosts` is the least a URL, a profile or
+`MPT_SSH_KNOWN_HOSTS` may ask for. Record the host key instead (above), or
+lower the policy where that is the decision; see [The host-key
+policy](../configuration/policies.md#the-host-key-policy-for-the-machine).
+
 **`no accepted method for deploy@srv (tried: ssh-agent, key /home/me/.ssh/id_ed25519)`** [4]
 
 The list is what was actually attempted. If the key you meant is not in it, it

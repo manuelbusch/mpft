@@ -305,7 +305,8 @@ pub struct Resolved {
     /// Passwords of the profiles that were asked for, by profile name.
     pub profile_passwords: BTreeMap<String, SecretString>,
     /// Options of those profiles that are credential references
-    /// (`passphrase = { env = … }`), by profile name, in the file's order.
+    /// (`passphrase = { env = … }`), by profile name, in the order of
+    /// [`Profile::option_values`]: sorted by option name, not the file's.
     pub profile_options: BTreeMap<String, Vec<(String, SecretString)>>,
 }
 

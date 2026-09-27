@@ -162,8 +162,13 @@ Environment variables slot in between a URL option and the configuration
 file: a URL option wins over a variable, and a variable wins over the
 configuration key it corresponds to. `MPT_SSH_KEY` therefore overrides
 `[ssh] key`, and `MPT_SSH_USER` overrides `[ssh] user`, but `?key=` in the URL
-overrides both. `MPT_PASSWORD`, `MPT_SMTP_URL` and the AWS variables are the
-other common ones; the [reference](../reference/environment.md) has them all.
+overrides both. The exceptions, a profile's password over `MPT_PASSWORD`
+among them, are listed under [Variables and the configuration
+file](../reference/environment.md#variables-and-the-configuration-file).
+
+`known_hosts` and `insecure` are held to [`[policy]`](policies.md) whichever
+place sets them: a URL option still wins over a flag, but not over the
+policy.
 
 ## Value formats
 

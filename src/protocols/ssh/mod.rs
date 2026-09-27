@@ -54,6 +54,65 @@ impl KnownHostsPolicy {
             }
         })
     }
+
+    /// How much checking the policy does: `off` least, `strict` most.
+    fn rank(self) -> u8 {
+        match self {
+            KnownHostsPolicy::Off => 0,
+            KnownHostsPolicy::AcceptNew => 1,
+            KnownHostsPolicy::Strict => 2,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            KnownHostsPolicy::Strict => "strict",
+            KnownHostsPolicy::AcceptNew => "accept-new",
+            KnownHostsPolicy::Off => "off",
+        }
+    }
+
+    /// The host-key policy for `loc`: its `?known_hosts=`, else
+    /// `MPT_SSH_KNOWN_HOSTS`, else `[policy] known_hosts`, else `strict`.
+    /// `[policy] known_hosts` is also the least any of them may ask for:
+    /// one that would check less is refused, as `?insecure=true` is under
+    /// `refuse_insecure_tls`.
+    fn for_location(loc: &Location) -> Result<Self> {
+        let floor = crate::policy::policy()
+            .known_hosts
+            .as_deref()
+            .map(KnownHostsPolicy::parse)
+            .transpose()?;
+        let asked = match loc.opt("known_hosts") {
+            Some(v) => Some(("known_hosts", v.to_string())),
+            None => std::env::var("MPT_SSH_KNOWN_HOSTS")
+                .ok()
+                .map(|v| ("MPT_SSH_KNOWN_HOSTS", v)),
+        };
+        KnownHostsPolicy::within(floor, asked, loc)
+    }
+
+    /// What `asked` for (where from, and the value) comes to under the
+    /// policy's `floor`.
+    fn within(
+        floor: Option<KnownHostsPolicy>,
+        asked: Option<(&str, String)>,
+        loc: &Location,
+    ) -> Result<Self> {
+        let Some((from, value)) = asked else {
+            return Ok(floor.unwrap_or(KnownHostsPolicy::Strict));
+        };
+        let policy = KnownHostsPolicy::parse(&value)?;
+        match floor {
+            Some(floor) if policy.rank() < floor.rank() => Err(Error::Config(format!(
+                "{}: {from}={value} would check host keys less than \
+                 policy.known_hosts = \"{}\" allows",
+                loc.masked(),
+                floor.as_str()
+            ))),
+            _ => Ok(policy),
+        }
+    }
 }
 
 /// Everything needed to open an SSH session, derived from a [`Location`].
@@ -153,15 +212,7 @@ impl SshConfig {
             .or_else(|| std::env::var("MPT_SSH_KEY_PASSPHRASE").ok())
             .map(SecretString::from)
             .or_else(|| cfg.resolved.ssh_passphrase.clone());
-        let known_hosts = match loc
-            .opt("known_hosts")
-            .map(String::from)
-            .or_else(|| std::env::var("MPT_SSH_KNOWN_HOSTS").ok())
-            .or_else(|| crate::policy::policy().known_hosts.clone())
-        {
-            Some(v) => KnownHostsPolicy::parse(&v)?,
-            None => KnownHostsPolicy::Strict,
-        };
+        let known_hosts = KnownHostsPolicy::for_location(loc)?;
         let mut pinned = Vec::new();
         for v in loc.opts("hostkey") {
             pinned.push(normalize_fingerprint(v)?);
@@ -636,6 +687,43 @@ pub(crate) fn shell_quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `[policy] known_hosts` is the least a URL or the variable may ask
+    /// for; more is fine, and without a policy anything is.
+    #[test]
+    fn a_url_cannot_check_host_keys_less_than_the_policy() {
+        use KnownHostsPolicy::{AcceptNew, Off, Strict};
+        let loc = Location::parse("sftp://u:pw@h/x?known_hosts=off").unwrap();
+        let asked = |floor, from: &'static str, value: Option<&str>| {
+            KnownHostsPolicy::within(floor, value.map(|v| (from, v.to_string())), &loc)
+                .map(KnownHostsPolicy::as_str)
+        };
+        let err = asked(Some(AcceptNew), "known_hosts", Some("off"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("known_hosts=off"), "{err}");
+        assert!(err.contains("policy.known_hosts = \"accept-new\""), "{err}");
+        assert!(!err.contains("pw"), "{err}");
+        let err = asked(Some(Strict), "MPT_SSH_KNOWN_HOSTS", Some("accept-new"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("MPT_SSH_KNOWN_HOSTS=accept-new"), "{err}");
+        assert_eq!(
+            asked(Some(AcceptNew), "known_hosts", Some("strict")).unwrap(),
+            "strict"
+        );
+        assert_eq!(
+            asked(Some(AcceptNew), "known_hosts", Some("accept-new")).unwrap(),
+            "accept-new"
+        );
+        assert_eq!(
+            asked(Some(AcceptNew), "known_hosts", None).unwrap(),
+            "accept-new"
+        );
+        assert_eq!(asked(Some(Off), "known_hosts", Some("off")).unwrap(), "off");
+        assert_eq!(asked(None, "known_hosts", Some("off")).unwrap(), "off");
+        assert_eq!(asked(None, "known_hosts", None).unwrap(), "strict");
+    }
 
     #[test]
     fn fingerprints_are_normalized() {

@@ -98,7 +98,7 @@ For a machine that runs `mpt` unattended, or for anyone else's jobs:
 
 | Setting | Effect | Page |
 |---|---|---|
-| `[policy] known_hosts = "strict"` | the default; an unknown or changed SSH host key aborts | [The host-key policy](../configuration/policies.md#the-host-key-policy-for-the-machine) |
+| `[policy] known_hosts = "strict"` | an unknown or changed SSH host key aborts, and no URL may ask for less | [The host-key policy](../configuration/policies.md#the-host-key-policy-for-the-machine) |
 | `[policy] refuse_plaintext_auth = true` | credentials over `ftp://`, `http://`, SMTP without TLS are refused, not warned about | [Refusing unencrypted credentials](../configuration/policies.md#refusing-unencrypted-credentials) |
 | `[policy] refuse_insecure_tls = true` | `?insecure=true` is taken away | [Refusing to skip certificate checks](../configuration/policies.md#refusing-to-skip-certificate-checks) |
 | `[policy] require_signature = true` and `max_signature_age` | a check is a signature check, and an old signature is refused | [Requiring signatures](../configuration/policies.md#requiring-signatures) |

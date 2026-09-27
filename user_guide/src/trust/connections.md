@@ -30,8 +30,9 @@ alternative would accept any key at the moment the trust store went missing.
 | `?known_hosts=off` | no verification at all — throwaway test servers only |
 | `?hostkey=SHA256:…` | pin this key; `known_hosts` is not consulted |
 
-The default for the whole machine is `[policy] known_hosts`, and
-`$MPT_SSH_KNOWN_HOSTS` sets it for one run. A different file can be named with
+The default for the whole machine is `[policy] known_hosts`, which is also the
+[least a URL may ask for](../configuration/policies.md#the-host-key-policy-for-the-machine),
+and `$MPT_SSH_KNOWN_HOSTS` sets it for one run. A different file can be named with
 `[ssh] known_hosts_file`.
 
 ### First contact

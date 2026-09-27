@@ -47,12 +47,15 @@ they decide where the targets' credentials go. `mpt serve` takes
 
 ## `[policy]`
 
-Rules for every endpoint of the process. A URL option cannot switch these off.
-See [Policies](../configuration/policies.md).
+Rules for every endpoint of the process. Nothing of a run loosens them: not a
+URL option or a profile's (`?known_hosts=off`, `?insecure=true`), not a flag
+and not a variable. A [file in the working
+directory](../configuration/file.md#the-file-in-the-working-directory) may only
+make them stricter. See [Policies](../configuration/policies.md).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `known_hosts` | `"strict"`, `"accept-new"`, `"off"` | `strict` | default host-key policy for SSH |
+| `known_hosts` | `"strict"`, `"accept-new"`, `"off"` | `strict` | default host-key policy for SSH, and the least a URL or `MPT_SSH_KNOWN_HOSTS` may ask for |
 | `refuse_plaintext_auth` | boolean | `false` | refuse rather than warn about unencrypted credentials |
 | `refuse_insecure_tls` | boolean | `false` | refuse `?insecure=true` |
 | `require_signature` | boolean | `false` | `--check` must verify a signature as well |

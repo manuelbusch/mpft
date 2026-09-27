@@ -35,10 +35,12 @@ certificate verification for one endpoint, because self-signed certificates on
 internal servers exist. `refuse_insecure_tls = true` takes the option away:
 
 ```
-error: authentication failed: ftps://upload:***@ftp.example.com/?insecure=true:
+error: configuration: ftps://upload:***@ftp.example.com/?insecure=true:
        insecure=true would switch off certificate verification, which
        policy.refuse_insecure_tls forbids
 ```
+
+`--insecure` sets the option on every URL, and is refused the same way.
 
 Set it where nobody should be making that trade on their own. The better
 answer is to fix the certificate or install the internal CA, since
@@ -46,12 +48,21 @@ answer is to fix the certificate or install the internal CA, since
 
 ## The host-key policy for the machine
 
-`known_hosts` sets the default host-key policy for `sftp://` and `scp://`:
-`strict`, `accept-new` or `off`, as described under [SSH host
-keys](../trust/connections.md#ssh-host-keys). A URL may still name its own
-`?known_hosts=`, so this is a default rather than a prohibition. It makes
-`accept-new` the norm on a workstation, or keeps `strict` explicit on a
-server.
+`known_hosts` sets the host-key policy for `sftp://` and `scp://`: `strict`,
+`accept-new` or `off`, as described under [SSH host
+keys](../trust/connections.md#ssh-host-keys). It is the default, and the
+least a run may ask for: a URL, a profile or `MPT_SSH_KNOWN_HOSTS` may choose a
+stricter policy, never a weaker one.
+
+```
+error: configuration: sftp://deploy@srv.example.com/in/?known_hosts=off: known_hosts=off
+       would check host keys less than policy.known_hosts = "strict" allows
+```
+
+Without the key, `strict` is only the built-in default, and a URL may ask
+for `accept-new` or `off`. Set it to `accept-new` to make trust on first use
+the norm on a workstation while still refusing `off`, or to `strict` on a
+server where no job should skip the check.
 
 ## Requiring signatures
 
