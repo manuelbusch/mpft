@@ -88,7 +88,12 @@ if [ -z "$AGENT_SOCK" ] || [ ! -S "$AGENT_SOCK" ]; then
   SSH_AUTH_SOCK=$AGENT_SOCK ssh-add -q ssh/cert_key 2>/dev/null
 fi
 
-sleep 2
+# Wait until every server answers (up to 30s each): moto in particular takes
+# a few seconds to start, longer on a busy CI runner.
+for port in $FTP_PORT $FTPS_PORT $SMTP_PORT $S3_PORT $WEBDAV_PORT $HTTP_PORT $SSH_PORT; do
+  for _ in $(seq 1 300); do nc -z -w1 127.0.0.1 "$port" 2>/dev/null && break; sleep 0.1; done
+  nc -z -w1 127.0.0.1 "$port" 2>/dev/null || echo "port $port: no server answers; see $WORK/logs"
+done
 # create the S3 bucket
 curl -s -X PUT http://127.0.0.1:$S3_PORT/testbucket > /dev/null
 

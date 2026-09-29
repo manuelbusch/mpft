@@ -147,6 +147,14 @@ release exists; `mpft` signs and verifies with those keys but never decrypts,
 and ed25519 keys are unaffected. `deny.toml` carries the reasoning, and the
 licence allow-list is permissive licences only.
 
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `main` and `test-ci`, and
+on every pull request: `cargo fmt` and `clippy -D warnings`, the whole test suite on Linux
+and macOS, a build plus the unit tests on Windows, the end-to-end suite on
+Linux against the servers of `tests/local/start_servers.sh`, `cargo check`
+with the minimum Rust version, and `cargo deny check`.
+
 ### Minimum Rust version
 
 `rust-version` in `Cargo.toml` is 1.89, set by `russh` and `aes` rather than
