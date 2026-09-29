@@ -1,7 +1,7 @@
-"""The routes of `mpt serve` and its event stream.
+"""The routes of `mpft serve` and its event stream.
 
 Everything takes and returns the JSON the server speaks; nothing is
-interpreted here. The shapes are in the API reference of the mpt user guide
+interpreted here. The shapes are in the API reference of the mpft user guide
 (user_guide/src/reference/api.md).
 """
 
@@ -73,7 +73,7 @@ class ApiError(Exception):
         return cls(status, kind, message, retry_after)
 
 
-class MptApi:
+class MpftApi:
     """One server, one token.
 
     Use it as an async context manager so the HTTP connection pool is
@@ -92,7 +92,7 @@ class MptApi:
             base_url=self.base_url, headers=self._headers, timeout=timeout
         )
 
-    async def __aenter__(self) -> MptApi:
+    async def __aenter__(self) -> MpftApi:
         return self
 
     async def __aexit__(self, *exc: object) -> None:
@@ -138,7 +138,7 @@ class MptApi:
         return self._checked(resp)
 
     async def submit_lines(self, text: str, content_type: str, options: Json | None = None) -> Json:
-        """A batch in one of the line forms of `mpt batch` (NDJSON, CSV,
+        """A batch in one of the line forms of `mpft batch` (NDJSON, CSV,
         plain `src dst…` lines); the options travel in the query."""
         params = {
             k: json.dumps(v) if isinstance(v, bool) else v for k, v in (options or {}).items()

@@ -1,7 +1,7 @@
 # HTTP API
 
-Lookup material for [`mpt serve`](../server/serve.md); the channel protocol
-of `mpt relay` is on [its own page](relay-protocol.md). Every request to the
+Lookup material for [`mpft serve`](../server/serve.md); the channel protocol
+of `mpft relay` is on [its own page](relay-protocol.md). Every request to the
 server carries `Authorization: Bearer <token>`; the only exception is the health
 check.
 
@@ -24,25 +24,25 @@ check.
 `POST /v1/jobs` takes JSON. `dst` is one URL or a list:
 
 ```json
-{"src": "mpt://inbox/report.pdf", "dst": ["mpt://prod/", "mpt://archive/"], "options": {"hash": "sha256"}}
+{"src": "mpft://inbox/report.pdf", "dst": ["mpft://prod/", "mpft://archive/"], "options": {"hash": "sha256"}}
 ```
 
 `POST /v1/batches` takes either JSON, with the options beside the list:
 
 ```json
-{"jobs": [{"src": "mpt://inbox/*.csv", "dst": "mpt://prod/"}, {"src": "mpt://inbox/report.pdf", "dst": ["mpt://prod/", "mpt://archive/"]}], "options": {"parallel": 2}}
+{"jobs": [{"src": "mpft://inbox/*.csv", "dst": "mpft://prod/"}, {"src": "mpft://inbox/report.pdf", "dst": ["mpft://prod/", "mpft://archive/"]}], "options": {"parallel": 2}}
 ```
 
 or a [job list](../guide/job-lists.md#three-ways-to-write-a-list) as
-`application/x-ndjson`, `text/csv` or `text/plain`, the forms `mpt batch`
+`application/x-ndjson`, `text/csv` or `text/plain`, the forms `mpft batch`
 reads, with the options in the query string:
 
 ```
 POST /v1/batches?parallel=2&fail_fast=true
 Content-Type: text/plain
 
-mpt://inbox/report.pdf mpt://archive/
-mpt://inbox/data1.csv mpt://archive/
+mpft://inbox/report.pdf mpft://archive/
+mpft://inbox/data1.csv mpft://archive/
 ```
 
 A body without a `Content-Type`, or with `application/x-www-form-urlencoded`

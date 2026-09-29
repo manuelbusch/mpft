@@ -148,7 +148,7 @@ pub(crate) fn build_client_with(
         .connect_timeout(timeout)
         .redirect(redirect)
         .default_headers(headers)
-        .user_agent(concat!("mpt/", env!("CARGO_PKG_VERSION")));
+        .user_agent(concat!("mpft/", env!("CARGO_PKG_VERSION")));
     if let Some(idle) = loc.timeout()? {
         // Per-read deadline for responses, plus TCP keepalive so a peer that
         // silently disappears mid-upload is noticed as well.

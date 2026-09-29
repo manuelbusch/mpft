@@ -1,16 +1,16 @@
 //! End-to-end tests against real servers. Each test is skipped unless its
-//! `MPT_IT_<PROTO>` variable holds a *directory* URL to use.
+//! `MPFT_IT_<PROTO>` variable holds a *directory* URL to use.
 //! See `tests/local/start_servers.sh` for a Docker-free local setup.
 
 use std::time::Duration;
 
-use mpt::{Location, SendMeta};
+use mpft::{Location, SendMeta};
 
-/// Set `MPT_IT_LOG=debug` to see client-side tracing while the tests run.
+/// Set `MPFT_IT_LOG=debug` to see client-side tracing while the tests run.
 fn init_log() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        if let Ok(level) = std::env::var("MPT_IT_LOG") {
+        if let Ok(level) = std::env::var("MPFT_IT_LOG") {
             let _ = tracing_subscriber::fmt()
                 .with_env_filter(level)
                 .with_writer(std::io::stderr)
@@ -69,11 +69,11 @@ fn dir_url(base: &str, name: &str) -> String {
 /// Upload random bytes to `<base>/<name>`, download them again, compare, and
 /// check that `ls <base>` shows the file.
 async fn roundtrip(base: &str, name: &str, len: usize, check_list: bool) {
-    mpt::init_crypto();
+    mpft::init_crypto();
     let payload = random_payload(len);
     let file_url = dir_url(base, &format!("/{name}"));
 
-    let dst = mpt::open(base).unwrap();
+    let dst = mpft::open(base).unwrap();
     let sender = dst.sender().unwrap();
     let meta = SendMeta::from_filename(name).unwrap().with_size(len as u64);
     sender
@@ -81,7 +81,7 @@ async fn roundtrip(base: &str, name: &str, len: usize, check_list: bool) {
         .await
         .expect("upload");
 
-    let src = mpt::open(&file_url).unwrap();
+    let src = mpft::open(&file_url).unwrap();
     let mut stream = src.receiver().unwrap().receive().await.expect("download");
     let mut got = Vec::new();
     tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut got)
@@ -105,8 +105,8 @@ async fn roundtrip(base: &str, name: &str, len: usize, check_list: bool) {
     // Also exercise the generic copy pipeline (file → remote → file).
     let tmp = tempfile::tempdir().unwrap();
     let local = tmp.path().join("copy.bin");
-    let l = mpt::open(local.to_str().unwrap()).unwrap();
-    let report = mpt::copy(src.as_ref(), l.as_ref())
+    let l = mpft::open(local.to_str().unwrap()).unwrap();
+    let report = mpft::copy(src.as_ref(), l.as_ref())
         .await
         .expect("copy remote → local");
     assert_eq!(report.bytes, len as u64);
@@ -135,11 +135,11 @@ macro_rules! roundtrip_test {
 /// A pinned host key is accepted, a wrong one is refused before any transfer.
 #[tokio::test]
 async fn sftp_host_key_pinning() {
-    let (Some(base), Some(fp)) = (env("MPT_IT_SFTP"), env("MPT_IT_SSH_HOSTKEY")) else {
-        eprintln!("skipping: MPT_IT_SFTP / MPT_IT_SSH_HOSTKEY not set");
+    let (Some(base), Some(fp)) = (env("MPFT_IT_SFTP"), env("MPFT_IT_SSH_HOSTKEY")) else {
+        eprintln!("skipping: MPFT_IT_SFTP / MPFT_IT_SSH_HOSTKEY not set");
         return;
     };
-    mpt::init_crypto();
+    mpft::init_crypto();
     let pinned = |f: &str| {
         base.replace(
             "known_hosts=off",
@@ -147,7 +147,7 @@ async fn sftp_host_key_pinning() {
         )
     };
 
-    let ok = mpt::open(&pinned(&fp)).unwrap();
+    let ok = mpft::open(&pinned(&fp)).unwrap();
     ok.receiver()
         .unwrap()
         .list()
@@ -155,7 +155,7 @@ async fn sftp_host_key_pinning() {
         .expect("pinned host key must be accepted");
 
     let wrong = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-    let bad = mpt::open(&pinned(wrong)).unwrap();
+    let bad = mpft::open(&pinned(wrong)).unwrap();
     let err = bad
         .receiver()
         .unwrap()
@@ -170,47 +170,47 @@ async fn sftp_host_key_pinning() {
     );
 
     // A malformed fingerprint is rejected while parsing, not on connect.
-    assert!(mpt::open(&pinned("nonsense")).is_err());
+    assert!(mpft::open(&pinned("nonsense")).is_err());
 }
 
-roundtrip_test!(sftp_roundtrip, "MPT_IT_SFTP", 3 * 1024 * 1024 + 17, true);
-roundtrip_test!(scp_roundtrip, "MPT_IT_SCP", 2 * 1024 * 1024 + 5, false);
-roundtrip_test!(ftp_roundtrip, "MPT_IT_FTP", 1024 * 1024 + 3, true);
-roundtrip_test!(ftps_roundtrip, "MPT_IT_FTPS", 1024 * 1024 + 9, true);
-roundtrip_test!(http_roundtrip, "MPT_IT_HTTP", 512 * 1024 + 1, false);
-roundtrip_test!(webdav_roundtrip, "MPT_IT_WEBDAV", 700 * 1024 + 7, true);
+roundtrip_test!(sftp_roundtrip, "MPFT_IT_SFTP", 3 * 1024 * 1024 + 17, true);
+roundtrip_test!(scp_roundtrip, "MPFT_IT_SCP", 2 * 1024 * 1024 + 5, false);
+roundtrip_test!(ftp_roundtrip, "MPFT_IT_FTP", 1024 * 1024 + 3, true);
+roundtrip_test!(ftps_roundtrip, "MPFT_IT_FTPS", 1024 * 1024 + 9, true);
+roundtrip_test!(http_roundtrip, "MPFT_IT_HTTP", 512 * 1024 + 1, false);
+roundtrip_test!(webdav_roundtrip, "MPFT_IT_WEBDAV", 700 * 1024 + 7, true);
 // Over 10 MiB, so that it goes up as a multipart upload of three parts.
-roundtrip_test!(s3_roundtrip, "MPT_IT_S3", 21 * 1024 * 1024 + 11, true);
+roundtrip_test!(s3_roundtrip, "MPFT_IT_S3", 21 * 1024 * 1024 + 11, true);
 
 /// One source, several real targets at once (stream mode): every target must
 /// receive identical bytes. Uses whichever of sftp/s3/webdav/ftp are configured.
 #[tokio::test]
 async fn fanout_stream_to_many_targets() {
-    fanout_many(mpt::CacheMode::Stream, 0).await;
+    fanout_many(mpft::CacheMode::Stream, 0).await;
 }
 
 /// Same with the in-memory cache and retries enabled.
 #[tokio::test]
 async fn fanout_memory_cache_to_many_targets() {
-    fanout_many(mpt::CacheMode::Memory { limit: 64 << 20 }, 1).await;
+    fanout_many(mpft::CacheMode::Memory { limit: 64 << 20 }, 1).await;
 }
 
-async fn fanout_many(cache: mpt::CacheMode, retries: u32) {
+async fn fanout_many(cache: mpft::CacheMode, retries: u32) {
     let bases: Vec<String> = [
-        "MPT_IT_SFTP",
-        "MPT_IT_S3",
-        "MPT_IT_WEBDAV",
-        "MPT_IT_FTP",
-        "MPT_IT_SCP",
+        "MPFT_IT_SFTP",
+        "MPFT_IT_S3",
+        "MPFT_IT_WEBDAV",
+        "MPFT_IT_FTP",
+        "MPFT_IT_SCP",
     ]
     .iter()
     .filter_map(|v| env(v))
     .collect();
     if bases.len() < 2 {
-        eprintln!("skipping fan-out test: fewer than two MPT_IT_* targets set");
+        eprintln!("skipping fan-out test: fewer than two MPFT_IT_* targets set");
         return;
     }
-    mpt::init_crypto();
+    mpft::init_crypto();
     let len = 2 * 1024 * 1024 + 13;
     let payload = random_payload(len);
     let name =
@@ -219,22 +219,22 @@ async fn fanout_many(cache: mpt::CacheMode, retries: u32) {
     let local = tmp.path().join(&name);
     std::fs::write(&local, &payload).unwrap();
 
-    let src = mpt::open(local.to_str().unwrap()).unwrap();
+    let src = mpft::open(local.to_str().unwrap()).unwrap();
     // one deliberately failing target: wrong FTP password (if ftp is configured) or an unreachable sftp host
-    let bad_url = env("MPT_IT_FTP")
+    let bad_url = env("MPFT_IT_FTP")
         .map(|u| u.replace("ftppass", "wrongpass"))
         .unwrap_or_else(|| {
             "sftp://nobody@127.0.0.1:1/nowhere/?known_hosts=off&timeout=2".to_string()
         });
-    let mut targets: Vec<Box<dyn mpt::Endpoint>> =
-        bases.iter().map(|b| mpt::open(b).unwrap()).collect();
-    targets.push(mpt::open(&bad_url).unwrap());
-    let refs: Vec<&dyn mpt::Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
+    let mut targets: Vec<Box<dyn mpft::Endpoint>> =
+        bases.iter().map(|b| mpft::open(b).unwrap()).collect();
+    targets.push(mpft::open(&bad_url).unwrap());
+    let refs: Vec<&dyn mpft::Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
 
-    let opts = mpt::CopyOptions {
+    let opts = mpft::CopyOptions {
         cache,
         retries,
-        tee: mpt::TeeOptions {
+        tee: mpft::TeeOptions {
             chunk_size: 32 * 1024,
             capacity: 4,
             ..Default::default()
@@ -243,7 +243,7 @@ async fn fanout_many(cache: mpt::CacheMode, retries: u32) {
     };
     let report = tokio::time::timeout(
         Duration::from_secs(180),
-        mpt::copy_many(src.as_ref(), &refs, &opts),
+        mpft::copy_many(src.as_ref(), &refs, &opts),
     )
     .await
     .expect("timeout")
@@ -261,7 +261,7 @@ async fn fanout_many(cache: mpt::CacheMode, retries: u32) {
         // Refused credentials are not worth another attempt; an unreachable
         // host is.
         let expected = match bad.result {
-            Err(mpt::Error::Auth(_)) => 1,
+            Err(mpft::Error::Auth(_)) => 1,
             _ => retries + 1,
         };
         assert_eq!(bad.attempts, expected, "{:?}", bad.result);
@@ -270,7 +270,7 @@ async fn fanout_many(cache: mpt::CacheMode, retries: u32) {
         assert!(t.result.is_ok(), "{}: {:?}", t.target, t.result);
         assert_eq!(t.bytes, len as u64, "{}", t.target);
         let file_url = dir_url(base, &format!("/{name}"));
-        let ep = mpt::open(&file_url).unwrap();
+        let ep = mpft::open(&file_url).unwrap();
         let mut stream = ep.receiver().unwrap().receive().await.expect("download");
         let mut got = Vec::new();
         tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut got)
@@ -281,10 +281,10 @@ async fn fanout_many(cache: mpt::CacheMode, retries: u32) {
 }
 
 /// After a copy the target directory holds the finished file and no leftover
-/// `.mpt-part`; every protocol that can rename goes through that detour.
+/// `.mpft-part`; every protocol that can rename goes through that detour.
 #[tokio::test]
 async fn atomic_finish_leaves_no_part_files() {
-    let bases: Vec<String> = ["MPT_IT_SFTP", "MPT_IT_WEBDAV", "MPT_IT_FTPS"]
+    let bases: Vec<String> = ["MPFT_IT_SFTP", "MPFT_IT_WEBDAV", "MPFT_IT_FTPS"]
         .iter()
         .filter_map(|k| env(k))
         .collect();
@@ -292,24 +292,24 @@ async fn atomic_finish_leaves_no_part_files() {
         eprintln!("skipping: no targets configured");
         return;
     }
-    mpt::init_crypto();
+    mpft::init_crypto();
     let name = format!("atomic_{}.bin", std::process::id());
     let payload = random_payload(200_000);
     let dir = tempfile::tempdir().unwrap();
     let src_path = dir.path().join(&name);
     std::fs::write(&src_path, &payload).unwrap();
-    let src = mpt::open(src_path.to_str().unwrap()).unwrap();
+    let src = mpft::open(src_path.to_str().unwrap()).unwrap();
 
-    let targets: Vec<Box<dyn mpt::Endpoint>> =
-        bases.iter().map(|b| mpt::open(b).unwrap()).collect();
-    let refs: Vec<&dyn mpt::Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
-    let report = mpt::copy_many(src.as_ref(), &refs, &mpt::CopyOptions::default())
+    let targets: Vec<Box<dyn mpft::Endpoint>> =
+        bases.iter().map(|b| mpft::open(b).unwrap()).collect();
+    let refs: Vec<&dyn mpft::Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
+    let report = mpft::copy_many(src.as_ref(), &refs, &mpft::CopyOptions::default())
         .await
         .expect("copy_many");
     assert!(report.all_ok(), "{:?}", report.targets);
 
     for base in &bases {
-        let listing = mpt::open(base)
+        let listing = mpft::open(base)
             .unwrap()
             .receiver()
             .unwrap()
@@ -322,8 +322,8 @@ async fn atomic_finish_leaves_no_part_files() {
             "{base}: {name} is missing from {names:?}"
         );
         // Only our own leftovers: other tests may be mid-transfer in the same
-        // directory, and their .mpt-part files are legitimate right now.
-        let part = format!("{name}.mpt-part");
+        // directory, and their .mpft-part files are legitimate right now.
+        let part = format!("{name}.mpft-part");
         assert!(
             !names.contains(&part.as_str()),
             "{base}: a partial file was left behind: {part}"
@@ -333,20 +333,20 @@ async fn atomic_finish_leaves_no_part_files() {
     // A second run replaces the file, and leaves nothing of the first aside.
     let newer = random_payload(150_000);
     std::fs::write(&src_path, &newer).unwrap();
-    let report = mpt::copy_many(src.as_ref(), &refs, &mpt::CopyOptions::default())
+    let report = mpft::copy_many(src.as_ref(), &refs, &mpft::CopyOptions::default())
         .await
         .expect("copy_many");
     assert!(report.all_ok(), "{:?}", report.targets);
     for base in &bases {
         assert!(fetch(base, &name).await == newer, "{base}: not replaced");
-        let listing = mpt::open(base)
+        let listing = mpft::open(base)
             .unwrap()
             .receiver()
             .unwrap()
             .list()
             .await
             .expect("list");
-        let old = format!("{name}.mpt-old");
+        let old = format!("{name}.mpft-old");
         assert!(
             !listing.iter().any(|e| e.name == old),
             "{base}: the replaced file was left behind: {old}"
@@ -360,42 +360,42 @@ async fn atomic_finish_leaves_no_part_files() {
 #[tokio::test]
 async fn an_existing_directory_takes_the_file_without_a_slash() {
     let remotes: Vec<(&str, String)> = [
-        "MPT_IT_SFTP",
-        "MPT_IT_SCP",
-        "MPT_IT_FTP",
-        "MPT_IT_WEBDAV",
-        "MPT_IT_S3",
+        "MPFT_IT_SFTP",
+        "MPFT_IT_SCP",
+        "MPFT_IT_FTP",
+        "MPFT_IT_WEBDAV",
+        "MPFT_IT_S3",
     ]
     .iter()
     .filter_map(|v| env(v).map(|u| (*v, u)))
     .collect();
     if remotes.is_empty() {
-        eprintln!("skipping: no MPT_IT_* directory URL set");
+        eprintln!("skipping: no MPFT_IT_* directory URL set");
         return;
     }
-    mpt::init_crypto();
+    mpft::init_crypto();
     let tag = std::process::id();
     let name = format!("into_{tag}.txt");
     let dir = tempfile::tempdir().unwrap();
     let src_path = dir.path().join(&name);
     std::fs::write(&src_path, b"into").unwrap();
-    let src = mpt::open(src_path.to_str().unwrap()).unwrap();
+    let src = mpft::open(src_path.to_str().unwrap()).unwrap();
     for (var, base) in &remotes {
         let sub = format!("/intodir_{tag}");
         let slashed = dir_url(base, &format!("{sub}/"));
-        mpt::open(&slashed)
+        mpft::open(&slashed)
             .unwrap()
             .sender()
             .unwrap()
             .mkdir_all()
             .await
             .expect("mkdir");
-        let dst = mpt::open(&dir_url(base, &sub)).unwrap();
-        let report = mpt::copy_many(src.as_ref(), &[dst.as_ref()], &Default::default())
+        let dst = mpft::open(&dir_url(base, &sub)).unwrap();
+        let report = mpft::copy_many(src.as_ref(), &[dst.as_ref()], &Default::default())
             .await
             .expect("copy_many");
         assert!(report.all_ok(), "{var}: {:?}", report.targets);
-        if *var == "MPT_IT_S3" {
+        if *var == "MPFT_IT_S3" {
             // The key is the name as given.
             assert_eq!(fetch(base, &sub[1..]).await, b"into", "{var}");
         } else {
@@ -408,27 +408,27 @@ async fn an_existing_directory_takes_the_file_without_a_slash() {
 /// server makes its root: the same file as `ftp://host/…`.
 #[tokio::test]
 async fn ftp_paths_after_a_tilde_start_at_the_login_directory() {
-    let Some(base) = env("MPT_IT_FTP") else {
-        eprintln!("skipping: MPT_IT_FTP not set");
+    let Some(base) = env("MPFT_IT_FTP") else {
+        eprintln!("skipping: MPFT_IT_FTP not set");
         return;
     };
-    mpt::init_crypto();
+    mpft::init_crypto();
     let tag = std::process::id();
     let name = format!("tilde_{tag}.txt");
     let dir = tempfile::tempdir().unwrap();
     let src_path = dir.path().join(&name);
     std::fs::write(&src_path, b"home").unwrap();
-    let src = mpt::open(src_path.to_str().unwrap()).unwrap();
+    let src = mpft::open(src_path.to_str().unwrap()).unwrap();
     let home = dir_url(&base, &format!("/~/sub_{tag}/"));
-    let dst = mpt::open(&home).unwrap();
+    let dst = mpft::open(&home).unwrap();
     dst.sender().unwrap().mkdir_all().await.expect("mkdir");
-    let report = mpt::copy_many(src.as_ref(), &[dst.as_ref()], &Default::default())
+    let report = mpft::copy_many(src.as_ref(), &[dst.as_ref()], &Default::default())
         .await
         .expect("copy_many");
     assert!(report.all_ok(), "{:?}", report.targets);
     let sub = dir_url(&base, &format!("/sub_{tag}/"));
     assert_eq!(fetch(&sub, &name).await, b"home");
-    let listing = mpt::open(&home)
+    let listing = mpft::open(&home)
         .unwrap()
         .receiver()
         .unwrap()
@@ -442,33 +442,38 @@ async fn ftp_paths_after_a_tilde_start_at_the_login_directory() {
 /// the source, in `sha256sum` format; `--check` must then accept that sidecar.
 #[tokio::test]
 async fn hash_sidecars_on_real_targets_and_check() {
-    let bases: Vec<String> = ["MPT_IT_SFTP", "MPT_IT_S3", "MPT_IT_WEBDAV", "MPT_IT_FTPS"]
-        .iter()
-        .filter_map(|v| env(v))
-        .collect();
+    let bases: Vec<String> = [
+        "MPFT_IT_SFTP",
+        "MPFT_IT_S3",
+        "MPFT_IT_WEBDAV",
+        "MPFT_IT_FTPS",
+    ]
+    .iter()
+    .filter_map(|v| env(v))
+    .collect();
     if bases.is_empty() {
-        eprintln!("skipping hash test: no MPT_IT_* targets set");
+        eprintln!("skipping hash test: no MPFT_IT_* targets set");
         return;
     }
-    mpt::init_crypto();
+    mpft::init_crypto();
     let payload = random_payload(300_000 + 1);
     let name = format!("hashed_{}.bin", std::process::id());
     let tmp = tempfile::tempdir().unwrap();
     let local = tmp.path().join(&name);
     std::fs::write(&local, &payload).unwrap();
-    let expected = mpt::hash::digest_bytes(mpt::HashAlgo::Sha256, &payload);
+    let expected = mpft::hash::digest_bytes(mpft::HashAlgo::Sha256, &payload);
 
-    let src = mpt::open(local.to_str().unwrap()).unwrap();
-    let targets: Vec<Box<dyn mpt::Endpoint>> =
-        bases.iter().map(|b| mpt::open(b).unwrap()).collect();
-    let refs: Vec<&dyn mpt::Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
-    let opts = mpt::CopyOptions {
-        hash: Some(mpt::HashAlgo::Sha256),
+    let src = mpft::open(local.to_str().unwrap()).unwrap();
+    let targets: Vec<Box<dyn mpft::Endpoint>> =
+        bases.iter().map(|b| mpft::open(b).unwrap()).collect();
+    let refs: Vec<&dyn mpft::Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
+    let opts = mpft::CopyOptions {
+        hash: Some(mpft::HashAlgo::Sha256),
         ..Default::default()
     };
     let report = tokio::time::timeout(
         Duration::from_secs(120),
-        mpt::copy_many(src.as_ref(), &refs, &opts),
+        mpft::copy_many(src.as_ref(), &refs, &opts),
     )
     .await
     .unwrap()
@@ -476,13 +481,13 @@ async fn hash_sidecars_on_real_targets_and_check() {
     assert!(report.all_ok(), "{:?}", report.targets);
     assert_eq!(
         report.digests,
-        vec![(mpt::HashAlgo::Sha256, expected.clone())]
+        vec![(mpft::HashAlgo::Sha256, expected.clone())]
     );
 
     for (t, base) in report.targets.iter().zip(&bases) {
         let sidecar_url = t.sidecar.as_deref().expect("sidecar written");
         // Read the sidecar back through the protocol itself.
-        let ep = mpt::open(&dir_url(base, &format!("/{name}.sha256"))).unwrap();
+        let ep = mpft::open(&dir_url(base, &format!("/{name}.sha256"))).unwrap();
         let mut stream = ep
             .receiver()
             .unwrap()
@@ -500,13 +505,13 @@ async fn hash_sidecars_on_real_targets_and_check() {
         );
 
         // Now copy the remote file back with --check: the remote sidecar must verify it.
-        let remote_file = mpt::open(&dir_url(base, &format!("/{name}"))).unwrap();
-        let back = mpt::open(&format!("{}/", tmp.path().join("back").display())).unwrap();
-        let check_opts = mpt::CopyOptions {
+        let remote_file = mpft::open(&dir_url(base, &format!("/{name}"))).unwrap();
+        let back = mpft::open(&format!("{}/", tmp.path().join("back").display())).unwrap();
+        let check_opts = mpft::CopyOptions {
             check: true,
             ..Default::default()
         };
-        let r = mpt::copy_many(remote_file.as_ref(), &[back.as_ref()], &check_opts)
+        let r = mpft::copy_many(remote_file.as_ref(), &[back.as_ref()], &check_opts)
             .await
             .unwrap();
         let c = r.checked.expect("checked");
@@ -519,15 +524,15 @@ async fn hash_sidecars_on_real_targets_and_check() {
 }
 
 /// `--sign ssh:<key>` on real targets: the signature next to the checksum file
-/// must verify with the allowed_signers file, both through mpt and ssh-keygen.
+/// must verify with the allowed_signers file, both through mpft and ssh-keygen.
 #[tokio::test]
 async fn signed_sidecars_on_real_targets() {
-    let bases: Vec<String> = ["MPT_IT_SFTP", "MPT_IT_S3", "MPT_IT_WEBDAV"]
+    let bases: Vec<String> = ["MPFT_IT_SFTP", "MPFT_IT_S3", "MPFT_IT_WEBDAV"]
         .iter()
         .filter_map(|v| env(v))
         .collect();
     if bases.is_empty() {
-        eprintln!("skipping signing test: no MPT_IT_* targets set");
+        eprintln!("skipping signing test: no MPFT_IT_* targets set");
         return;
     }
     let tmp = tempfile::tempdir().unwrap();
@@ -560,28 +565,28 @@ async fn signed_sidecars_on_real_targets() {
         ),
     )
     .unwrap();
-    mpt::init_crypto();
+    mpft::init_crypto();
 
     let name = format!("signed_{}.bin", std::process::id());
     let payload = random_payload(123_457);
     let local = tmp.path().join(&name);
     std::fs::write(&local, &payload).unwrap();
-    let src = mpt::open(local.to_str().unwrap()).unwrap();
-    let targets: Vec<Box<dyn mpt::Endpoint>> =
-        bases.iter().map(|b| mpt::open(b).unwrap()).collect();
-    let refs: Vec<&dyn mpt::Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
+    let src = mpft::open(local.to_str().unwrap()).unwrap();
+    let targets: Vec<Box<dyn mpft::Endpoint>> =
+        bases.iter().map(|b| mpft::open(b).unwrap()).collect();
+    let refs: Vec<&dyn mpft::Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
     let signer =
-        mpt::sign::load_signer(&mpt::SignSpec::parse(&format!("ssh:{}", key.display())).unwrap())
+        mpft::sign::load_signer(&mpft::SignSpec::parse(&format!("ssh:{}", key.display())).unwrap())
             .await
             .unwrap();
-    let opts = mpt::CopyOptions {
-        hash: Some(mpt::HashAlgo::Blake3),
+    let opts = mpft::CopyOptions {
+        hash: Some(mpft::HashAlgo::Blake3),
         sign: Some(signer),
         ..Default::default()
     };
     let report = tokio::time::timeout(
         Duration::from_secs(120),
-        mpt::copy_many(src.as_ref(), &refs, &opts),
+        mpft::copy_many(src.as_ref(), &refs, &opts),
     )
     .await
     .unwrap()
@@ -589,7 +594,7 @@ async fn signed_sidecars_on_real_targets() {
     assert!(report.all_ok(), "{:?}", report.targets);
 
     let verifier =
-        mpt::sign::load_verifier(&mpt::VerifySpec::SshAllowedSigners(signers.clone())).unwrap();
+        mpft::sign::load_verifier(&mpft::VerifySpec::SshAllowedSigners(signers.clone())).unwrap();
     for (t, base) in report.targets.iter().zip(&bases) {
         assert!(
             t.signature
@@ -600,14 +605,14 @@ async fn signed_sidecars_on_real_targets() {
             t.signature
         );
         // Fetch the remote file with check + verify.
-        let remote = mpt::open(&dir_url(base, &format!("/{name}"))).unwrap();
-        let back = mpt::open(&format!("{}/", tmp.path().join("back").display())).unwrap();
-        let opts = mpt::CopyOptions {
+        let remote = mpft::open(&dir_url(base, &format!("/{name}"))).unwrap();
+        let back = mpft::open(&format!("{}/", tmp.path().join("back").display())).unwrap();
+        let opts = mpft::CopyOptions {
             check: true,
             verify: Some(verifier.clone()),
             ..Default::default()
         };
-        let r = mpt::copy_many(remote.as_ref(), &[back.as_ref()], &opts)
+        let r = mpft::copy_many(remote.as_ref(), &[back.as_ref()], &opts)
             .await
             .unwrap();
         let c = r.checked.unwrap();
@@ -623,21 +628,21 @@ async fn signed_sidecars_on_real_targets() {
 }
 
 /// Sends an attachment via `mailto:` with `--hash` and (when ssh-keygen is
-/// available) `--sign`. If `MPT_IT_MAILDIR` points at the receiving maildir,
+/// available) `--sign`. If `MPFT_IT_MAILDIR` points at the receiving maildir,
 /// the message must carry the file, the checksum file and the signature.
 #[tokio::test]
 async fn mailto_send() {
-    let Some(target) = env("MPT_IT_MAILTO") else {
-        eprintln!("skipping mailto_send: MPT_IT_MAILTO not set");
+    let Some(target) = env("MPFT_IT_MAILTO") else {
+        eprintln!("skipping mailto_send: MPFT_IT_MAILTO not set");
         return;
     };
-    mpt::init_crypto();
-    let maildir = env("MPT_IT_MAILDIR");
+    mpft::init_crypto();
+    let maildir = env("MPFT_IT_MAILDIR");
     let count_before = maildir.as_deref().map(count_mails).unwrap_or(0);
 
     let name = format!("mail_{}.txt", std::process::id());
-    let payload = b"hello from mpt integration test\n".to_vec();
-    let ep = mpt::open(&target).unwrap();
+    let payload = b"hello from mpft integration test\n".to_vec();
+    let ep = mpft::open(&target).unwrap();
     assert!(
         ep.as_receiver().is_none(),
         "mail endpoints must not receive"
@@ -646,7 +651,7 @@ async fn mailto_send() {
     let tmp = tempfile::tempdir().unwrap();
     let local = tmp.path().join(&name);
     std::fs::write(&local, &payload).unwrap();
-    let src = mpt::open(local.to_str().unwrap()).unwrap();
+    let src = mpft::open(local.to_str().unwrap()).unwrap();
 
     let key = tmp.path().join("id_ed25519");
     let signer = if std::process::Command::new("ssh-keygen")
@@ -657,8 +662,8 @@ async fn mailto_send() {
         .unwrap_or(false)
     {
         Some(
-            mpt::sign::load_signer(
-                &mpt::SignSpec::parse(&format!("ssh:{}", key.display())).unwrap(),
+            mpft::sign::load_signer(
+                &mpft::SignSpec::parse(&format!("ssh:{}", key.display())).unwrap(),
             )
             .await
             .unwrap(),
@@ -667,12 +672,12 @@ async fn mailto_send() {
         None
     };
     let signed = signer.is_some();
-    let opts = mpt::CopyOptions {
-        hash: Some(mpt::HashAlgo::Blake3),
+    let opts = mpft::CopyOptions {
+        hash: Some(mpft::HashAlgo::Blake3),
         sign: signer,
         ..Default::default()
     };
-    let report = mpt::copy_many(src.as_ref(), &[ep.as_ref()], &opts)
+    let report = mpft::copy_many(src.as_ref(), &[ep.as_ref()], &opts)
         .await
         .expect("copy_many");
     assert!(report.all_ok(), "{:?}", report.targets);
@@ -680,7 +685,7 @@ async fn mailto_send() {
         report.targets[0].sidecar.is_none(),
         "mail gets the checksum inline, not as a sidecar"
     );
-    let expected = mpt::hash::digest_bytes(mpt::HashAlgo::Blake3, &payload);
+    let expected = mpft::hash::digest_bytes(mpft::HashAlgo::Blake3, &payload);
 
     if let Some(dir) = maildir {
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -753,28 +758,28 @@ fn location_direction_rules() {
     }
 }
 
-/// A `[profiles.…]` entry stands in for the URL, and `mpt://<name>/<path>`
+/// A `[profiles.…]` entry stands in for the URL, and `mpft://<name>/<path>`
 /// resolves to it — including the options the profile carries.
 #[tokio::test]
 async fn profile_urls_resolve_against_the_configuration() {
-    let Some(base) = env("MPT_IT_SFTP") else {
-        eprintln!("skipping: MPT_IT_SFTP not set");
+    let Some(base) = env("MPFT_IT_SFTP") else {
+        eprintln!("skipping: MPFT_IT_SFTP not set");
         return;
     };
     // The only test that installs a configuration; it defines nothing but
     // this profile, so the others are unaffected.
-    let cfg = mpt::Config::parse(&format!("[profiles.it-sftp]\nurl = \"{base}\"\n")).unwrap();
-    mpt::config::install(cfg);
+    let cfg = mpft::Config::parse(&format!("[profiles.it-sftp]\nurl = \"{base}\"\n")).unwrap();
+    mpft::config::install(cfg);
 
-    let loc = mpt::config::locate("mpt://it-sftp/sub/x.bin").unwrap();
-    assert_eq!(loc.scheme(), mpt::Scheme::Sftp);
+    let loc = mpft::config::locate("mpft://it-sftp/sub/x.bin").unwrap();
+    assert_eq!(loc.scheme(), mpft::Scheme::Sftp);
     assert!(loc.path().ends_with("/sub/x.bin"), "{}", loc.path());
     assert!(loc.opt("key").is_some(), "the profile keeps its options");
 
     let file = format!("profile_{}.bin", std::process::id());
     tokio::time::timeout(
         Duration::from_secs(120),
-        roundtrip("mpt://it-sftp/", &file, 8192, true),
+        roundtrip("mpft://it-sftp/", &file, 8192, true),
     )
     .await
     .expect("timeout");
@@ -784,13 +789,13 @@ async fn profile_urls_resolve_against_the_configuration() {
 /// own name, and the name a listing returns fetches it again.
 #[tokio::test]
 async fn s3_keys_keep_their_special_characters() {
-    let Some(base) = env("MPT_IT_S3") else {
-        eprintln!("skipping: MPT_IT_S3 not set");
+    let Some(base) = env("MPFT_IT_S3") else {
+        eprintln!("skipping: MPFT_IT_S3 not set");
         return;
     };
-    mpt::init_crypto();
+    mpft::init_crypto();
     let name = format!("odd [1] #{} 100%.bin", std::process::id());
-    let dst = mpt::open(&base).unwrap();
+    let dst = mpft::open(&base).unwrap();
     let meta = SendMeta::from_filename(&name).unwrap();
     dst.sender()
         .unwrap()
@@ -804,7 +809,7 @@ async fn s3_keys_keep_their_special_characters() {
         "{name} is missing from the listing"
     );
     let file =
-        mpt::protocols::open(Location::parse(&base).unwrap().sibling(&name).unwrap()).unwrap();
+        mpft::protocols::open(Location::parse(&base).unwrap().sibling(&name).unwrap()).unwrap();
     let mut stream = file.receiver().unwrap().receive().await.expect("download");
     let mut got = Vec::new();
     tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut got)
@@ -820,15 +825,15 @@ async fn s3_keys_keep_their_special_characters() {
 /// files, and an atomic upload renames its part file into place.
 #[tokio::test]
 async fn http_and_webdav_names_keep_their_special_characters() {
-    let bases: Vec<String> = ["MPT_IT_HTTP", "MPT_IT_WEBDAV"]
+    let bases: Vec<String> = ["MPFT_IT_HTTP", "MPFT_IT_WEBDAV"]
         .iter()
         .filter_map(|k| env(k))
         .collect();
     if bases.is_empty() {
-        eprintln!("skipping: MPT_IT_HTTP and MPT_IT_WEBDAV not set");
+        eprintln!("skipping: MPFT_IT_HTTP and MPFT_IT_WEBDAV not set");
         return;
     }
-    mpt::init_crypto();
+    mpft::init_crypto();
     let pid = std::process::id();
     let names = [
         format!("M\u{e4}rz {pid} #1.bin"),
@@ -838,27 +843,27 @@ async fn http_and_webdav_names_keep_their_special_characters() {
     ];
     let dir = tempfile::tempdir().unwrap();
     for base in &bases {
-        let dst = mpt::open(base).unwrap();
+        let dst = mpft::open(base).unwrap();
         for name in &names {
             let path = dir.path().join(name.replace('?', "_"));
             std::fs::write(&path, name.as_bytes()).unwrap();
-            let src = mpt::open(path.to_str().unwrap()).unwrap();
+            let src = mpft::open(path.to_str().unwrap()).unwrap();
             let target =
-                mpt::protocols::open(Location::parse(base).unwrap().join(name).unwrap()).unwrap();
+                mpft::protocols::open(Location::parse(base).unwrap().join(name).unwrap()).unwrap();
             // WsgiDAV decodes a MOVE's Destination before it parses it, so
             // a `?` there cuts the name short; see docs/DEVELOPMENT.md.
-            let opts = mpt::CopyOptions {
+            let opts = mpft::CopyOptions {
                 atomic: !name.contains('?'),
                 ..Default::default()
             };
-            let report = mpt::copy_many(src.as_ref(), &[target.as_ref()], &opts)
+            let report = mpft::copy_many(src.as_ref(), &[target.as_ref()], &opts)
                 .await
                 .unwrap_or_else(|e| panic!("{base}: {name}: {e}"));
             assert!(report.all_ok(), "{base}: {name}: {:?}", report.targets);
         }
         for name in &names {
             let file =
-                mpt::protocols::open(Location::parse(base).unwrap().join(name).unwrap()).unwrap();
+                mpft::protocols::open(Location::parse(base).unwrap().join(name).unwrap()).unwrap();
             let mut stream = file.receiver().unwrap().receive().await.expect("download");
             let mut got = Vec::new();
             tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut got)
@@ -888,8 +893,8 @@ async fn http_and_webdav_names_keep_their_special_characters() {
 #[cfg(feature = "s3-aws-auth")]
 #[tokio::test]
 async fn s3_credentials_come_from_an_aws_profile() {
-    let Some(base) = env("MPT_IT_S3") else {
-        eprintln!("skipping: MPT_IT_S3 not set");
+    let Some(base) = env("MPFT_IT_S3") else {
+        eprintln!("skipping: MPFT_IT_S3 not set");
         return;
     };
     let dir = tempfile::tempdir().unwrap();
@@ -907,7 +912,7 @@ async fn s3_credentials_come_from_an_aws_profile() {
     let name = format!("aws_profile_{}.bin", std::process::id());
     let target = dir_url(&base, &format!("/{name}"));
     let sep = if target.contains('?') { "&" } else { "?" };
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpft"))
         .args(["cp", payload.to_str().unwrap()])
         .arg(format!("{target}{sep}profile=it"))
         // Only the profile files may provide credentials.
@@ -918,7 +923,7 @@ async fn s3_credentials_come_from_an_aws_profile() {
         .env("AWS_CONFIG_FILE", &conf)
         .env("AWS_SHARED_CREDENTIALS_FILE", &creds)
         .output()
-        .expect("running mpt");
+        .expect("running mpft");
     assert!(
         out.status.success(),
         "{}",
@@ -926,8 +931,8 @@ async fn s3_credentials_come_from_an_aws_profile() {
     );
 
     // Read it back the ordinary way.
-    mpt::init_crypto();
-    let got = mpt::open(&target).unwrap();
+    mpft::init_crypto();
+    let got = mpft::open(&target).unwrap();
     let mut stream = got.receiver().unwrap().receive().await.expect("download");
     let mut buf = Vec::new();
     tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut buf)
@@ -940,16 +945,16 @@ async fn s3_credentials_come_from_an_aws_profile() {
 /// alone does not: `cert_key` is deliberately absent from `authorized_keys`.
 #[tokio::test]
 async fn sftp_authenticates_with_a_certificate() {
-    let Some(url) = env("MPT_IT_SFTP_CERT") else {
-        eprintln!("skipping: MPT_IT_SFTP_CERT not set");
+    let Some(url) = env("MPFT_IT_SFTP_CERT") else {
+        eprintln!("skipping: MPFT_IT_SFTP_CERT not set");
         return;
     };
-    mpt::init_crypto();
+    mpft::init_crypto();
     let name = format!("cert_{}.bin", std::process::id());
     let file = dir_url(&url, &format!("/{name}"));
     let payload = b"signed by the CA".to_vec();
 
-    let dst = mpt::open(&url).unwrap();
+    let dst = mpft::open(&url).unwrap();
     let meta = SendMeta::from_filename(&name)
         .unwrap()
         .with_size(payload.len() as u64);
@@ -959,7 +964,7 @@ async fn sftp_authenticates_with_a_certificate() {
         .await
         .expect("upload with a certificate");
 
-    let src = mpt::open(&file).unwrap();
+    let src = mpft::open(&file).unwrap();
     let mut stream = src.receiver().unwrap().receive().await.expect("download");
     let mut got = Vec::new();
     tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut got)
@@ -970,7 +975,7 @@ async fn sftp_authenticates_with_a_certificate() {
     // The certificate is found next to the key even when the URL is silent
     // about it, the way OpenSSH looks for <key>-cert.pub.
     let implied = drop_option(&url, "cert");
-    mpt::open(&implied)
+    mpft::open(&implied)
         .unwrap()
         .receiver()
         .unwrap()
@@ -983,12 +988,12 @@ async fn sftp_authenticates_with_a_certificate() {
     let key_path = url
         .split(['?', '&'])
         .find_map(|p| p.strip_prefix("key="))
-        .expect("key= in MPT_IT_SFTP_CERT");
+        .expect("key= in MPFT_IT_SFTP_CERT");
     let dir = tempfile::tempdir().unwrap();
     let lonely = dir.path().join("cert_key");
     std::fs::copy(key_path, &lonely).unwrap();
     let bare = drop_option(&url, "cert").replace(key_path, &lonely.display().to_string());
-    let err = mpt::open(&bare)
+    let err = mpft::open(&bare)
         .unwrap()
         .receiver()
         .unwrap()
@@ -1008,27 +1013,27 @@ async fn sftp_authenticates_with_a_certificate() {
 #[cfg(unix)]
 #[tokio::test]
 async fn sftp_authenticates_with_a_certificate_from_an_agent() {
-    let (Some(url), Some(sock)) = (env("MPT_IT_SFTP_CERT"), env("MPT_IT_SSH_AGENT")) else {
-        eprintln!("skipping: MPT_IT_SFTP_CERT / MPT_IT_SSH_AGENT not set");
+    let (Some(url), Some(sock)) = (env("MPFT_IT_SFTP_CERT"), env("MPFT_IT_SSH_AGENT")) else {
+        eprintln!("skipping: MPFT_IT_SFTP_CERT / MPFT_IT_SSH_AGENT not set");
         return;
     };
-    mpt::init_crypto();
+    mpft::init_crypto();
 
     struct Socket(String);
     #[async_trait::async_trait]
-    impl mpt::broker::AgentSource for Socket {
-        async fn open(&self) -> mpt::Result<mpt::broker::AgentStream> {
+    impl mpft::broker::AgentSource for Socket {
+        async fn open(&self) -> mpft::Result<mpft::broker::AgentStream> {
             Ok(Box::new(tokio::net::UnixStream::connect(&self.0).await?))
         }
     }
 
     let bare = drop_option(&drop_option(&url, "cert"), "key");
     let mut loc = Location::parse(&bare).unwrap();
-    loc.set_brokers(mpt::broker::Brokers {
+    loc.set_brokers(mpft::broker::Brokers {
         password: None,
         agent: Some(std::sync::Arc::new(Socket(sock))),
     });
-    mpt::protocols::open(loc)
+    mpft::protocols::open(loc)
         .unwrap()
         .receiver()
         .unwrap()
@@ -1041,14 +1046,14 @@ async fn sftp_authenticates_with_a_certificate_from_an_agent() {
 /// endpoint (SharePoint, Nextcloud, Artifactory) wants instead of a password.
 #[tokio::test]
 async fn http_sends_a_bearer_token() {
-    let Some(base) = env("MPT_IT_HTTP") else {
-        eprintln!("skipping: MPT_IT_HTTP not set");
+    let Some(base) = env("MPFT_IT_HTTP") else {
+        eprintln!("skipping: MPFT_IT_HTTP not set");
         return;
     };
-    mpt::init_crypto();
+    mpft::init_crypto();
     let name = format!("bearer_{}.bin", std::process::id());
     let file = dir_url(&base, &format!("/{name}"));
-    let dst = mpt::open(&format!("{file}?token=s3cr3t")).unwrap();
+    let dst = mpft::open(&format!("{file}?token=s3cr3t")).unwrap();
     let meta = SendMeta::from_filename(&name).unwrap().with_size(2);
     dst.sender()
         .unwrap()
@@ -1057,7 +1062,7 @@ async fn http_sends_a_bearer_token() {
         .expect("upload");
 
     // The test server writes the header it saw next to the file.
-    let seen = mpt::open(&format!("{file}.auth")).unwrap();
+    let seen = mpft::open(&format!("{file}.auth")).unwrap();
     let mut stream = seen.receiver().unwrap().receive().await.expect("download");
     let mut got = String::new();
     tokio::io::AsyncReadExt::read_to_string(&mut stream, &mut got)
@@ -1069,12 +1074,12 @@ async fn http_sends_a_bearer_token() {
 /// An interrupted upload is continued rather than repeated: the part file on
 /// the target keeps what it has, and only the rest travels.
 async fn resume_roundtrip(base: &str, name: &str) {
-    mpt::init_crypto();
+    mpft::init_crypto();
     let payload = random_payload(60_000);
-    let dst = mpt::open(base).unwrap();
+    let dst = mpft::open(base).unwrap();
 
     // What an interrupted transfer would have left behind.
-    let part = format!("{name}.mpt-part");
+    let part = format!("{name}.mpft-part");
     let meta = SendMeta::from_filename(&part).unwrap().with_size(20_000);
     dst.sender()
         .unwrap()
@@ -1088,12 +1093,12 @@ async fn resume_roundtrip(base: &str, name: &str) {
     let tmp = tempfile::tempdir().unwrap();
     let src_path = tmp.path().join(name);
     std::fs::write(&src_path, &payload).unwrap();
-    let src = mpt::open(src_path.to_str().unwrap()).unwrap();
-    let opts = mpt::CopyOptions {
+    let src = mpft::open(src_path.to_str().unwrap()).unwrap();
+    let opts = mpft::CopyOptions {
         resume: true,
         ..Default::default()
     };
-    let report = mpt::copy_many(src.as_ref(), &[dst.as_ref()], &opts)
+    let report = mpft::copy_many(src.as_ref(), &[dst.as_ref()], &opts)
         .await
         .expect("resumed copy");
     assert!(report.all_ok(), "{:?}", report.targets);
@@ -1103,7 +1108,7 @@ async fn resume_roundtrip(base: &str, name: &str) {
     );
 
     // And the file is whole.
-    let file = mpt::open(&dir_url(base, &format!("/{name}"))).unwrap();
+    let file = mpft::open(&dir_url(base, &format!("/{name}"))).unwrap();
     let mut stream = file.receiver().unwrap().receive().await.expect("download");
     let mut got = Vec::new();
     tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut got)
@@ -1115,8 +1120,8 @@ async fn resume_roundtrip(base: &str, name: &str) {
 
 #[tokio::test]
 async fn sftp_resumes_a_partial_upload() {
-    let Some(base) = env("MPT_IT_SFTP") else {
-        eprintln!("skipping: MPT_IT_SFTP not set");
+    let Some(base) = env("MPFT_IT_SFTP") else {
+        eprintln!("skipping: MPFT_IT_SFTP not set");
         return;
     };
     resume_roundtrip(&base, &format!("resume_sftp_{}.bin", std::process::id())).await;
@@ -1124,8 +1129,8 @@ async fn sftp_resumes_a_partial_upload() {
 
 #[tokio::test]
 async fn ftp_resumes_a_partial_upload() {
-    let Some(base) = env("MPT_IT_FTP") else {
-        eprintln!("skipping: MPT_IT_FTP not set");
+    let Some(base) = env("MPFT_IT_FTP") else {
+        eprintln!("skipping: MPFT_IT_FTP not set");
         return;
     };
     resume_roundtrip(&base, &format!("resume_ftp_{}.bin", std::process::id())).await;
@@ -1135,13 +1140,13 @@ async fn ftp_resumes_a_partial_upload() {
 /// it must replace what the failed attempt wrote, not add to it.
 #[tokio::test]
 async fn sftp_repeated_append_writes_at_the_offset() {
-    let Some(base) = env("MPT_IT_SFTP") else {
-        eprintln!("skipping: MPT_IT_SFTP not set");
+    let Some(base) = env("MPFT_IT_SFTP") else {
+        eprintln!("skipping: MPFT_IT_SFTP not set");
         return;
     };
-    mpt::init_crypto();
+    mpft::init_crypto();
     let name = format!("reappend_sftp_{}.bin", std::process::id());
-    let dst = mpt::open(&dir_url(&base, &format!("/{name}"))).unwrap();
+    let dst = mpft::open(&dir_url(&base, &format!("/{name}"))).unwrap();
     let sender = dst.sender().unwrap();
     let meta = SendMeta::from_filename(&name).unwrap();
     sender
@@ -1169,7 +1174,7 @@ async fn sftp_repeated_append_writes_at_the_offset() {
 
 /// Download `<base>/<name>` and return the bytes.
 async fn fetch(base: &str, name: &str) -> Vec<u8> {
-    let file = mpt::open(&dir_url(base, &format!("/{name}"))).unwrap();
+    let file = mpft::open(&dir_url(base, &format!("/{name}"))).unwrap();
     let mut stream = file.receiver().unwrap().receive().await.expect("download");
     let mut got = Vec::new();
     tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut got)
@@ -1182,11 +1187,11 @@ async fn fetch(base: &str, name: &str) -> Vec<u8> {
 /// time; every target ends up byte-identical to its source.
 #[tokio::test]
 async fn batch_runs_many_jobs_in_parallel() {
-    let (Some(sftp), Some(ftp)) = (env("MPT_IT_SFTP"), env("MPT_IT_FTP")) else {
-        eprintln!("skipping: MPT_IT_SFTP and MPT_IT_FTP not both set");
+    let (Some(sftp), Some(ftp)) = (env("MPFT_IT_SFTP"), env("MPFT_IT_FTP")) else {
+        eprintln!("skipping: MPFT_IT_SFTP and MPFT_IT_FTP not both set");
         return;
     };
-    mpt::init_crypto();
+    mpft::init_crypto();
     let dir = tempfile::tempdir().unwrap();
     let tag = std::process::id();
     let mut jobs = Vec::new();
@@ -1197,7 +1202,7 @@ async fn batch_runs_many_jobs_in_parallel() {
         let path = dir.path().join(&name);
         std::fs::write(&path, &payload).unwrap();
         payloads.push((name, payload));
-        jobs.push(mpt::Job {
+        jobs.push(mpft::Job {
             src: Location::parse(path.to_str().unwrap()).unwrap(),
             dsts: vec![
                 Location::parse(&sftp).unwrap(),
@@ -1205,15 +1210,15 @@ async fn batch_runs_many_jobs_in_parallel() {
             ],
         });
     }
-    let open = |l: &Location| mpt::protocols::open(l.clone());
-    let progress = mpt::batch::BatchProgress::new();
-    let opts = mpt::BatchOptions {
+    let open = |l: &Location| mpft::protocols::open(l.clone());
+    let progress = mpft::batch::BatchProgress::new();
+    let opts = mpft::BatchOptions {
         parallel: 4,
         fail_fast: false,
         progress: Some(progress.clone()),
     };
     let mut finished = Vec::new();
-    let report = mpt::batch::run(jobs, &open, &mpt::CopyOptions::default(), &opts, |r| {
+    let report = mpft::batch::run(jobs, &open, &mpft::CopyOptions::default(), &opts, |r| {
         finished.push(r.index)
     })
     .await;
@@ -1241,11 +1246,11 @@ async fn batch_runs_many_jobs_in_parallel() {
 /// transfers nothing.
 #[tokio::test]
 async fn batch_binary_takes_csv_and_jsonl_lists() {
-    let Some(sftp) = env("MPT_IT_SFTP") else {
-        eprintln!("skipping: MPT_IT_SFTP not set");
+    let Some(sftp) = env("MPFT_IT_SFTP") else {
+        eprintln!("skipping: MPFT_IT_SFTP not set");
         return;
     };
-    mpt::init_crypto();
+    mpft::init_crypto();
     let dir = tempfile::tempdir().unwrap();
     let tag = std::process::id();
     let mut names = Vec::new();
@@ -1269,10 +1274,10 @@ async fn batch_binary_takes_csv_and_jsonl_lists() {
     )
     .unwrap();
     std::fs::create_dir(dir.path().join("copy")).unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpft"))
         .args(["batch", csv.to_str().unwrap(), "--parallel", "2"])
         .output()
-        .expect("running mpt");
+        .expect("running mpft");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
     assert!(stderr.contains("2/2 jobs ok"), "{stderr}");
@@ -1289,13 +1294,13 @@ async fn batch_binary_takes_csv_and_jsonl_lists() {
         path(&names[2]),
         path(&names[3])
     );
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_mpft"))
         .args(["batch", "-", "--json"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .expect("running mpt");
+        .expect("running mpft");
     std::io::Write::write_all(child.stdin.as_mut().unwrap(), jsonl.as_bytes()).unwrap();
     drop(child.stdin.take());
     let out = child.wait_with_output().unwrap();
@@ -1320,10 +1325,10 @@ async fn batch_binary_takes_csv_and_jsonl_lists() {
     // Dry run: the jobs are listed, nothing is sent.
     let unsent = format!("batchbin_{tag}_dry.bin");
     std::fs::write(dir.path().join(&unsent), b"never").unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpft"))
         .args(["cp", "--dry-run", "-t", &sftp, &path(&unsent)])
         .output()
-        .expect("running mpt");
+        .expect("running mpft");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
@@ -1334,7 +1339,7 @@ async fn batch_binary_takes_csv_and_jsonl_lists() {
         stdout.contains("[1/1]") && stdout.contains(&unsent),
         "{stdout}"
     );
-    let listing = mpt::open(&sftp)
+    let listing = mpft::open(&sftp)
         .unwrap()
         .receiver()
         .unwrap()
@@ -1352,11 +1357,11 @@ async fn batch_binary_takes_csv_and_jsonl_lists() {
 /// file are refused before anything is sent (2).
 #[tokio::test]
 async fn batch_binary_exit_codes() {
-    let (Some(sftp), Some(ftp)) = (env("MPT_IT_SFTP"), env("MPT_IT_FTP")) else {
-        eprintln!("skipping: MPT_IT_SFTP and MPT_IT_FTP not both set");
+    let (Some(sftp), Some(ftp)) = (env("MPFT_IT_SFTP"), env("MPFT_IT_FTP")) else {
+        eprintln!("skipping: MPFT_IT_SFTP and MPFT_IT_FTP not both set");
         return;
     };
-    mpt::init_crypto();
+    mpft::init_crypto();
     let dir = tempfile::tempdir().unwrap();
     let tag = std::process::id();
     let good = format!("batchcode_{tag}_good.bin");
@@ -1378,10 +1383,10 @@ async fn batch_binary_exit_codes() {
         ),
     )
     .unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpft"))
         .args(["batch", list.to_str().unwrap()])
         .output()
-        .expect("running mpt");
+        .expect("running mpft");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(4), "{stderr}");
     assert!(stderr.contains("1/2 jobs ok"), "{stderr}");
@@ -1397,10 +1402,10 @@ async fn batch_binary_exit_codes() {
         ),
     )
     .unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpft"))
         .args(["batch", list.to_str().unwrap()])
         .output()
-        .expect("running mpt");
+        .expect("running mpft");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(2), "{stderr}");
     assert!(
@@ -1413,15 +1418,15 @@ async fn batch_binary_exit_codes() {
 /// directory; through the binary, with the jobs it expands to.
 #[tokio::test]
 async fn a_source_pattern_expands_on_a_remote_directory() {
-    let Some(sftp) = env("MPT_IT_SFTP") else {
-        eprintln!("skipping: MPT_IT_SFTP not set");
+    let Some(sftp) = env("MPFT_IT_SFTP") else {
+        eprintln!("skipping: MPFT_IT_SFTP not set");
         return;
     };
-    mpt::init_crypto();
+    mpft::init_crypto();
     let tag = std::process::id();
     let dir = tempfile::tempdir().unwrap();
     // Three files on the server, two of which match.
-    let sender = mpt::open(&sftp).unwrap();
+    let sender = mpft::open(&sftp).unwrap();
     for (name, body) in [
         (format!("glob_{tag}_1.csv"), "one"),
         (format!("glob_{tag}_2.csv"), "two"),
@@ -1442,10 +1447,10 @@ async fn a_source_pattern_expands_on_a_remote_directory() {
     }
     let pattern = dir_url(&sftp, &format!("/glob_{tag}_*.csv"));
     let out = format!("{}/", dir.path().display());
-    let run = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_mpft"))
         .args(["cp", &pattern, &out])
         .output()
-        .expect("running mpt");
+        .expect("running mpft");
     let stderr = String::from_utf8_lossy(&run.stderr);
     assert!(run.status.success(), "{stderr}");
     assert!(stderr.contains("2/2 jobs ok"), "{stderr}");
@@ -1461,20 +1466,20 @@ async fn a_source_pattern_expands_on_a_remote_directory() {
 
     // Nothing matches: an error, unless allowed.
     let none = dir_url(&sftp, &format!("/glob_{tag}_*.nothing"));
-    let run = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_mpft"))
         .args(["cp", &none, &out])
         .output()
-        .expect("running mpt");
+        .expect("running mpft");
     assert_eq!(
         run.status.code(),
         Some(2),
         "{}",
         String::from_utf8_lossy(&run.stderr)
     );
-    let run = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_mpft"))
         .args(["cp", "--allow-empty", &none, &out])
         .output()
-        .expect("running mpt");
+        .expect("running mpft");
     assert!(
         run.status.success(),
         "{}",
@@ -1487,20 +1492,20 @@ async fn a_source_pattern_expands_on_a_remote_directory() {
 #[tokio::test]
 async fn recursive_copy_creates_directories_on_every_protocol() {
     let remotes: Vec<(&str, String)> = [
-        "MPT_IT_SFTP",
-        "MPT_IT_SCP",
-        "MPT_IT_FTP",
-        "MPT_IT_WEBDAV",
-        "MPT_IT_S3",
+        "MPFT_IT_SFTP",
+        "MPFT_IT_SCP",
+        "MPFT_IT_FTP",
+        "MPFT_IT_WEBDAV",
+        "MPFT_IT_S3",
     ]
     .iter()
     .filter_map(|v| env(v).map(|u| (*v, u)))
     .collect();
     if remotes.is_empty() {
-        eprintln!("skipping: no MPT_IT_* directory URL set");
+        eprintln!("skipping: no MPFT_IT_* directory URL set");
         return;
     }
-    mpt::init_crypto();
+    mpft::init_crypto();
     let tag = std::process::id();
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path().join("tree");
@@ -1513,10 +1518,10 @@ async fn recursive_copy_creates_directories_on_every_protocol() {
     for (var, base) in &remotes {
         // `tree` without a slash: the directory itself, under a unique name.
         let target = dir_url(base, &format!("/rtree_{tag}/"));
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpft"))
             .args(["cp", "-r", src.to_str().unwrap(), &target])
             .output()
-            .expect("running mpt");
+            .expect("running mpft");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success(), "{var}: {stderr}");
         assert!(stderr.contains("3/3 jobs ok"), "{var}: {stderr}");
@@ -1524,10 +1529,10 @@ async fn recursive_copy_creates_directories_on_every_protocol() {
         assert_eq!(fetch(&root, "top.txt").await, b"top", "{var}");
         assert_eq!(fetch(&root, "a/one.txt").await, b"one", "{var}");
         assert_eq!(fetch(&root, "a/deep/two.txt").await, b"two", "{var}");
-        if *var != "MPT_IT_S3" && *var != "MPT_IT_SCP" {
+        if *var != "MPFT_IT_S3" && *var != "MPFT_IT_SCP" {
             // An empty directory travels too (S3 has no such thing, and
             // SCP cannot list to show it).
-            let listing = mpt::open(&dir_url(&root, "/"))
+            let listing = mpft::open(&dir_url(&root, "/"))
                 .unwrap()
                 .receiver()
                 .unwrap()
@@ -1542,9 +1547,9 @@ async fn recursive_copy_creates_directories_on_every_protocol() {
     }
 
     // And back: the sftp tree's contents (trailing slash) into a local dir.
-    if let Some(sftp) = env("MPT_IT_SFTP") {
+    if let Some(sftp) = env("MPFT_IT_SFTP") {
         let back = dir.path().join("back");
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpft"))
             .args([
                 "cp",
                 "-r",
@@ -1552,7 +1557,7 @@ async fn recursive_copy_creates_directories_on_every_protocol() {
                 &format!("{}/", back.display()),
             ])
             .output()
-            .expect("running mpt");
+            .expect("running mpft");
         assert!(
             out.status.success(),
             "{}",
@@ -1564,18 +1569,18 @@ async fn recursive_copy_creates_directories_on_every_protocol() {
     }
 
     // A dry run creates nothing.
-    if let Some(sftp) = env("MPT_IT_SFTP") {
+    if let Some(sftp) = env("MPFT_IT_SFTP") {
         let target = dir_url(&sftp, &format!("/rtree_dry_{tag}/"));
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpft"))
             .args(["cp", "-r", "--dry-run", src.to_str().unwrap(), &target])
             .output()
-            .expect("running mpt");
+            .expect("running mpft");
         assert!(
             out.status.success(),
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
-        let listing = mpt::open(&sftp)
+        let listing = mpft::open(&sftp)
             .unwrap()
             .receiver()
             .unwrap()
@@ -1590,11 +1595,11 @@ async fn recursive_copy_creates_directories_on_every_protocol() {
 /// file that grew in between is sent again.
 #[tokio::test]
 async fn skip_existing_makes_a_tree_copy_repeatable() {
-    let Some(sftp) = env("MPT_IT_SFTP") else {
-        eprintln!("skipping: MPT_IT_SFTP not set");
+    let Some(sftp) = env("MPFT_IT_SFTP") else {
+        eprintln!("skipping: MPFT_IT_SFTP not set");
         return;
     };
-    mpt::init_crypto();
+    mpft::init_crypto();
     let tag = std::process::id();
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path().join("tree");
@@ -1607,10 +1612,10 @@ async fn skip_existing_makes_a_tree_copy_repeatable() {
         args.extend_from_slice(extra);
         args.push(src.to_str().unwrap());
         args.push(&target);
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpft"))
             .args(&args)
             .output()
-            .expect("running mpt");
+            .expect("running mpft");
         assert!(
             out.status.success(),
             "{}",
@@ -1649,16 +1654,16 @@ async fn skip_existing_makes_a_tree_copy_repeatable() {
 /// is refused up front.
 #[tokio::test]
 async fn delete_source_drains_a_remote_directory() {
-    let Some(sftp) = env("MPT_IT_SFTP") else {
-        eprintln!("skipping: MPT_IT_SFTP not set");
+    let Some(sftp) = env("MPFT_IT_SFTP") else {
+        eprintln!("skipping: MPFT_IT_SFTP not set");
         return;
     };
-    mpt::init_crypto();
+    mpft::init_crypto();
     let tag = std::process::id();
     let dir = tempfile::tempdir().unwrap();
     let remote_dir = dir_url(&sftp, &format!("/outbox_{tag}/"));
     // Put two files there, through the library.
-    let ep = mpt::open(&remote_dir).unwrap();
+    let ep = mpft::open(&remote_dir).unwrap();
     ep.sender().unwrap().mkdir_all().await.unwrap();
     for (name, body) in [("keep.txt", "keep"), ("go.txt", "go")] {
         let meta = SendMeta::from_filename(name)
@@ -1673,12 +1678,13 @@ async fn delete_source_drains_a_remote_directory() {
             .await
             .unwrap();
     }
-    let names =
-        |entries: Vec<mpt::Entry>| -> Vec<String> { entries.into_iter().map(|e| e.name).collect() };
+    let names = |entries: Vec<mpft::Entry>| -> Vec<String> {
+        entries.into_iter().map(|e| e.name).collect()
+    };
 
     // One target cannot be written: the source stays.
     std::fs::write(dir.path().join("blocker"), b"x").unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpft"))
         .args([
             "cp",
             "--delete-source",
@@ -1686,14 +1692,14 @@ async fn delete_source_drains_a_remote_directory() {
             &format!("{}/blocker/sub/", dir.path().display()),
         ])
         .output()
-        .expect("running mpt");
+        .expect("running mpft");
     assert!(!out.status.success());
     let listing = names(ep.receiver().unwrap().list().await.unwrap());
     assert!(listing.contains(&"keep.txt".to_string()), "{listing:?}");
 
     // The whole directory into a local one: files go, the directory stays.
     let inbox = dir.path().join("inbox");
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpft"))
         .args([
             "cp",
             "-r",
@@ -1703,7 +1709,7 @@ async fn delete_source_drains_a_remote_directory() {
             &format!("{}/", inbox.display()),
         ])
         .output()
-        .expect("running mpt");
+        .expect("running mpft");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1717,8 +1723,8 @@ async fn delete_source_drains_a_remote_directory() {
     assert!(listing.is_empty(), "{listing:?}");
 
     // An HTTP source cannot be deleted: refused before anything moves.
-    if let Some(http) = env("MPT_IT_HTTP") {
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+    if let Some(http) = env("MPFT_IT_HTTP") {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mpft"))
             .args([
                 "cp",
                 "--delete-source",
@@ -1726,7 +1732,7 @@ async fn delete_source_drains_a_remote_directory() {
                 &format!("{}/", inbox.display()),
             ])
             .output()
-            .expect("running mpt");
+            .expect("running mpft");
         assert_eq!(
             out.status.code(),
             Some(2),
@@ -1741,24 +1747,24 @@ async fn delete_source_drains_a_remote_directory() {
 /// skipped, and the run ends with the input.
 #[tokio::test]
 async fn follow_runs_jobs_as_their_lines_arrive() {
-    let Some(sftp) = env("MPT_IT_SFTP") else {
-        eprintln!("skipping: MPT_IT_SFTP not set");
+    let Some(sftp) = env("MPFT_IT_SFTP") else {
+        eprintln!("skipping: MPFT_IT_SFTP not set");
         return;
     };
-    mpt::init_crypto();
+    mpft::init_crypto();
     let tag = std::process::id();
     let dir = tempfile::tempdir().unwrap();
     let names: Vec<String> = (0..2).map(|i| format!("follow_{tag}_{i}.bin")).collect();
     for (i, n) in names.iter().enumerate() {
         std::fs::write(dir.path().join(n), format!("line {i}")).unwrap();
     }
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_mpft"))
         .args(["batch", "-", "--follow", "--json"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .expect("running mpt");
+        .expect("running mpft");
     let mut stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
     let mut lines = std::io::BufRead::lines(std::io::BufReader::new(stdout));
@@ -1798,7 +1804,7 @@ async fn follow_runs_jobs_as_their_lines_arrive() {
 }
 
 /// A pattern with nothing in front of it expands in the working directory.
-/// `mpt cp '*.csv' out/` is the way anyone would write it, and it once failed
+/// `mpft cp '*.csv' out/` is the way anyone would write it, and it once failed
 /// with "No such file or directory" because the empty directory in front of
 /// the name was passed to the file system as it stood.
 #[test]
@@ -1809,11 +1815,11 @@ fn a_bare_pattern_expands_in_the_working_directory() {
         std::fs::write(dir.path().join(name), name).unwrap();
     }
     let run = |args: &[&str]| {
-        std::process::Command::new(env!("CARGO_BIN_EXE_mpt"))
+        std::process::Command::new(env!("CARGO_BIN_EXE_mpft"))
             .args(args)
             .current_dir(dir.path())
             .output()
-            .expect("running mpt")
+            .expect("running mpft")
     };
 
     let out = run(&["cp", "*.csv", "out/"]);

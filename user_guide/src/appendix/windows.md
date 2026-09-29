@@ -1,7 +1,7 @@
 # Windows
 
-`mpt` builds and runs on Windows. Most of it is platform-agnostic Rust; this
-page collects the places where the operating system differs and how `mpt`
+`mpft` builds and runs on Windows. Most of it is platform-agnostic Rust; this
+page collects the places where the operating system differs and how `mpft`
 handles each. Windows is not yet covered by automated tests, so it is
 supported on a best-effort basis; see [Supported
 platforms](../getting-started/installation.md#supported-platforms).
@@ -20,7 +20,7 @@ build of a Rust project that uses rustls.
 
 ## ssh-agent
 
-Unix has one answer, `$SSH_AUTH_SOCK`. Windows has two, and `mpt` tries both:
+Unix has one answer, `$SSH_AUTH_SOCK`. Windows has two, and `mpft` tries both:
 
 1. **The named pipe in `$SSH_AUTH_SOCK`**, if it is set. Git for Windows and
    several other tools point it at a pipe rather than a socket.
@@ -76,15 +76,15 @@ check only.
 Local paths work as they look:
 
 ```
-mpt cp C:\data\report.pdf sftp://srv.example.com/in/
-mpt cp \\fileserver\share\report.pdf "s3://bucket/in/"
+mpft cp C:\data\report.pdf sftp://srv.example.com/in/
+mpft cp \\fileserver\share\report.pdf "s3://bucket/in/"
 ```
 
 - **A drive letter is not a scheme.** `C:\data\x.bin` is recognised as a local
   path rather than mistaken for a URL, and so is a UNC path.
 - **`\` is a path separator** in a local path, and only there: in a URL's
   path it is part of a name, as the server sees it. That matters for the files
-  `mpt` writes beside yours: a checksum file and a `.mpt-part` land next to
+  `mpft` writes beside yours: a checksum file and a `.mpft-part` land next to
   their file rather than in the working directory.
 - **A trailing `\` marks a directory target**, as `/` does.
 
@@ -97,11 +97,11 @@ is usually not Windows.
   `NO_COLOR` is honoured as elsewhere.
 - **Ctrl-C** stops a transfer, cleans up part files and exits 130 as it does on
   Unix.
-- **The configuration file** is looked for in `%USERPROFILE%\.config\mpt\config.toml`
+- **The configuration file** is looked for in `%USERPROFILE%\.config\mpft\config.toml`
   when `XDG_CONFIG_HOME` is unset, since that is what the home directory
   resolves to.
 - **Completions** include `powershell`:
 
   ```
-  mpt completions powershell > $PROFILE.CurrentUserAllHosts
+  mpft completions powershell > $PROFILE.CurrentUserAllHosts
   ```

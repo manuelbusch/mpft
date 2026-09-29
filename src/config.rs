@@ -4,10 +4,10 @@
 //! The file is TOML and is looked up in this order, the first hit wins:
 //!
 //! 1. `--config <path>` (an error if it does not exist)
-//! 2. `$MPT_CONFIG` (likewise)
-//! 3. `$XDG_CONFIG_HOME/mpt/config.toml`, else `~/.config/mpt/config.toml`
+//! 2. `$MPFT_CONFIG` (likewise)
+//! 3. `$XDG_CONFIG_HOME/mpft/config.toml`, else `~/.config/mpft/config.toml`
 //!
-//! In addition, `./mpt.toml` in the working directory contributes
+//! In addition, `./mpft.toml` in the working directory contributes
 //! `[defaults]` and `[policy]` and wins over the user file; every other
 //! section in it is ignored with a warning, because a directory one happens
 //! to stand in must not silently redirect a transfer.
@@ -57,7 +57,7 @@ pub struct Config {
     pub server: ServerSection,
     #[serde(default)]
     pub relay: RelaySection,
-    /// Named targets, addressed as `mpt://<name>/<path>`.
+    /// Named targets, addressed as `mpft://<name>/<path>`.
     #[serde(default)]
     pub profiles: BTreeMap<String, Profile>,
     /// The secrets the sections above refer to, once they have been fetched
@@ -89,9 +89,9 @@ pub struct Defaults {
     pub queue: Option<usize>,
     /// Inactivity timeout in seconds; `0` disables it.
     pub timeout: Option<u64>,
-    /// Finish transfers through a `.mpt-part` file.
+    /// Finish transfers through a `.mpft-part` file.
     pub atomic: Option<bool>,
-    /// Continue an interrupted transfer from what is in the `.mpt-part` file.
+    /// Continue an interrupted transfer from what is in the `.mpft-part` file.
     pub resume: Option<bool>,
     /// Leave targets alone that already hold a file of the same name and size.
     pub skip_existing: Option<bool>,
@@ -200,7 +200,7 @@ pub struct HttpSection {
     pub hosts: Vec<String>,
 }
 
-/// `[server]` — settings for `mpt serve`.
+/// `[server]` — settings for `mpft serve`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerSection {
@@ -221,7 +221,7 @@ pub struct ServerSection {
     pub max_body: Option<String>,
     /// How long a shutdown waits for running jobs before cancelling them.
     pub grace: Option<String>,
-    /// Which URLs a job may name: `profiles` (only `mpt://<profile>/…`,
+    /// Which URLs a job may name: `profiles` (only `mpft://<profile>/…`,
     /// the default) or `any`.
     pub urls: Option<UrlRule>,
     /// With `urls = "profiles"`: only these profiles; empty means all.
@@ -236,7 +236,7 @@ pub struct ServerSection {
     pub max_queued: Option<usize>,
 }
 
-/// `[relay]` — settings for `mpt relay --listen`.
+/// `[relay]` — settings for `mpft relay --listen`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RelaySection {
@@ -271,7 +271,7 @@ pub struct RelaySection {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UrlRule {
-    /// Only `mpt://<profile>/…`: the configuration decides what the API
+    /// Only `mpft://<profile>/…`: the configuration decides what the API
     /// can reach, and no credential travels in a URL.
     #[default]
     Profiles,
@@ -333,7 +333,7 @@ pub struct Profile {
     pub sign: Option<String>,
     /// Checksum algorithm for this target.
     pub hash: Option<String>,
-    /// Finish through a `.mpt-part` file.
+    /// Finish through a `.mpft-part` file.
     pub atomic: Option<bool>,
     /// The relay this endpoint is reached through (an `ssh://` URL or a
     /// profile with one), instead of `[defaults] via`. A source with one
@@ -474,10 +474,10 @@ fn option_value(key: &str, v: &toml::Value) -> Result<OptionValue> {
 }
 
 /// The prefix that addresses a profile instead of a protocol.
-pub const PROFILE_PREFIX: &str = "mpt://";
+pub const PROFILE_PREFIX: &str = "mpft://";
 
 impl Config {
-    /// Turn `mpt://<profile>/<path>?<options>` into the location the profile
+    /// Turn `mpft://<profile>/<path>?<options>` into the location the profile
     /// stands for. `Ok(None)` for every other URL.
     ///
     /// The path is appended to the profile's own path, and options of the
@@ -516,7 +516,7 @@ impl Config {
         if !path.is_empty() {
             loc = loc
                 .join_url_path(path)
-                .map_err(|e| Error::Config(format!("mpt://{name}/{path}: {e}")))?;
+                .map_err(|e| Error::Config(format!("mpft://{name}/{path}: {e}")))?;
         }
         if let Some(pw) = self.resolved.profile_passwords.get(name)
             && !loc.password_in_url()
@@ -582,13 +582,13 @@ impl Config {
                 Err(Error::Config(format!("{} does not exist", p.display())))
             };
         }
-        if let Some(p) = std::env::var_os("MPT_CONFIG").filter(|v| !v.is_empty()) {
+        if let Some(p) = std::env::var_os("MPFT_CONFIG").filter(|v| !v.is_empty()) {
             let p = PathBuf::from(expand_tilde(&p.to_string_lossy()));
             return if p.exists() {
                 Ok(Some(p))
             } else {
                 Err(Error::Config(format!(
-                    "MPT_CONFIG points at {}, which does not exist",
+                    "MPFT_CONFIG points at {}, which does not exist",
                     p.display()
                 )))
             };
@@ -596,21 +596,21 @@ impl Config {
         Ok(Config::default_path().filter(|p| p.exists()))
     }
 
-    /// `$XDG_CONFIG_HOME/mpt/config.toml`, else `~/.config/mpt/config.toml`.
+    /// `$XDG_CONFIG_HOME/mpft/config.toml`, else `~/.config/mpft/config.toml`.
     pub fn default_path() -> Option<PathBuf> {
         let base = match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
             Some(v) => PathBuf::from(v),
             None => std::env::home_dir()?.join(".config"),
         };
-        Some(base.join("mpt").join("config.toml"))
+        Some(base.join("mpft").join("config.toml"))
     }
 
     fn local_file() -> Option<PathBuf> {
-        let p = PathBuf::from("mpt.toml");
+        let p = PathBuf::from("mpft.toml");
         p.exists().then_some(p)
     }
 
-    /// Read `./mpt.toml`, keeping only the sections that are safe to take
+    /// Read `./mpft.toml`, keeping only the sections that are safe to take
     /// from the working directory.
     fn read_local(path: &Path) -> Result<Option<Config>> {
         let cfg = Config::read(path)?;
@@ -665,7 +665,7 @@ impl Config {
         Ok(Some(local))
     }
 
-    /// Sections that `./mpt.toml` is not allowed to set.
+    /// Sections that `./mpft.toml` is not allowed to set.
     fn non_local_sections(&self) -> Vec<&'static str> {
         let mut out = Vec::new();
         let SigningSection {
@@ -798,7 +798,7 @@ impl Config {
         out
     }
 
-    /// Parse one file. Errors mention the path, so `mpt config check` can be
+    /// Parse one file. Errors mention the path, so `mpft config check` can be
     /// pointed at any file.
     pub fn read(path: &Path) -> Result<Config> {
         let text = std::fs::read_to_string(path)
@@ -854,7 +854,7 @@ impl Config {
         Ok(cfg)
     }
 
-    /// Take every value `other` sets; used to lay `./mpt.toml` over the user file.
+    /// Take every value `other` sets; used to lay `./mpft.toml` over the user file.
     fn merge(&mut self, other: &mut Config) {
         macro_rules! take {
             ($($section:ident . $field:ident),* $(,)?) => {
@@ -907,7 +907,7 @@ impl Config {
         self.warnings.append(&mut other.warnings);
     }
 
-    /// Lay the `[policy]` of `other` (`./mpt.toml`) over this one's, taking a
+    /// Lay the `[policy]` of `other` (`./mpft.toml`) over this one's, taking a
     /// value only where it is stricter than what is in force already: a
     /// directory one happens to stand in may tighten the rules, never
     /// loosen them. A value that would is ignored with a warning.
@@ -915,7 +915,7 @@ impl Config {
         let from = other
             .sources
             .first()
-            .map_or_else(|| "mpt.toml".to_string(), |p| p.display().to_string());
+            .map_or_else(|| "mpft.toml".to_string(), |p| p.display().to_string());
         let mut refused = Vec::new();
         let theirs = std::mem::take(&mut other.policy);
         let ours = &mut self.policy;
@@ -1203,7 +1203,7 @@ pub fn global() -> Arc<Config> {
     EMPTY.get_or_init(|| Arc::new(Config::default())).clone()
 }
 
-/// Parse a URL, resolving `mpt://<profile>/…` against the loaded
+/// Parse a URL, resolving `mpft://<profile>/…` against the loaded
 /// configuration first.
 pub fn locate(url: &str) -> Result<Location> {
     match global().resolve(url)? {
@@ -1217,7 +1217,7 @@ pub fn profile_of(url: &str) -> Option<Profile> {
     global().profiles.get(profile_name(url)?).cloned()
 }
 
-/// The profile name a `mpt://` URL names, without looking it up.
+/// The profile name a `mpft://` URL names, without looking it up.
 pub fn profile_name(url: &str) -> Option<&str> {
     strip_profile_prefix(url)?
         .split(['/', '?', '#'])
@@ -1243,7 +1243,7 @@ pub fn profile_ref_has_options(url: &str) -> bool {
     })
 }
 
-/// What follows `mpt://`, if `url` starts with it in any case.
+/// What follows `mpft://`, if `url` starts with it in any case.
 fn strip_profile_prefix(url: &str) -> Option<&str> {
     let url = url.trim();
     let head = url.get(..PROFILE_PREFIX.len())?;
@@ -1477,12 +1477,12 @@ mod tests {
     #[test]
     fn environment_variables_are_interpolated() {
         // SAFETY: single-threaded test, the variable is only read here.
-        unsafe { std::env::set_var("MPT_TEST_REGION", "eu-central-1") };
-        let cfg = Config::parse("[s3]\nregion = \"${MPT_TEST_REGION}\"\n").unwrap();
+        unsafe { std::env::set_var("MPFT_TEST_REGION", "eu-central-1") };
+        let cfg = Config::parse("[s3]\nregion = \"${MPFT_TEST_REGION}\"\n").unwrap();
         assert_eq!(cfg.s3.region.as_deref(), Some("eu-central-1"));
 
-        let err = Config::parse("[s3]\nregion = \"${MPT_TEST_UNSET_VAR}\"\n").unwrap_err();
-        assert!(err.contains("MPT_TEST_UNSET_VAR"), "{err}");
+        let err = Config::parse("[s3]\nregion = \"${MPFT_TEST_UNSET_VAR}\"\n").unwrap_err();
+        assert!(err.contains("MPFT_TEST_UNSET_VAR"), "{err}");
         // A value that merely looks like a shell expansion stays intact.
         let cfg = Config::parse("[s3]\nregion = \"$HOME/x\"\n").unwrap();
         assert_eq!(cfg.s3.region.as_deref(), Some("$HOME/x"));
@@ -1542,7 +1542,7 @@ mod tests {
     #[test]
     fn a_profile_becomes_a_location() {
         let cfg = with_profiles();
-        let loc = cfg.resolve("mpt://prod/incoming/x.pdf").unwrap().unwrap();
+        let loc = cfg.resolve("mpft://prod/incoming/x.pdf").unwrap().unwrap();
         assert_eq!(loc.scheme(), crate::Scheme::Sftp);
         assert_eq!(loc.path(), "/data/incoming/x.pdf");
         assert_eq!(loc.username(), Some("deploy"));
@@ -1558,10 +1558,10 @@ mod tests {
         );
 
         // Without a path the profile URL stands as it is, directory and all.
-        let loc = cfg.resolve("mpt://prod").unwrap().unwrap();
+        let loc = cfg.resolve("mpft://prod").unwrap().unwrap();
         assert_eq!(loc.path(), "/data/");
         assert!(loc.is_dir_target());
-        let loc = cfg.resolve("mpt://prod/reports/").unwrap().unwrap();
+        let loc = cfg.resolve("mpft://prod/reports/").unwrap().unwrap();
         assert_eq!(loc.path(), "/data/reports/");
         assert!(
             loc.is_dir_target(),
@@ -1572,7 +1572,7 @@ mod tests {
     #[test]
     fn the_reference_overrides_profile_options() {
         let loc = with_profiles()
-            .resolve("mpt://prod/in/?timeout=120&insecure=true")
+            .resolve("mpft://prod/in/?timeout=120&insecure=true")
             .unwrap()
             .unwrap();
         assert_eq!(loc.opt("timeout"), Some("120"));
@@ -1582,7 +1582,7 @@ mod tests {
 
     #[test]
     fn a_profile_can_be_a_mail_target() {
-        let loc = with_profiles().resolve("mpt://boss").unwrap().unwrap();
+        let loc = with_profiles().resolve("mpft://boss").unwrap().unwrap();
         assert_eq!(loc.recipients(), vec!["boss@example.com"]);
         assert_eq!(loc.opt("subject"), Some("Report"));
     }
@@ -1590,22 +1590,22 @@ mod tests {
     #[test]
     fn unusable_references_are_rejected() {
         let cfg = with_profiles();
-        let err = cfg.resolve("mpt://staging/x").unwrap_err().to_string();
+        let err = cfg.resolve("mpft://staging/x").unwrap_err().to_string();
         assert!(err.contains("boss, prod"), "{err}");
         // Nothing may climb out of the profile's directory.
-        let err = cfg.resolve("mpt://prod/../../etc/passwd").unwrap_err();
+        let err = cfg.resolve("mpft://prod/../../etc/passwd").unwrap_err();
         assert!(err.to_string().contains("unsafe"), "{err}");
         // Nor in its percent-encoded form, which HTTP servers decode.
         for bad in [
-            "mpt://prod/%2e%2e/%2e%2e/etc/passwd",
-            "mpt://prod/%2E%2E/x",
-            "mpt://prod/a/..%2F..%2Fetc",
+            "mpft://prod/%2e%2e/%2e%2e/etc/passwd",
+            "mpft://prod/%2E%2E/x",
+            "mpft://prod/a/..%2F..%2Fetc",
         ] {
             let err = cfg.resolve(bad).unwrap_err();
             assert!(err.to_string().contains("unsafe"), "{bad}: {err}");
         }
         // Mail has no path to append to.
-        assert!(cfg.resolve("mpt://boss/x").is_err());
+        assert!(cfg.resolve("mpft://boss/x").is_err());
         // A plain URL is not a profile reference.
         assert!(cfg.resolve("sftp://h/x").unwrap().is_none());
     }
@@ -1615,44 +1615,44 @@ mod tests {
     #[test]
     fn a_reference_is_read_like_a_url() {
         let cfg = with_profiles();
-        let loc = cfg.resolve("mpt://prod/a%20b/c.pdf").unwrap().unwrap();
+        let loc = cfg.resolve("mpft://prod/a%20b/c.pdf").unwrap().unwrap();
         assert_eq!(loc.path(), "/data/a b/c.pdf");
-        let loc = cfg.resolve("MPT://prod/x.pdf#part").unwrap().unwrap();
+        let loc = cfg.resolve("MPFT://prod/x.pdf#part").unwrap().unwrap();
         assert_eq!(loc.path(), "/data/x.pdf");
         assert_eq!(loc.profile(), Some("prod"));
-        let loc = cfg.resolve("Mpt://prod/in/?timeout=5#x").unwrap().unwrap();
+        let loc = cfg.resolve("Mpft://prod/in/?timeout=5#x").unwrap().unwrap();
         assert_eq!(loc.opt("timeout"), Some("5"));
-        assert_eq!(profile_name("MPT://prod#x"), Some("prod"));
+        assert_eq!(profile_name("MPFT://prod#x"), Some("prod"));
 
         // Over HTTP an encoded `/` stays a character of its segment.
         let cfg = Config::parse("[profiles.gl]\nurl = \"https://gl.example/api/\"\n").unwrap();
         let loc = cfg
-            .resolve("mpt://gl/group%2Fproject/raw")
+            .resolve("mpft://gl/group%2Fproject/raw")
             .unwrap()
             .unwrap();
         assert_eq!(loc.encoded_path(), "/api/group%2Fproject/raw");
-        assert!(is_profile_ref("mPt://prod/"));
+        assert!(is_profile_ref("mPfT://prod/"));
         assert!(!is_profile_ref("sftp://prod/"));
     }
 
     #[test]
     fn profiles_do_not_chain() {
         let cfg =
-            Config::parse("[profiles.a]\nurl = \"mpt://b/\"\n[profiles.b]\nurl = \"sftp://h/\"\n")
+            Config::parse("[profiles.a]\nurl = \"mpft://b/\"\n[profiles.b]\nurl = \"sftp://h/\"\n")
                 .unwrap();
-        let err = cfg.resolve("mpt://a/x").unwrap_err().to_string();
+        let err = cfg.resolve("mpft://a/x").unwrap_err().to_string();
         assert!(err.contains("do not chain"), "{err}");
     }
 
     #[tokio::test]
     async fn a_profile_password_comes_from_its_provider() {
         // SAFETY: single-threaded test, the variable is only read here.
-        unsafe { std::env::set_var("MPT_TEST_PROFILE_PW", "s3cret") };
+        unsafe { std::env::set_var("MPFT_TEST_PROFILE_PW", "s3cret") };
         let mut cfg = Config::parse(
             r#"
             [profiles.prod]
             url = "sftp://deploy@srv.example.com/data/"
-            password = { env = "MPT_TEST_PROFILE_PW" }
+            password = { env = "MPFT_TEST_PROFILE_PW" }
 
             [profiles.other]
             url = "ftp://h/"
@@ -1662,12 +1662,14 @@ mod tests {
         .unwrap();
         // Only the profile this command uses is asked for, so the broken
         // provider of the other one does not matter.
-        cfg.resolve_secrets(&["mpt://prod/x"], false).await.unwrap();
-        let loc = cfg.resolve("mpt://prod/x").unwrap().unwrap();
+        cfg.resolve_secrets(&["mpft://prod/x"], false)
+            .await
+            .unwrap();
+        let loc = cfg.resolve("mpft://prod/x").unwrap().unwrap();
         assert_eq!(loc.password(), Some("s3cret"));
         assert!(!loc.password_in_url(), "it did not come from the URL");
         assert!(
-            cfg.resolve("mpt://other/x")
+            cfg.resolve("mpft://other/x")
                 .unwrap()
                 .unwrap()
                 .password()
@@ -1675,7 +1677,7 @@ mod tests {
         );
 
         let err = cfg
-            .resolve_secrets(&["mpt://other/x"], false)
+            .resolve_secrets(&["mpft://other/x"], false)
             .await
             .unwrap_err()
             .to_string();
@@ -1704,8 +1706,8 @@ mod tests {
             .unwrap(),
         );
         let (a, b) = tokio::join!(
-            resolve_more(&["mpt://race_a/x"], false),
-            resolve_more(&["mpt://race_b/x"], false)
+            resolve_more(&["mpft://race_a/x"], false),
+            resolve_more(&["mpft://race_b/x"], false)
         );
         a.unwrap();
         b.unwrap();
@@ -1721,34 +1723,34 @@ mod tests {
     async fn secret_profile_options_come_from_their_providers() {
         // SAFETY: single-threaded test, the variables are only read here.
         unsafe {
-            std::env::set_var("MPT_TEST_OPT_PASSPHRASE", "pass+phrase");
-            std::env::set_var("MPT_TEST_OPT_HEADER", "Authorization: Bearer abc");
+            std::env::set_var("MPFT_TEST_OPT_PASSPHRASE", "pass+phrase");
+            std::env::set_var("MPFT_TEST_OPT_HEADER", "Authorization: Bearer abc");
         }
         let mut cfg = Config::parse(
             r#"
             [profiles.api]
             url = "https://api.example.com/in/"
             token = { cmd = "printf 't0k'" }
-            header = [{ env = "MPT_TEST_OPT_HEADER" }, "Accept:text/plain"]
+            header = [{ env = "MPFT_TEST_OPT_HEADER" }, "Accept:text/plain"]
 
             [profiles.box]
             url = "sftp://h/in/"
-            passphrase = { env = "MPT_TEST_OPT_PASSPHRASE" }
+            passphrase = { env = "MPFT_TEST_OPT_PASSPHRASE" }
             "#,
         )
         .unwrap();
         assert!(cfg.holds_credentials());
         // Not fetched yet: left out rather than sent as a table.
-        let loc = cfg.resolve("mpt://box/x").unwrap().unwrap();
+        let loc = cfg.resolve("mpft://box/x").unwrap().unwrap();
         assert_eq!(loc.opt("passphrase"), None);
 
-        cfg.resolve_secrets(&["mpt://api/x", "mpt://box/x"], false)
+        cfg.resolve_secrets(&["mpft://api/x", "mpft://box/x"], false)
             .await
             .unwrap();
-        let loc = cfg.resolve("mpt://box/x").unwrap().unwrap();
+        let loc = cfg.resolve("mpft://box/x").unwrap().unwrap();
         assert_eq!(loc.opt("passphrase"), Some("pass+phrase"));
         assert!(!loc.to_string().contains("pass+phrase"), "{loc}");
-        let loc = cfg.resolve("mpt://api/x").unwrap().unwrap();
+        let loc = cfg.resolve("mpft://api/x").unwrap().unwrap();
         assert_eq!(loc.opt("token"), Some("t0k"));
         assert_eq!(
             loc.opts("header").collect::<Vec<_>>(),
@@ -1822,11 +1824,11 @@ mod tests {
         assert!(err.contains("url"), "{err}");
     }
 
-    /// Write `text` to a file called `mpt.toml` and read it the way the
+    /// Write `text` to a file called `mpft.toml` and read it the way the
     /// working directory's file is read.
     fn local(text: &str) -> (tempfile::TempDir, Config) {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("mpt.toml");
+        let path = dir.path().join("mpft.toml");
         std::fs::write(&path, text).unwrap();
         let cfg = Config::read_local(&path).unwrap().unwrap();
         (dir, cfg)
@@ -1873,7 +1875,7 @@ mod tests {
 
     /// A file in the working directory must not name a target or a
     /// credential command, and being the *only* section in the file must not
-    /// let one through: a `[profiles]` block redirects `mpt://name/`
+    /// let one through: a `[profiles]` block redirects `mpft://name/`
     /// elsewhere and its `password = { cmd = … }` runs on the next transfer.
     #[test]
     fn a_local_file_cannot_smuggle_in_a_profile() {
@@ -1881,7 +1883,7 @@ mod tests {
             r#"
             [profiles.prod]
             url = "sftp://attacker.example/incoming/"
-            password = { cmd = "touch /tmp/mpt-should-not-run" }
+            password = { cmd = "touch /tmp/mpft-should-not-run" }
             "#,
         );
         assert!(cfg.profiles.is_empty(), "[profiles] must be dropped");
@@ -1986,7 +1988,7 @@ mod tests {
         assert!(Config::parse("[server]\nmax_body = \"big\"\n").is_err());
     }
 
-    /// `./mpt.toml` may tighten the policy of the user file, never loosen
+    /// `./mpft.toml` may tighten the policy of the user file, never loosen
     /// it, and says so when it tries.
     #[test]
     fn a_local_file_only_tightens_the_policy() {
@@ -2045,10 +2047,10 @@ mod tests {
     fn the_file_cannot_undo_the_environment_refusal() {
         let _guard = crate::policy::exclusive();
         // SAFETY: the policy lock keeps the other readers of the variable out.
-        unsafe { std::env::set_var("MPT_REFUSE_PLAINTEXT_AUTH", "1") };
+        unsafe { std::env::set_var("MPFT_REFUSE_PLAINTEXT_AUTH", "1") };
         let cfg = Config::parse("[policy]\nrefuse_plaintext_auth = false\n").unwrap();
         let refused = cfg.policy().refuse_plaintext_auth;
-        unsafe { std::env::remove_var("MPT_REFUSE_PLAINTEXT_AUTH") };
+        unsafe { std::env::remove_var("MPFT_REFUSE_PLAINTEXT_AUTH") };
         assert!(refused);
         assert!(!cfg.policy().refuse_plaintext_auth);
     }

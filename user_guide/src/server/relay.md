@@ -1,13 +1,13 @@
 # Relaying through a fast host with `cp --via`
 
-`mpt cp` reads a source once but sends it once per target. On a thin uplink,
-a home office or a mobile connection, three targets are three uploads. `mpt
+`mpft cp` reads a source once but sends it once per target. On a thin uplink,
+a home office or a mobile connection, three targets are three uploads. `mpft
 relay` puts the fan-out where the bandwidth is: a machine that takes the file
 **once**, over SSH, and delivers it to the targets itself while the data is
 still arriving.
 
 ```
-mpt cp --via ssh://relay@fast.example.com:2222 report.pdf mpt://prod/ mpt://archive/
+mpft cp --via ssh://relay@fast.example.com:2222 report.pdf mpft://prod/ mpft://archive/
 ```
 
 A relay is `cp` with its standard input as the source. Nothing is spooled on
@@ -16,7 +16,7 @@ targets](relay-topologies.md#a-target-behind-another-relay)), and everything
 `cp` does applies unchanged: checksums, atomic
 finishing, the memory cache with retries, timeouts, the report. The client
 names the targets, and the relay delivers — with the passwords it is given,
-or by asking for each one as it logs in and keeping none. An `mpt://` URL in
+or by asking for each one as it logs in and keeping none. An `mpft://` URL in
 what the client sends is one of the relay's own
 [profiles](../configuration/profiles.md), resolved from its configuration
 ([Trust](relay-host.md#trust) says what of its own it adds then).
@@ -32,7 +32,7 @@ key is checked like any other. The output is that of a batch, because a relay
 run is one:
 
 ```
-$ mpt cp --via mpt://relay --hash sha256 report.pdf mpt://prod/ mpt://archive/
+$ mpft cp --via mpft://relay --hash sha256 report.pdf mpft://prod/ mpft://archive/
 [1/1] ok             40000 bytes     7.00ms  sftp://deploy@srv.example.com/data/incoming/
 [1/1]         + sftp://deploy@srv.example.com/data/incoming/report.pdf.sha256
 [1/1] ok             40000 bytes     7.00ms  s3://archive-bucket/reports/
@@ -94,7 +94,7 @@ while it delivers. That is one upload's worth of trust in the relay host. The
 other way is to send the URLs without passwords and let the relay ask:
 
 ```
-mpt cp --via mpt://relay --via-credentials on-demand report.pdf ftp://upload@partner.example/in/
+mpft cp --via mpft://relay --via-credentials on-demand report.pdf ftp://upload@partner.example/in/
 ```
 
 The relay then asks this side at every single login and drops the answer as
@@ -103,11 +103,11 @@ connects, and nothing of it reaches its log:
 
 ```
 # on the relay, with -vv
-DEBUG mpt::relay::broker: asking the client for the password target=ftp://upload@partner.example/in/report.pdf.mpt-part attempt=1
-DEBUG mpt::relay::broker: asking the client for the password target=ftp://upload@partner.example/in/ attempt=1
+DEBUG mpft::relay::broker: asking the client for the password target=ftp://upload@partner.example/in/report.pdf.mpft-part attempt=1
+DEBUG mpft::relay::broker: asking the client for the password target=ftp://upload@partner.example/in/ attempt=1
 
 # on the client, with -vv
-DEBUG mpt::relay::broker: password asked for by the relay target=ftp://upload:***@partner.example/in/ attempt=1
+DEBUG mpft::relay::broker: password asked for by the relay target=ftp://upload:***@partner.example/in/ attempt=1
 ```
 
 Two questions for one file is normal: every protocol logs in more than once
@@ -136,15 +136,15 @@ this machine. `?key=`, `?cert=` and `?passphrase=` are taken out of the URL
 before it is sent, and the relay signs through the agent:
 
 ```
-$ mpt cp --via mpt://relay report.pdf "sftp://deploy@srv.example.com/data/?key=~/.ssh/prod_ed25519"
+$ mpft cp --via mpft://relay report.pdf "sftp://deploy@srv.example.com/data/?key=~/.ssh/prod_ed25519"
 [1/1] report.pdf -> sftp://deploy@srv.example.com/data/: 40000 bytes in 93.64ms
 
 # in the relay's log
-INFO mpt::protocols::ssh: ssh: authenticated via the forwarded ssh-agent
+INFO mpft::protocols::ssh: ssh: authenticated via the forwarded ssh-agent
 ```
 
 The agent this side runs for the relay holds the keys those targets name —
-`?key=` with its `?cert=`, `[ssh] key`, `MPT_SSH_KEY`, and otherwise
+`?key=` with its `?cert=`, `[ssh] key`, `MPFT_SSH_KEY`, and otherwise
 `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa` — and passes every other request on
 to your own `SSH_AUTH_SOCK`, so a key that only your own agent holds works
 too. A **certificate** is offered as a certificate, so a CA-signed login works
@@ -191,7 +191,7 @@ command that does not is copied from here:
 
 ```toml
 [defaults]
-via             = "mpt://relay"    # or "ssh://relay@fast.example.com:2222"
+via             = "mpft://relay"    # or "ssh://relay@fast.example.com:2222"
 via_credentials = "on-demand"      # ask at every login instead of sending passwords
 via_agent       = true             # forward the ssh-agent (the default)
 
@@ -200,23 +200,23 @@ url = "ssh://relay@fast.example.com:2222"
 
 [profiles.prod]
 url = "sftp://deploy@srv.example.com/data/"
-via = "mpt://relay"                # this target is always written by the relay
+via = "mpft://relay"                # this target is always written by the relay
 ```
 
-`mpt profiles` shows it under the profile:
+`mpft profiles` shows it under the profile:
 
 ```
-$ mpt profiles
-mpt://prod  sftp://deploy@srv.example.com/data/
-    via    mpt://relay
+$ mpft profiles
+mpft://prod  sftp://deploy@srv.example.com/data/
+    via    mpft://relay
 ```
 
-A [`./mpt.toml`](../configuration/file.md#the-file-in-the-working-directory)
+A [`./mpft.toml`](../configuration/file.md#the-file-in-the-working-directory)
 may set none of the three. The relay is where every target's credentials go,
 and a file in a directory you happen to be standing in must not choose that:
 
 ```
-warning mpt.toml: ignoring [defaults] via — a configuration file in the working
+warning mpft.toml: ignoring [defaults] via — a configuration file in the working
 directory may not choose the relay that receives the targets' credentials
 ```
 

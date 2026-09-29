@@ -9,7 +9,7 @@ fuzz_target!(|data: &[u8]| {
     let Ok(text) = std::str::from_utf8(data) else {
         return;
     };
-    if let Ok(loc) = mpt::Location::parse(text) {
+    if let Ok(loc) = mpft::Location::parse(text) {
         // Accessors must not panic on anything that parsed.
         let _ = loc.filename();
         let _ = loc.target_path(Some("name.bin"));

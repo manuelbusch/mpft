@@ -2,8 +2,8 @@
 
 import io
 
-from mpt_client.cli import describe
-from mpt_client.progress import JobView, Screen, human_size, render
+from mpft_client.cli import describe
+from mpft_client.progress import JobView, Screen, human_size, render
 
 JOB = "0123456789abcdef0123456789abcdef"
 
@@ -38,8 +38,8 @@ def transfer(index, state="queued", read=0, total=None, error=None):
     t = {
         "index": index,
         "id": f"{JOB}:{index}",
-        "src": f"mpt://inbox/f{index}.bin",
-        "dst": ["mpt://outbox/"],
+        "src": f"mpft://inbox/f{index}.bin",
+        "dst": ["mpft://outbox/"],
         "state": state,
         "progress": {"read": read, **({"total": total} if total else {})},
     }
@@ -81,7 +81,7 @@ def test_a_queued_job_fills_in_as_the_events_come():
             "transfer": transfer(1, "done", 40, 40),
         }
     )
-    assert view.transfers[1].read == 40 and view.transfers[1].src == "mpt://inbox/f1.bin"
+    assert view.transfers[1].read == 40 and view.transfers[1].src == "mpft://inbox/f1.bin"
 
     view.apply(
         {
@@ -104,7 +104,7 @@ def test_a_queued_job_fills_in_as_the_events_come():
 def test_a_snapshot_of_a_running_job_names_the_transfers():
     view = JobView(JOB)
     view.apply(snapshot("running", [transfer(0, "running", 3, 9), transfer(1)]))
-    assert view.transfers[0].src == "mpt://inbox/f0.bin"
+    assert view.transfers[0].src == "mpft://inbox/f0.bin"
     assert view.transfers[0].fraction == 3 / 9
     assert view.expected == 2
 
@@ -129,7 +129,7 @@ def test_render_shows_a_line_per_transfer_and_the_error():
     lines = render(view)
     assert lines[0].startswith(f"job {JOB}  failed    1 transfer")
     assert "error: invalid_url: nothing matched" in lines[1]
-    assert "100%" in lines[2] and "mpt://inbox/f0.bin → mpt://outbox/" in lines[2]
+    assert "100%" in lines[2] and "mpft://inbox/f0.bin → mpft://outbox/" in lines[2]
 
 
 def test_the_screen_redraws_in_place_only_on_a_terminal():

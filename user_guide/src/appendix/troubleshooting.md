@@ -1,17 +1,17 @@
 # Troubleshooting
 
 The errors that come up, what they mean, and what to do. Every message below is
-what `mpt` actually prints; the exit code is in brackets, since that is what a
+what `mpft` actually prints; the exit code is in brackets, since that is what a
 script sees.
 
 ## Diagnostic commands
 
 | Command | Answers |
 |---|---|
-| `mpt -v …`, `-vv`, `-vvv` | what it is doing; `-vv` shows the protocol conversation |
-| `mpt config check` | which configuration files were read and what they set |
-| `mpt schemes` | which protocols this binary was built with |
-| `mpt cp --dry-run …` | what a pattern, a tree or a job list expands to |
+| `mpft -v …`, `-vv`, `-vvv` | what it is doing; `-vv` shows the protocol conversation |
+| `mpft config check` | which configuration files were read and what they set |
+| `mpft schemes` | which protocols this binary was built with |
+| `mpft cp --dry-run …` | what a pattern, a tree or a job list expands to |
 
 `-vv` is the one that resolves most mysteries. Passwords are masked in every
 log line, so it is safe to paste the output into a ticket.
@@ -34,7 +34,7 @@ here. Find out which before editing the line the message names.
 **`known_hosts=off would check host keys less than policy.known_hosts = "strict" allows`** [2]
 
 `[policy] known_hosts` is the least a URL, a profile or
-`MPT_SSH_KNOWN_HOSTS` may ask for. Record the host key instead (above), or
+`MPFT_SSH_KNOWN_HOSTS` may ask for. Record the host key instead (above), or
 lower the policy where that is the decision; see [The host-key
 policy](../configuration/policies.md#the-host-key-policy-for-the-machine).
 
@@ -50,7 +50,7 @@ default keys are **not** tried. See
 Wrong credentials, or the account cannot log in at all. `-vv` shows the
 server's own reply, which is usually more specific.
 
-**`mailto: requires MPT_SMTP_URL or [mail] smtp in the configuration`** [2]
+**`mailto: requires MPFT_SMTP_URL or [mail] smtp in the configuration`** [2]
 
 `mailto:` names recipients but no server. Set `[mail] smtp`, or use an
 `smtp://` URL that carries the server itself.
@@ -96,7 +96,7 @@ Something that is not a directory is in the way of a local target path.
 **`payload exceeds the configured limit of 268435456 bytes`** [1]
 
 `--cache` was asked to hold more than `--cache-limit`. Raise the limit, or drop
-`--cache` and stream. Above the limit `mpt` fails rather than spilling to disk.
+`--cache` and stream. Above the limit `mpft` fails rather than spilling to disk.
 
 **`invalid option 'retries': retries need the memory cache (a stream cannot be replayed)`** [2]
 
@@ -112,7 +112,7 @@ SCP announces a length before it sends, and the source could not say one. Use
 
 Cleaning up after a failure did not work. When the connection never came up in
 the first place there was nothing to remove and the line is noise; when the
-transfer failed partway, a `.mpt-part` file may be left on the target.
+transfer failed partway, a `.mpft-part` file may be left on the target.
 
 **A transfer hangs.** The inactivity timeout (30 s) covers connecting, every
 stream, and a fan-out target that stops draining. If something still hangs,
@@ -186,10 +186,10 @@ exists inside the unit.
 
 **`no profile 'nosuch' (known: boss, prod)`** [2]
 
-A `mpt://` name the configuration does not define. `mpt profiles` lists what
+A `mpft://` name the configuration does not define. `mpft profiles` lists what
 there is.
 
-**`mpt.toml: ignoring [ssh] — a configuration file in the working directory only contributes [defaults] and [policy]`** (warning)
+**`mpft.toml: ignoring [ssh] — a configuration file in the working directory only contributes [defaults] and [policy]`** (warning)
 
 Working as intended. A directory you happen to be standing in may tune how a
 transfer runs, never where it goes. Put the section in the user file.
@@ -199,7 +199,7 @@ transfer runs, never where it goes. Put the section in the user file.
 A warning, or an error [2] with `[policy] strict_permissions`. `cmd` providers
 run what the file says, which is why this matters.
 
-**A setting seems to be ignored.** Two usual causes. First, `mpt config check`
+**A setting seems to be ignored.** Two usual causes. First, `mpft config check`
 prints a summary rather than everything, so a key missing from the listing may
 still be in force. Second, and more often: for per-endpoint options a URL
 option and a profile both beat a command-line flag. `--timeout 7` does not
@@ -210,7 +210,7 @@ and read the target echoed in the result line, which shows what was used.
 
 **`jobs 1 and 2 write the same target out/data1.csv`** [2]
 
-Two jobs would share one `.mpt-part` file and destroy each other's upload, so
+Two jobs would share one `.mpft-part` file and destroy each other's upload, so
 the batch is refused before anything moves.
 
 **`in/*.nothing matches no file (--allow-empty makes that fine)`** [2]
@@ -224,7 +224,7 @@ Several sources need somewhere to go, not one name.
 
 **`scheme 'http' cannot list (use webdav:// for PROPFIND)`** [2]
 
-Patterns, `mpt ls` and `-r` as a source all need a listing. `scp://` and
+Patterns, `mpft ls` and `-r` as a source all need a listing. `scp://` and
 `http://` cannot; use `sftp://` and `webdav://`.
 
 **`scheme 'mailto' cannot receive`** [2]
@@ -244,19 +244,19 @@ Resuming continues a part file, which `--no-atomic` never creates.
 
 **`the job list and the password cannot both come from stdin`** [2]
 
-`--password-stdin` with `mpt batch -`; the upload of `mpt relay` and the secret
-of `mpt credentials set` are refused the same way. Use `--password-file`
+`--password-stdin` with `mpft batch -`; the upload of `mpft relay` and the secret
+of `mpft credentials set` are refused the same way. Use `--password-file`
 instead.
 
 **`unexpected argument '-r' found`** [2]
 
 `-r`, `--parallel`, `--fail-fast`, `--dry-run`, `--allow-empty`, `--format` and
-`--follow` belong to the subcommand: `mpt cp -r …`, not `mpt -r cp …`.
+`--follow` belong to the subcommand: `mpft cp -r …`, not `mpft -r cp …`.
 
 **`unsupported scheme 'sftp (compiled without the 'ssh' feature)'`** [2]
 **`keyring credentials need the 'keyring' feature, which is not compiled in`** [4]
 
-The binary was built without that part. `mpt schemes` shows the protocols;
+The binary was built without that part. `mpft schemes` shows the protocols;
 rebuild with the feature. See
 [Installation](../getting-started/installation.md#choosing-protocols).
 
@@ -275,14 +275,14 @@ every profile. Set a token, or stay on loopback.
 The server was started with a global `--delete-source`, which would apply to
 every job, without the switch that allows deleting.
 
-**`only mpt://<profile>/ endpoints are accepted (set [server] urls = "any" or --allow-any-url to allow others)`** (400)
+**`only mpft://<profile>/ endpoints are accepted (set [server] urls = "any" or --allow-any-url to allow others)`** (400)
 
 A job named a raw URL or a local path. Define a profile for it, or, when
 every client is trusted as much as the server's user, allow any URL.
 
 **`a job may not add ?options to a profile; set them in the profile`** (400)
 
-`mpt://prod/?timeout=5` in a job. A reference's options would replace the
+`mpft://prod/?timeout=5` in a job. A reference's options would replace the
 profile's, so the profile has to carry them.
 
 **`profile 'prod' is misconfigured; see the server log`**, **`credentials for profile 'prod' could not be fetched; see the server log`** (400)
@@ -356,16 +356,16 @@ see [Trust](../server/relay-host.md#trust).
 **`authentication failed`** for an SSH target behind a relay [4]
 
 The forwarded agent had no key for it. Check that the target's key is one this
-side can offer (`?key=`, `[ssh] key`, `MPT_SSH_KEY` or `~/.ssh/id_*`, or your
+side can offer (`?key=`, `[ssh] key`, `MPFT_SSH_KEY` or `~/.ssh/id_*`, or your
 own agent), that the relay was not started with `--no-agent-forwarding`, and —
 under an ordinary `sshd` — that the `authorized_keys` line says
 `agent-forwarding`. A key on the relay itself serves a target you name only
 when the relay runs with `--own-keys`.
 
-**``the server does not run `mpt relay` (not a relay, or not in its PATH)``** [1]
+**``the server does not run `mpft relay` (not a relay, or not in its PATH)``** [1]
 
 The SSH host accepted the login but refused the command. Either it is an
-ordinary server without `mpt` on the `PATH` of that account, or the account's
+ordinary server without `mpft` on the `PATH` of that account, or the account's
 `authorized_keys` forces another command.
 
 **`no accepted method for relay@fast.example.com (tried: key …)`** [4]
@@ -395,9 +395,9 @@ goes, and what to do instead when the problem has a security consequence.
 Include in a report:
 
 - the exact command, with credentials removed
-- the output of `mpt -vv` for the failing run
-- `mpt --version` and `mpt schemes`
+- the output of `mpft -vv` for the failing run
+- `mpft --version` and `mpft schemes`
 - the operating system
-- `mpt config check`, if a configuration file is involved
+- `mpft config check`, if a configuration file is involved
 - the server software and version, if a particular server is involved. FTP
   servers especially differ in their listings and in how they handle renaming.

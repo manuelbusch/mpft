@@ -1,4 +1,4 @@
-# Using mpt in scripts
+# Using mpft in scripts
 
 A calling program needs three things: separated output streams, an exit code
 that says what kind of failure occurred, and a report it can parse. This page
@@ -12,9 +12,9 @@ to **stderr**. Everything a program reads goes to **stdout**, and only with
 output *is* data (`ls`, `schemes`, `profiles`, `completions`, `man`).
 
 ```
-mpt --json cp report.pdf sftp://srv/in/ > report.json      # the machine's copy
-mpt --json cp report.pdf sftp://srv/in/ 2>/dev/null | jq . # ignore the human's
-mpt cp report.pdf sftp://srv/in/ 2>> transfer.log          # keep the human's
+mpft --json cp report.pdf sftp://srv/in/ > report.json      # the machine's copy
+mpft --json cp report.pdf sftp://srv/in/ 2>/dev/null | jq . # ignore the human's
+mpft cp report.pdf sftp://srv/in/ 2>> transfer.log          # keep the human's
 ```
 
 So a log file and a parser can be fed from one run without either seeing the
@@ -35,10 +35,10 @@ error counts as which. What a script does with them:
 | 130 | a person stopped the run; not a transfer failure |
 
 ```
-$ mpt cp nosuch.pdf out/            ; echo $?     # 1
-$ mpt cp --nosuchflag x y           ; echo $?     # 2
-$ mpt cp mailto:x@example.com out/  ; echo $?     # 2
-$ mpt ls mpt://nosuch/              ; echo $?     # 2
+$ mpft cp nosuch.pdf out/            ; echo $?     # 1
+$ mpft cp --nosuchflag x y           ; echo $?     # 2
+$ mpft cp mailto:x@example.com out/  ; echo $?     # 2
+$ mpft ls mpft://nosuch/              ; echo $?     # 2
 ```
 
 The distinction that matters most is 2 and 4 against 1: a wrong URL or a
@@ -54,7 +54,7 @@ same kind.
 #!/bin/sh
 set -u
 # No `set -e`: the script inspects the exit code itself.
-mpt --json cp --hash sha256 /data/export.csv sftp://srv.example.com/incoming/ > last-run.json
+mpft --json cp --hash sha256 /data/export.csv sftp://srv.example.com/incoming/ > last-run.json
 case $? in
   0) mv /data/export.csv /data/sent/ ;;
   3) echo "export.csv did not verify — not marking it as sent" >&2; exit 3 ;;
@@ -70,7 +70,7 @@ API](../reference/api.md#the-job-object) returns as a transfer's `report`
 and what a [relay](../server/relay.md) sends back.
 
 ```
-$ mpt --json cp --check out/report.pdf back/ 2>/dev/null
+$ mpft --json cp --check out/report.pdf back/ 2>/dev/null
 {
   "bytes_read": 8,
   "check": {
@@ -125,11 +125,11 @@ anything was transferred — the source could not be opened, say — prints a
 shorter object, `source`, `ok`, `error` and `cancelled`, as a batch does for
 such a job.
 
-`mpt --json ls <url>` prints the listing as an array, with `modified` in RFC
+`mpft --json ls <url>` prints the listing as an array, with `modified` in RFC
 3339:
 
 ```
-$ mpt --json ls .
+$ mpft --json ls .
 [
   {
     "is_dir": true,
@@ -149,7 +149,7 @@ its position in the list. Objects arrive as the run progresses, so a consumer
 can follow a long batch live instead of waiting for the end.
 
 ```
-$ mpt --json batch jobs.txt 2>/dev/null | jq -c 'select(.ok | not) | {job, source, error}'
+$ mpft --json batch jobs.txt 2>/dev/null | jq -c 'select(.ok | not) | {job, source, error}'
 {"job":2,"source":"nosuch.pdf","error":"I/O error: No such file or directory (os error 2)"}
 ```
 
@@ -161,17 +161,17 @@ Some pipelines that come up:
 
 ```
 # which targets failed, and why
-mpt --json cp report.pdf sftp://a/ ftp://b/ 2>/dev/null \
+mpft --json cp report.pdf sftp://a/ ftp://b/ 2>/dev/null \
   | jq -c '.targets[] | select(.ok | not) | {target, error}'
 
 # total bytes moved by a batch
-mpt --json batch jobs.txt 2>/dev/null | jq -s 'map(.bytes_read // 0) | add'
+mpft --json batch jobs.txt 2>/dev/null | jq -s 'map(.bytes_read // 0) | add'
 
 # the digest, for a manifest
-mpt --json cp --hash sha256 report.pdf sftp://srv/in/ 2>/dev/null | jq -r '.digests.sha256'
+mpft --json cp --hash sha256 report.pdf sftp://srv/in/ 2>/dev/null | jq -r '.digests.sha256'
 
 # follow a long batch live
-mpt --json batch jobs.txt 2>/dev/null | jq -c '{job, ok}'
+mpft --json batch jobs.txt 2>/dev/null | jq -c '{job, ok}'
 ```
 
 Note that `--json` switches the progress display off by itself, so nothing
@@ -198,7 +198,7 @@ appears in a log.
 honours `NO_COLOR`. Piping therefore produces plain text without any flag:
 
 ```
-$ mpt cp report.pdf out/ 2>&1 | cat -v
+$ mpft cp report.pdf out/ 2>&1 | cat -v
 report.pdf -> out/: 8 bytes in 6.32ms
 ```
 
@@ -209,6 +209,6 @@ which suits a CI system that renders ANSI codes.
 ## Interruption and exit code 130
 
 `SIGINT`, and `SIGTERM` with it, stop the run and exit 130; a script that runs
-`mpt` under a supervisor should treat that as "someone stopped this", not as a
+`mpft` under a supervisor should treat that as "someone stopped this", not as a
 transfer failure. What is left behind, and what `--resume` keeps, is under
 [Ctrl-C](../guide/reliability.md#ctrl-c).

@@ -7,16 +7,16 @@ holding files: it is the relay behind [`--via`](../server/relay.md), and
 everything on this page about authentication and host keys applies to it.
 
 ```
-mpt cp report.pdf sftp://deploy@srv.example.com/var/spool/incoming/
-mpt ls sftp://deploy@srv.example.com/var/spool/incoming/
-mpt cp sftp://deploy@srv.example.com/var/log/app.log ./
+mpft cp report.pdf sftp://deploy@srv.example.com/var/spool/incoming/
+mpft ls sftp://deploy@srv.example.com/var/spool/incoming/
+mpft cp sftp://deploy@srv.example.com/var/log/app.log ./
 ```
 
 ## SFTP versus SCP
 
 | | `sftp://` | `scp://` |
 |---|---|---|
-| list a directory (`mpt ls`, patterns, `-r` as source) | ✓ | – |
+| list a directory (`mpft ls`, patterns, `-r` as source) | ✓ | – |
 | report the size of a source | ✓ | – |
 | resume an interrupted upload | ✓ | – |
 | atomic finishing | ✓ | ✓ (via `mv` on the same connection) |
@@ -29,7 +29,7 @@ situation where SCP is the right choice.
 ### SCP and the source size
 
 The SCP protocol announces the length of a file before sending it. An
-`scp://` source says its size the same way: `mpt` reads it from the header of
+`scp://` source says its size the same way: `mpft` reads it from the header of
 an `scp -f` it then abandons, one extra login, as asking an SFTP server for the
 size costs one. When the source cannot say how large it is (an HTTP server
 that answers `HEAD` without a `Content-Length`, or refuses it), the payload has
@@ -52,17 +52,17 @@ SSH paths are absolute on the server. To address something relative to the
 login directory, use `/~/`:
 
 ```
-mpt cp report.pdf sftp://deploy@srv.example.com/~/incoming/
+mpft cp report.pdf sftp://deploy@srv.example.com/~/incoming/
 ```
 
-The user comes from the URL, then `$MPT_SSH_USER`, then `[ssh] user`, then the
+The user comes from the URL, then `$MPFT_SSH_USER`, then `[ssh] user`, then the
 local user name.
 
 ## Authentication
 
 The order is not simply a list of fallbacks:
 
-1. **The key you named** with `?key=`, `[ssh] key`, or `$MPT_SSH_KEY`. If a
+1. **The key you named** with `?key=`, `[ssh] key`, or `$MPFT_SSH_KEY`. If a
    key is named, the agent and the default keys are **not** tried: naming a
    key means using that key.
 2. **The ssh-agent**, if `$SSH_AUTH_SOCK` points at one and no key was named.
@@ -71,7 +71,7 @@ The order is not simply a list of fallbacks:
 4. **A password**, if there is one, whatever happened above.
 
 ```
-$ mpt ls sftp://deploy@srv.example.com/in/
+$ mpft ls sftp://deploy@srv.example.com/in/
 error: authentication failed: no accepted method for deploy@srv.example.com
        (tried: ssh-agent, key /home/me/.ssh/id_ed25519)
 ```
@@ -88,7 +88,7 @@ what went wrong.
 | `?hostkey=SHA256:…` | `[ssh] hostkey` | pin the host key; repeatable |
 
 Encrypted keys take their passphrase from the option, the configuration, or
-`$MPT_SSH_KEY_PASSPHRASE`. The key types that work are **Ed25519**, **ECDSA**
+`$MPFT_SSH_KEY_PASSPHRASE`. The key types that work are **Ed25519**, **ECDSA**
 on P-256 and P-384, and **RSA**, which is offered with the SHA-2 signature
 algorithm the server asks for. Keys in OpenSSH's own format, which is what
 `ssh-keygen` writes by default, are read directly; PuTTY's `.ppk` has to be
@@ -103,8 +103,8 @@ at all, since `<key>-cert.pub` next to the key is found the way OpenSSH finds
 it:
 
 ```
-mpt cp report.pdf "sftp://deploy@srv/in/?key=~/.ssh/id_ed25519"          # uses id_ed25519-cert.pub
-mpt cp report.pdf "sftp://deploy@srv/in/?key=/tmp/k&cert=/tmp/k-cert.pub"
+mpft cp report.pdf "sftp://deploy@srv/in/?key=~/.ssh/id_ed25519"          # uses id_ed25519-cert.pub
+mpft cp report.pdf "sftp://deploy@srv/in/?key=/tmp/k&cert=/tmp/k-cert.pub"
 ```
 
 If the server refuses the certificate, the bare key still gets its turn.

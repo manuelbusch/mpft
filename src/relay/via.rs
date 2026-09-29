@@ -599,7 +599,7 @@ fn too_old(relay: &Location, op: Op, err: &serde_json::Value) -> Option<Error> {
     old.then(|| {
         Error::Remote(format!(
             "the relay {relay} is too old for {} (it needs version {} of the relay \
-             protocol); update mpt on the relay",
+             protocol); update mpft on the relay",
             match op {
                 Op::List => "listing a directory",
                 Op::Size => "telling a size",

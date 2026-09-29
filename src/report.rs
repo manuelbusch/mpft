@@ -1,6 +1,6 @@
 //! The outcome of a copy as JSON, for scripts and the API.
 //!
-//! The shape is what `mpt --json` prints (documented in the README under
+//! The shape is what `mpft --json` prints (documented in the README under
 //! "Machine-readable output"), so a script reads the same fields whether
 //! it ran the command or asked the server.
 

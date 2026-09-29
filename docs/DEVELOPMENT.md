@@ -1,6 +1,6 @@
 # Development notes
 
-Material for people working on `mpt` itself. The user guide under
+Material for people working on `mpft` itself. The user guide under
 `user_guide/` is written for people who run it; anything about the test
 setup, design history or extension points belongs here instead.
 
@@ -19,7 +19,7 @@ it in that state:
 3. **Descriptive headings, plain prose.** A heading says what the section
    covers, so the table of contents and the search index are usable, and so
    that anchors stay stable. Prose states the fact; it does not argue for it
-   outside `why-mpt.md`. In the reference and protocol pages headings are
+   outside `why-mpft.md`. In the reference and protocol pages headings are
    noun phrases; the guide chapters may use a sentence.
 4. **Overview pages summarise and link.** The security overview, the
    deployment patterns, the quick reference and the glossary repeat nothing
@@ -56,19 +56,19 @@ and needs `ssh-keygen`); `tests/relay.rs` starts it as a relay and sends files
 through it with the binary as the client, and needs `ssh-keygen` for the
 client keys. A few relay cases start two relays, to cover a target that one
 relay hands on to the other; the ones that need a real target behind the
-relay are skipped unless `MPT_IT_FTP` or `MPT_IT_SFTP` is set.
+relay are skipped unless `MPFT_IT_FTP` or `MPFT_IT_SFTP` is set.
 
 ### Test servers
 
 The end-to-end tests in `tests/integration.rs` run against real servers and
-are skipped unless the corresponding `MPT_IT_*` variable is set. A Docker-free
+are skipped unless the corresponding `MPFT_IT_*` variable is set. A Docker-free
 setup using Python servers plus the user's own `sshd` is provided:
 
 ```
 python3 -m venv .venv && .venv/bin/pip install pyftpdlib pyopenssl aiosmtpd "moto[server]" wsgidav cheroot
-bash tests/local/start_servers.sh .venv /tmp/mpt-it
-source /tmp/mpt-it/env.sh && cargo test --test integration
-bash tests/local/stop_servers.sh /tmp/mpt-it
+bash tests/local/start_servers.sh .venv /tmp/mpft-it
+source /tmp/mpft-it/env.sh && cargo test --test integration
+bash tests/local/stop_servers.sh /tmp/mpft-it
 ```
 
 `start_servers.sh` writes `<work-dir>/env.sh` with these variables; each one
@@ -76,13 +76,13 @@ switches its suite on, and an unset one skips it with a message:
 
 | Variable | Server | Suite |
 |---|---|---|
-| `MPT_IT_FTP`, `MPT_IT_FTPS` | pyftpdlib, plain and explicit TLS with a self-signed certificate | FTP round trips, on-demand relay passwords |
-| `MPT_IT_HTTP`, `MPT_IT_WEBDAV` | a static HTTP server and WsgiDAV | HTTP and WebDAV round trips |
-| `MPT_IT_S3` | moto | S3 round trips including a multipart upload |
-| `MPT_IT_MAILTO`, `MPT_SMTP_URL`, `MPT_IT_MAILDIR` | aiosmtpd writing to a maildir | mail delivery, checked by reading the maildir |
-| `MPT_IT_SFTP`, `MPT_IT_SCP`, `MPT_IT_SSH_HOSTKEY` | the user's `sshd` with a generated client key | SFTP and SCP round trips, host-key pinning, agent forwarding through a relay |
-| `MPT_IT_SFTP_CERT`, `MPT_IT_SSH_AGENT` | the same `sshd` trusting a CA, and an `ssh-agent` holding the certificate key | certificate authentication from a file and from an agent, also through a relay |
-| `MPT_IT_LOG` | — | `debug` shows the client's tracing while the tests run |
+| `MPFT_IT_FTP`, `MPFT_IT_FTPS` | pyftpdlib, plain and explicit TLS with a self-signed certificate | FTP round trips, on-demand relay passwords |
+| `MPFT_IT_HTTP`, `MPFT_IT_WEBDAV` | a static HTTP server and WsgiDAV | HTTP and WebDAV round trips |
+| `MPFT_IT_S3` | moto | S3 round trips including a multipart upload |
+| `MPFT_IT_MAILTO`, `MPFT_SMTP_URL`, `MPFT_IT_MAILDIR` | aiosmtpd writing to a maildir | mail delivery, checked by reading the maildir |
+| `MPFT_IT_SFTP`, `MPFT_IT_SCP`, `MPFT_IT_SSH_HOSTKEY` | the user's `sshd` with a generated client key | SFTP and SCP round trips, host-key pinning, agent forwarding through a relay |
+| `MPFT_IT_SFTP_CERT`, `MPFT_IT_SSH_AGENT` | the same `sshd` trusting a CA, and an `ssh-agent` holding the certificate key | certificate authentication from a file and from an agent, also through a relay |
+| `MPFT_IT_LOG` | — | `debug` shows the client's tracing while the tests run |
 
 Running the script again starts only what is not running; `pids` in the
 work dir keeps every server it started, and `agent.pid` the `ssh-agent`, so
@@ -92,17 +92,17 @@ the agent is gone.
 The ports are the defaults in the table's order: 2121 and 2122 (FTP, FTPS),
 8082 (HTTP), 8081 (WebDAV), 9000 (S3), 8025 (SMTP) and 2222 (SSH). A second
 set beside the first — when the defaults are taken by another checkout, say —
-needs a work dir of its own and other ports, given as `MPT_IT_PORT_FTP`,
-`MPT_IT_PORT_FTPS`, `MPT_IT_PORT_HTTP`, `MPT_IT_PORT_WEBDAV`,
-`MPT_IT_PORT_S3`, `MPT_IT_PORT_SMTP` and `MPT_IT_PORT_SSH`; the `env.sh` it
+needs a work dir of its own and other ports, given as `MPFT_IT_PORT_FTP`,
+`MPFT_IT_PORT_FTPS`, `MPFT_IT_PORT_HTTP`, `MPFT_IT_PORT_WEBDAV`,
+`MPFT_IT_PORT_S3`, `MPFT_IT_PORT_SMTP` and `MPFT_IT_PORT_SSH`; the `env.sh` it
 writes points at them:
 
 ```
-export MPT_IT_PORT_FTP=2131 MPT_IT_PORT_FTPS=2132 MPT_IT_PORT_HTTP=8092 \
-       MPT_IT_PORT_WEBDAV=8091 MPT_IT_PORT_S3=9010 MPT_IT_PORT_SMTP=8035 MPT_IT_PORT_SSH=2232
-bash tests/local/start_servers.sh .venv /tmp/mpt-it2
-source /tmp/mpt-it2/env.sh && cargo test --test integration
-bash tests/local/stop_servers.sh /tmp/mpt-it2
+export MPFT_IT_PORT_FTP=2131 MPFT_IT_PORT_FTPS=2132 MPFT_IT_PORT_HTTP=8092 \
+       MPFT_IT_PORT_WEBDAV=8091 MPFT_IT_PORT_S3=9010 MPFT_IT_PORT_SMTP=8035 MPFT_IT_PORT_SSH=2232
+bash tests/local/start_servers.sh .venv /tmp/mpft-it2
+source /tmp/mpft-it2/env.sh && cargo test --test integration
+bash tests/local/stop_servers.sh /tmp/mpft-it2
 ```
 
 Implicit FTPS (`tls=implicit`) is implemented but not covered by these
@@ -110,13 +110,13 @@ servers.
 
 WsgiDAV percent-decodes a MOVE's `Destination` header before it parses it as
 a URL, so an encoded `?` in the destination ends the path there and the file
-is renamed to the part before it. `mpt` sends the header encoded, as RFC 4918
+is renamed to the part before it. `mpft` sends the header encoded, as RFC 4918
 asks; the test with such names therefore uploads them without the atomic
 rename on WebDAV.
 
 The Python FTP server duplicates its greeting on roughly 1.5 % of concurrent
 connections, which desynchronises that one control channel. It is a defect of
-that server, not of FTP or of `mpt`, and it is why the generated test URLs
+that server, not of FTP or of `mpft`, and it is why the generated test URLs
 carry `?connect_retries=1`. Real servers do not need it.
 
 The scripts under `tests/local/` are Unix shell scripts and do not run on
@@ -143,7 +143,7 @@ readers, every reader that stays sees exactly the source bytes.
 
 `cargo deny` accepts one advisory on purpose, RUSTSEC-2023-0071 (a timing side
 channel in the `rsa` crate, reachable through `pgp` and `russh`). No fixed
-release exists; `mpt` signs and verifies with those keys but never decrypts,
+release exists; `mpft` signs and verifies with those keys but never decrypts,
 and ed25519 keys are unaffected. `deny.toml` carries the reasoning, and the
 licence allow-list is permissive licences only.
 
@@ -165,7 +165,7 @@ Windows job of the CI workflow is what will settle it.
 
 ## Signature interoperability
 
-`mpt` produces SSHSIG signatures in namespace `file` and ordinary detached
+`mpft` produces SSHSIG signatures in namespace `file` and ordinary detached
 OpenPGP signatures, and verifies what `ssh-keygen -Y sign` and
 `gpg --detach-sign` produce. Both directions are exercised against the real
 tools in the test suite, so the compatibility claim in the user guide is a
@@ -179,7 +179,7 @@ poison the whole connection and fail a transfer mid-write. The saving was on
 the order of a hundred milliseconds per job, which is not worth that failure
 mode. `--parallel` is therefore also the number of simultaneous logins.
 
-**`./mpt.toml` is allow-listed.** A configuration file in the working
+**`./mpft.toml` is allow-listed.** A configuration file in the working
 directory contributes `[defaults]` and `[policy]` only. Any section added to
 the configuration later is dropped there until someone decides otherwise, so
 a directory nobody vetted can never redirect a transfer or run a credential
@@ -215,7 +215,7 @@ without changing the core. Candidates, roughly in order of effort:
 - `mqtt://`, `nats://`, `amqp://` — message queues; send-only or receive-only
   fits the endpoint model naturally
 - `tftp://` — network devices
-- `-` — stdin and stdout for pipes; today `mpt batch -` is the only reader of
+- `-` — stdin and stdout for pipes; today `mpft batch -` is the only reader of
   standard input
 - webhooks (Slack, Teams, Matrix) — send-only over HTTPS
 - Dropbox, Google Drive, OneDrive — each needs an OAuth flow

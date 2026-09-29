@@ -5,12 +5,12 @@ not protect against someone who can write to the directory the file sits in:
 replacing the file and recomputing the checksum beside it takes one command,
 and the result verifies.
 
-A signature answers the other question, *who* put this here, and `mpt`
+A signature answers the other question, *who* put this here, and `mpft`
 answers it before the data is copied, not after.
 
 ```
-mpt cp --sign ssh:~/.ssh/release_ed25519 report.pdf "s3://bucket/releases/"
-mpt cp --verify-signers allowed_signers "s3://bucket/releases/report.pdf" ./
+mpft cp --sign ssh:~/.ssh/release_ed25519 report.pdf "s3://bucket/releases/"
+mpft cp --verify-signers allowed_signers "s3://bucket/releases/report.pdf" ./
 ```
 
 ## Signing
@@ -19,7 +19,7 @@ mpt cp --verify-signers allowed_signers "s3://bucket/releases/report.pdf" ./
 signature covers the payload however large it is:
 
 ```
-$ mpt cp --sign ssh:signer report.pdf out/
+$ mpft cp --sign ssh:signer report.pdf out/
 report.pdf -> out/: 12 bytes in 6.02ms
 + out/report.pdf.sha256
 + out/report.pdf.sha256.sig
@@ -33,11 +33,11 @@ presence means the whole transfer finished.
 
 | Backend | `--sign` | Signature file |
 |---|---|---|
-| OpenSSH | `ssh` (agent, then `$MPT_SSH_KEY`, then `~/.ssh/id_*`), or `ssh:<key>` | `<name>.sha256.sig` |
+| OpenSSH | `ssh` (agent, then `$MPFT_SSH_KEY`, then `~/.ssh/id_*`), or `ssh:<key>` | `<name>.sha256.sig` |
 | OpenPGP | `pgp:<secret-key.asc>` | `<name>.sha256.asc` |
 
 ```
-$ mpt cp --sign pgp:release-secret.asc --hash blake3 report.pdf out/
+$ mpft cp --sign pgp:release-secret.asc --hash blake3 report.pdf out/
 + out/report.pdf.b3
 + out/report.pdf.b3.asc
 blake3  4ee59acf208cdb32d826d48ea23246352f6c47babdb7f0d237744536ef34c0eb
@@ -45,10 +45,10 @@ signed  Release Bot <release@example.com> 5d23077e9c9241ad9fcfda9b00bac98e8af075
 ```
 
 Export an OpenPGP key with `gpg --export-secret-keys --armor`. An encrypted key
-takes its passphrase from `$MPT_SIGN_KEY_PASSPHRASE` or from
+takes its passphrase from `$MPFT_SIGN_KEY_PASSPHRASE` or from
 `[signing] passphrase`, which accepts a
 [credential reference](../configuration/credentials.md). `--sign ssh` without a
-key uses the ssh-agent; `$MPT_SIGN_KEY_FINGERPRINT` or
+key uses the ssh-agent; `$MPFT_SIGN_KEY_FINGERPRINT` or
 `[signing] agent_fingerprint` picks one identity out of several.
 
 To sign every transfer to a particular place without anyone having to remember,
@@ -67,7 +67,7 @@ hash = "sha256"
 <pubkeys.asc>` (OpenPGP) both imply `--check`:
 
 ```
-$ mpt cp --verify-signers allowed_signers out/report.pdf back/
+$ mpft cp --verify-signers allowed_signers out/report.pdf back/
 sha256  4dc21b974cc293d0dfbb25326f0df4ac461f29d69ccc2c2dc5391f4f39a45aed
 signature ok release@example.com (SHA256:GHBfnine/dnKwNm0OtOe0+FFRYHoSc1HkLfEI4QGj4I)
 check ok (SHA-256)
@@ -96,8 +96,8 @@ no flag:
 
 ```toml
 [verify]
-allowed_signers = "~/.config/mpt/allowed_signers"
-keyring         = "~/.config/mpt/trusted.asc"
+allowed_signers = "~/.config/mpft/allowed_signers"
+keyring         = "~/.config/mpft/trusted.asc"
 ```
 
 With `[policy] require_signature = true` a bare `--check` is then refused as
@@ -122,7 +122,7 @@ gpg: Signature made Thu Sep 10 20:08:38 2026 CEST
 gpg: Good signature from "Release Bot <release@example.com>"
 ```
 
-It works in both directions: `mpt` verifies what `ssh-keygen -Y sign` and `gpg
+It works in both directions: `mpft` verifies what `ssh-keygen -Y sign` and `gpg
 --detach-sign` produce.
 
 ## Trust files
@@ -167,7 +167,7 @@ A signature is accepted if it was made by any key in the trust file. The
 principal in an `allowed_signers` line and the user ID of an OpenPGP key only
 appear in the output, as who signed; nothing ties a file, a source or a
 directory to one of them. `ssh-keygen -Y verify -I <principal>` checks a
-principal, `mpt` does not.
+principal, `mpft` does not.
 
 A trust file therefore says "any of these keys may sign anything verified
 against this file". Keep keys that may sign only some things out of it, and
@@ -180,7 +180,7 @@ A signed checksum file carries a second line:
 
 ```
 4dc21b974cc293d0dfbb25326f0df4ac461f29d69ccc2c2dc5391f4f39a45aed  report.pdf
-# mpt-signed-at: 2026-09-10T18:05:31Z
+# mpft-signed-at: 2026-09-10T18:05:31Z
 ```
 
 It is a comment, so `sha256sum -c` and `b3sum -c` ignore it, and it is inside

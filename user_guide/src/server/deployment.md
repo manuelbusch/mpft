@@ -12,7 +12,7 @@ and a well-connected host delivers it.
 
 ```mermaid
 flowchart LR
-    W[workstation<br/>mpt cp --via] -- "one upload over SSH" --> R[relay host<br/>mpt relay --listen]
+    W[workstation<br/>mpft cp --via] -- "one upload over SSH" --> R[relay host<br/>mpft relay --listen]
     R --> A[(sftp)]
     R --> B[(s3)]
     R --> C[mailto]
@@ -21,7 +21,7 @@ flowchart LR
 | Where | What lives there |
 |---|---|
 | workstation | the configuration with the profiles and their credential references; the SSH key that is in the relay's `authorized_keys`; the keys of SSH targets, offered through the forwarded agent |
-| relay host | `mpt relay --listen`, its host key, `authorized_keys`; `--credentials on-demand` when no password should stay there |
+| relay host | `mpft relay --listen`, its host key, `authorized_keys`; `--credentials on-demand` when no password should stay there |
 
 [Relaying through a fast host](relay.md), [Running a relay](relay-host.md).
 
@@ -33,7 +33,7 @@ the secret from where the platform put it.
 
 ```mermaid
 flowchart LR
-    CI[CI job<br/>mpt cp --json] -- "?hostkey= pinned" --> S[(sftp / s3)]
+    CI[CI job<br/>mpft cp --json] -- "?hostkey= pinned" --> S[(sftp / s3)]
     V[secret store] -. "env or file" .-> CI
 ```
 
@@ -48,7 +48,7 @@ sign     = "ssh:${CI_PROJECT_DIR}/.keys/release_ed25519"
 The job reads the exit code and keeps the JSON report as an artefact. `--json`
 on stdout and the log on stderr keep the two apart in the runner's output.
 [Pinning, for scripts and CI](../trust/connections.md#pinning-for-scripts-and-ci),
-[Using mpt in scripts](../automation/scripting.md), [Signing](../trust/signatures.md#signing).
+[Using mpft in scripts](../automation/scripting.md), [Signing](../trust/signatures.md#signing).
 
 ## A scheduled service account
 
@@ -57,10 +57,10 @@ account cannot rewrite it and the secret delivered by systemd.
 
 ```mermaid
 flowchart LR
-    T[systemd timer] --> U[export-upload.service<br/>mpt cp -r --skip-existing]
+    T[systemd timer] --> U[export-upload.service<br/>mpft cp -r --skip-existing]
     U --> P[(sftp inbox)]
     L["LoadCredential="] -. "$CREDENTIALS_DIRECTORY" .-> U
-    C["/etc/mpt/config.toml<br/>[policy] strict"] -. "--config" .-> U
+    C["/etc/mpft/config.toml<br/>[policy] strict"] -. "--config" .-> U
 ```
 
 [Scheduled and triggered runs](../automation/scheduling.md#systemd),
@@ -68,14 +68,14 @@ flowchart LR
 
 ## A server behind a reverse proxy
 
-Programs submit jobs over HTTP instead of spawning `mpt`. The server speaks
+Programs submit jobs over HTTP instead of spawning `mpft`. The server speaks
 plain HTTP on loopback; a proxy adds TLS, and the profiles decide what a job
 may reach.
 
 ```mermaid
 flowchart LR
     App[application<br/>POST /v1/jobs] -- "TLS, bearer token" --> Px[reverse proxy]
-    Px -- "127.0.0.1:7788" --> Srv[mpt serve<br/>profiles only]
+    Px -- "127.0.0.1:7788" --> Srv[mpft serve<br/>profiles only]
     Srv --> X[(profile: inbox)]
     Srv --> Y[(profile: prod)]
     J[(journal, 0600)] -.- Srv
@@ -105,10 +105,10 @@ flowchart LR
 ```toml
 [profiles.incoming]
 url = "/srv/incoming/report.pdf"
-via = "mpt://r1"
+via = "mpft://r1"
 [profiles.dc2]
 url = "ftp://upload@dc2-store.example/in/"
-via = "mpt://r2"
+via = "mpft://r2"
 ```
 
 With `--via-credentials on-demand` neither relay keeps a password, and the
@@ -122,12 +122,12 @@ and `batch --follow` runs each line as it arrives.
 
 ```mermaid
 flowchart LR
-    Wt[inotifywait -m] -- "one line per file" --> Bt[mpt batch - --follow]
+    Wt[inotifywait -m] -- "one line per file" --> Bt[mpft batch - --follow]
     Bt --> D1[(sftp)]
     Bt --> D2[(s3)]
 ```
 
-Under systemd the watcher and `mpt` share one `Type=simple` service with
+Under systemd the watcher and `mpft` share one `Type=simple` service with
 `Restart=always`, so both come back together. [Streaming input with
 `--follow`](../guide/job-lists.md#streaming-input-with---follow),
 [Event-triggered runs](../automation/scheduling.md#event-triggered-runs).

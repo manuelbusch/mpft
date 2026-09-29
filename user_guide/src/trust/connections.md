@@ -13,7 +13,7 @@ changed key, or a `known_hosts` file that cannot be read all abort the
 connection.
 
 ```
-$ mpt ls sftp://srv.example.com/incoming/
+$ mpft ls sftp://srv.example.com/incoming/
 error: authentication failed: host key of srv.example.com:22 is not in known_hosts:
        SHA256:GFb3ByRBzc3YOA2B7PCZeSWXCPpf4DIlKm/UrNkKGhY. Verify it, then add it with
        `ssh-keyscan -p 22 srv.example.com >> ~/.ssh/known_hosts`, or connect with
@@ -32,7 +32,7 @@ alternative would accept any key at the moment the trust store went missing.
 
 The default for the whole machine is `[policy] known_hosts`, which is also the
 [least a URL may ask for](../configuration/policies.md#the-host-key-policy-for-the-machine),
-and `$MPT_SSH_KNOWN_HOSTS` sets it for one run. A different file can be named with
+and `$MPFT_SSH_KNOWN_HOSTS` sets it for one run. A different file can be named with
 `[ssh] known_hosts_file`.
 
 ### First contact
@@ -48,8 +48,8 @@ If you cannot, and the network between you is one you are willing to trust
 once, `accept-new` does what `ssh` does on first connection:
 
 ```
-$ mpt cp report.pdf "sftp://srv.example.com/in/?known_hosts=accept-new"
-WARN mpt::protocols::ssh: adding new host key for srv.example.com:22 to known_hosts:
+$ mpft cp report.pdf "sftp://srv.example.com/in/?known_hosts=accept-new"
+WARN mpft::protocols::ssh: adding new host key for srv.example.com:22 to known_hosts:
      SHA256:GFb3ByRBzc3YOA2B7PCZeSWXCPpf4DIlKm/UrNkKGhY
 ```
 
@@ -75,7 +75,7 @@ at the start of every pipeline tends to end in `accept-new` or `off`. Pin the
 key in the URL instead:
 
 ```
-mpt cp report.pdf "sftp://deploy@srv.example.com/in/?hostkey=SHA256:GFb3ByRBzc3YOA2B7PCZeSWXCPpf4DIlKm/UrNkKGhY"
+mpft cp report.pdf "sftp://deploy@srv.example.com/in/?hostkey=SHA256:GFb3ByRBzc3YOA2B7PCZeSWXCPpf4DIlKm/UrNkKGhY"
 ```
 
 ```
@@ -103,7 +103,7 @@ server's certificate against the system trust store. A certificate that does
 not check out ends the connection:
 
 ```
-$ mpt ls ftps://ftp.example.com/
+$ mpft ls ftps://ftp.example.com/
 error: ftp: Secure error: invalid peer certificate: “ftp.example.com” certificate is not trusted
 ```
 
@@ -113,7 +113,7 @@ a certificate from a CA that is already there; or, as a last resort, switch
 verification off for that one endpoint:
 
 ```
-mpt cp report.pdf "ftps://upload@ftp.internal/in/?insecure=true"
+mpft cp report.pdf "ftps://upload@ftp.internal/in/?insecure=true"
 ```
 
 `?insecure=true` [belongs to one
@@ -139,7 +139,7 @@ for at login, as a [relay asks](../server/relay.md) on demand. Each produces
 one warning per run:
 
 ```
-WARN mpt::policy: ftp://ftp.example.com: FTP without TLS sends the password unencrypted.
+WARN mpft::policy: ftp://ftp.example.com: FTP without TLS sends the password unencrypted.
      Prefer the TLS variant of this scheme
 ```
 
@@ -149,14 +149,14 @@ available, the policy turns the warning into a refusal so that the decision
 is made explicitly:
 
 ```
-$ mpt --refuse-plaintext-auth ls "ftp://user:secret@ftp.example.com/"
+$ mpft --refuse-plaintext-auth ls "ftp://user:secret@ftp.example.com/"
 error: authentication failed: ftp://ftp.example.com: FTP without TLS sends the password
        unencrypted (refused by policy; switch to the TLS variant of the scheme, or drop
-       --refuse-plaintext-auth / MPT_REFUSE_PLAINTEXT_AUTH)
+       --refuse-plaintext-auth / MPFT_REFUSE_PLAINTEXT_AUTH)
 ```
 
 `[policy] refuse_plaintext_auth = true` makes that permanent, and
-`MPT_REFUSE_PLAINTEXT_AUTH=1` sets it for one run. Anonymous FTP is unaffected;
+`MPFT_REFUSE_PLAINTEXT_AUTH=1` sets it for one run. Anonymous FTP is unaffected;
 there is no password to lose.
 
 ## Passwords in the process list

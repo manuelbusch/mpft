@@ -1,4 +1,4 @@
-# Using mpt as a library
+# Using mpft as a library
 
 The command-line program is a thin layer over a Rust library, and everything
 the CLI does is available to a program that wants to do it directly: the
@@ -7,50 +7,50 @@ stream utilities the pipeline is built from.
 
 ```toml
 [dependencies]
-mpt = { path = "…/multi_protocol_transceiver" }
+mpft = { path = "…/mpft" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
-The crate is `multi_protocol_transceiver` and the library is `mpt`. Everything
-here is `async` and expects a Tokio runtime. Call `mpt::init_crypto()` once at
+The crate and its library are both called `mpft`. Everything
+here is `async` and expects a Tokio runtime. Call `mpft::init_crypto()` once at
 start-up: several dependencies build TLS configurations and panic if no
 provider has been installed.
 
 ## One copy
 
 ```rust
-mpt::init_crypto();
-let src = mpt::open("sftp://deploy@srv.example.com/var/log/app.log")?;
-let dst = mpt::open("s3://bucket/logs/?endpoint=https://minio.example.com")?;
-let report = mpt::copy(src.as_ref(), dst.as_ref()).await?;
+mpft::init_crypto();
+let src = mpft::open("sftp://deploy@srv.example.com/var/log/app.log")?;
+let dst = mpft::open("s3://bucket/logs/?endpoint=https://minio.example.com")?;
+let report = mpft::copy(src.as_ref(), dst.as_ref()).await?;
 println!("{} bytes in {:?}", report.bytes, report.elapsed);
 ```
 
-`open` parses the URL, resolves `mpt://` profile names against the installed
+`open` parses the URL, resolves `mpft://` profile names against the installed
 configuration and picks the protocol. It makes **no connection**: those happen
 lazily, in the operations themselves, which is why a wrong URL fails
 immediately and a wrong password does not.
 
 ## Many targets, and the options
 
-`copy_many` is what the CLI calls. Everything `mpt cp` can do is a field of
+`copy_many` is what the CLI calls. Everything `mpft cp` can do is a field of
 `CopyOptions`:
 
 ```rust
-let src = mpt::open("/data/export.csv")?;
+let src = mpft::open("/data/export.csv")?;
 let targets: Vec<Box<dyn Endpoint>> = vec![
-    mpt::open("sftp://srv.example.com/incoming/")?,
-    mpt::open("mailto:boss@example.com?subject=Export")?,
+    mpft::open("sftp://srv.example.com/incoming/")?,
+    mpft::open("mailto:boss@example.com?subject=Export")?,
 ];
 let refs: Vec<&dyn Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
 
 let opts = CopyOptions {
     cache: CacheMode::Memory { limit: 64 << 20 },
     retries: 2,
-    hash: Some(mpt::HashAlgo::Sha256),
+    hash: Some(mpft::HashAlgo::Sha256),
     ..Default::default()
 };
-let report = mpt::copy_many(src.as_ref(), &refs, &opts).await?;
+let report = mpft::copy_many(src.as_ref(), &refs, &opts).await?;
 for t in &report.targets {
     println!("{}: {:?} ({} bytes)", t.target, t.result, t.bytes);
 }
@@ -87,7 +87,7 @@ let opts = CopyOptions { cancel: Some(cancel), ..Default::default() };
 render whatever it likes:
 
 ```rust
-let progress = mpt::transfer::Progress::new();
+let progress = mpft::transfer::Progress::new();
 let watch = {
     let progress = Arc::clone(&progress);
     tokio::spawn(async move {
@@ -110,20 +110,20 @@ through `copy_many` with a bounded number in flight:
 
 ```rust
 let jobs = vec![
-    mpt::Job {
+    mpft::Job {
         src: Location::parse("/data/a.csv")?,
         dsts: vec![Location::parse("sftp://srv.example.com/in/")?],
     },
-    mpt::Job {
+    mpft::Job {
         src: Location::parse("/data/b.csv")?,
         dsts: vec![Location::parse("sftp://srv.example.com/in/")?],
     },
 ];
-mpt::batch::check_collisions(&jobs)?;
+mpft::batch::check_collisions(&jobs)?;
 
-let open = |loc: &Location| mpt::protocols::open(loc.clone());
-let opts = mpt::BatchOptions { parallel: 4, ..Default::default() };
-let report = mpt::batch::run(jobs, &open, &CopyOptions::default(), &opts, |r| {
+let open = |loc: &Location| mpft::protocols::open(loc.clone());
+let opts = mpft::BatchOptions { parallel: 4, ..Default::default() };
+let report = mpft::batch::run(jobs, &open, &CopyOptions::default(), &opts, |r| {
     println!("job {}: ok={}", r.index + 1, r.ok());
 }).await;
 ```
@@ -141,7 +141,7 @@ Job lists in the three textual forms are parsed by `batch::jobs`, which does no
 I/O at all:
 
 ```rust
-use mpt::batch::jobs::{Format, detect, parse};
+use mpft::batch::jobs::{Format, detect, parse};
 let specs = parse(text, detect(None, text))?;
 ```
 
@@ -152,7 +152,7 @@ An `Endpoint` exposes a `Receiver`, a `Sender`, or both. Which of them is
 else:
 
 ```rust
-let ep = mpt::open("sftp://srv.example.com/incoming/")?;
+let ep = mpft::open("sftp://srv.example.com/incoming/")?;
 for entry in ep.receiver()?.list().await? {
     println!("{} {} {}", entry.name, entry.is_dir, entry.size.unwrap_or(0));
 }
@@ -168,7 +168,7 @@ and the content type live:
 ```rust
 let payload = b"generated in memory".to_vec();
 let meta = SendMeta::from_filename("report.txt")?.with_size(payload.len() as u64);
-let dst = mpt::open("sftp://srv.example.com/incoming/")?;
+let dst = mpft::open("sftp://srv.example.com/incoming/")?;
 dst.sender()?.send(Box::pin(std::io::Cursor::new(payload)), &meta).await?;
 ```
 
@@ -185,7 +185,7 @@ except where a protocol forces it.
 read once and paused when the slowest reader falls behind:
 
 ```rust
-let (readers, driver) = mpt::tee(body, 3, TeeOptions::default());
+let (readers, driver) = mpft::tee(body, 3, TeeOptions::default());
 // spawn a task per reader …
 driver.await??;
 ```
@@ -198,7 +198,7 @@ up.
 hands out independent readers:
 
 ```rust
-let cache = mpt::MemoryCache::from_stream(body, 1 << 20).await?;
+let cache = mpft::MemoryCache::from_stream(body, 1 << 20).await?;
 let reader = cache.reader();
 ```
 
@@ -211,30 +211,30 @@ providers as the CLI loads it, resolves the secrets its endpoints need, and
 publishes it:
 
 ```rust
-let mut cfg = mpt::Config::load(None)?;
-cfg.resolve_secrets(&["mpt://prod/incoming/"], false).await?;
-mpt::config::install(cfg);
-let ep = mpt::open("mpt://prod/incoming/")?;
+let mut cfg = mpft::Config::load(None)?;
+cfg.resolve_secrets(&["mpft://prod/incoming/"], false).await?;
+mpft::config::install(cfg);
+let ep = mpft::open("mpft://prod/incoming/")?;
 ```
 
 `install` also puts the `[policy]` section into force for the process.
 `resolve_secrets` takes the URLs that will actually be used, so a `cmd`
 provider does not run for a profile this program never touches. Without any of
-this, `mpt::open` still works — it simply has no profiles and no configured
+this, `mpft::open` still works — it simply has no profiles and no configured
 defaults.
 
 ## The server and the relay
 
 Both are library modules with the binary as a thin caller.
 
-`mpt::server` (feature `server`) runs the [HTTP API](../reference/api.md).
+`mpft::server` (feature `server`) runs the [HTTP API](../reference/api.md).
 `serve()` takes a `ServerConfig`, a `Runtime` holding the copy options every
 job starts from (and, with feature `relay`, the `Via` of the profiles'
 relays), and two cancellation tokens for drain and abort. `router()`
 hands the routes to an axum application of your own, so the API can sit
 beside other routes under one listener.
 
-`mpt::relay` (feature `relay`) is the [relay](../server/relay.md). `run()`
+`mpft::relay` (feature `relay`) is the [relay](../server/relay.md). `run()`
 is a relay over any reader and writer, `sshd::serve()` its SSH server, and
 `client::send()` the sending side that `cp --via` uses: it opens the session,
 writes the header and the payload, and returns the relay's report.
@@ -247,7 +247,7 @@ and `Via::run()` copies one job through them.
 for `copy_many`. `options::JobOptions` is the options object of both the API
 and the relay header, with `apply()` laying it over a `CopyOptions`.
 
-Credentials reach an endpoint through `mpt::broker`, which is what lets a
+Credentials reach an endpoint through `mpft::broker`, which is what lets a
 password be asked for instead of held: a `Location` may carry a
 `PasswordSource` that is consulted at **every** login and an `AgentSource`
 that SSH authentication signs through. The relay's side of both is
@@ -257,7 +257,7 @@ protocol in the crate uses it, no matter where the secret really comes from.
 
 ## Errors
 
-`mpt::Error` is one enum, and the CLI's [exit
+`mpft::Error` is one enum, and the CLI's [exit
 codes](../reference/exit-codes.md) are a match on it — `Auth`, `Signature`,
 `ChecksumMismatch`, `InvalidUrl`, `Config`, `UnsupportedScheme`,
 `UnsupportedOperation`, `Cancelled`, `Io`, `Remote`, `Transport`. A caller can

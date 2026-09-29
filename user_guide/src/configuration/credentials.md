@@ -2,11 +2,11 @@
 
 A password on a command line is public. It is visible in `ps` to every user on the
 machine, it lands in the shell history, and it turns up in CI logs that nobody
-meant to keep. `mpt` warns when it sees one:
+meant to keep. `mpft` warns when it sees one:
 
 ```
-WARN mpt::policy: the password is in the URL, where the process list and the shell
-     history can read it. Use MPT_PASSWORD, --password-file or --password-stdin instead
+WARN mpft::policy: the password is in the URL, where the process list and the shell
+     history can read it. Use MPFT_PASSWORD, --password-file or --password-stdin instead
 ```
 
 This page is about the alternatives. There are two levels: keeping a secret out
@@ -16,9 +16,9 @@ configuration so that no run ever handles it directly.
 ## For one run
 
 ```
-mpt --password-stdin cp report.pdf ftps://upload@ftp.example.com/in/ < secret.txt
-mpt --password-file ~/.config/mpt/partner.pw cp report.pdf ftps://…
-MPT_PASSWORD=… mpt cp report.pdf ftps://…
+mpft --password-stdin cp report.pdf ftps://upload@ftp.example.com/in/ < secret.txt
+mpft --password-file ~/.config/mpft/partner.pw cp report.pdf ftps://…
+MPFT_PASSWORD=… mpft cp report.pdf ftps://…
 ```
 
 `--password-file` reads the first line, ignoring the newline an editor leaves
@@ -28,9 +28,9 @@ output; it is refused with a command that reads standard input itself
 (`batch -`, `relay` without `--listen`, `credentials set`). All three
 apply to `sftp`, `scp`, `ftp`, `ftps`, `http(s)` and `webdav(s)`, and to no
 other scheme: an S3 secret key, a relay's login and an SMTP server's password
-come from elsewhere, SMTP's from `MPT_SMTP_PASSWORD`.
+come from elsewhere, SMTP's from `MPFT_SMTP_PASSWORD`.
 
-There is also `--password <PW>`, which is the same as `MPT_PASSWORD` but
+There is also `--password <PW>`, which is the same as `MPFT_PASSWORD` but
 is in the argument list and is therefore visible in `ps` like a password
 in the URL. It is there for a quick test on a machine nobody shares; the other
 three are the ones to use.
@@ -61,8 +61,8 @@ password = { env = "PROD_PW" }
 password = { file = "/run/secrets/partner-ftp" }
 password = { cmd = "op read op://Infra/prod-sftp/password" }
 password = { cmd = "pass show hosting/partner-ftp" }
-password = { keyring = "mpt/partner-ftp" }
-password = { vault = "secret/data/mpt/prod#password" }
+password = { keyring = "mpft/partner-ftp" }
+password = { vault = "secret/data/mpft/prod#password" }
 ```
 
 `keyring` and `vault` are optional cargo features. A binary built without them
@@ -106,7 +106,7 @@ name the same reference, so a fan-out to three targets behind one credential
 does not query it three times.
 
 **A value from `cmd`, `keyring` or `vault` is kept for ten minutes.** A
-process that runs longer — `mpt serve`, `mpt batch --follow`, a long job list —
+process that runs longer — `mpft serve`, `mpft batch --follow`, a long job list —
 fetches it again when an endpoint needs it after that, so a short-lived access
 token (`az account get-access-token`, `gcloud auth print-access-token`) is
 renewed rather than sent after it expired. `ttl` on the reference sets the
@@ -130,16 +130,16 @@ error: authentication failed: password of profile 'r': `exit 3` failed (exit sta
 
 ## The OS key store
 
-With the `keyring` feature, `mpt credentials` manages the entries that
+With the `keyring` feature, `mpft credentials` manages the entries that
 `{ keyring = "…" }` reads:
 
 ```
-$ printf 'hunter2' | mpt credentials set mpt/partner-ftp
-stored mpt/partner-ftp
-$ mpt credentials get mpt/partner-ftp
+$ printf 'hunter2' | mpft credentials set mpft/partner-ftp
+stored mpft/partner-ftp
+$ mpft credentials get mpft/partner-ftp
 hunter2
-$ mpt credentials delete mpt/partner-ftp
-deleted mpt/partner-ftp
+$ mpft credentials delete mpft/partner-ftp
+deleted mpft/partner-ftp
 ```
 
 The name is `<service>/<user>`, and it maps onto the macOS Keychain, the
@@ -158,12 +158,12 @@ configuration file decides what runs.
 
 Two consequences:
 
-- **Keep the file to yourself.** `mpt` warns when a file that holds or points
+- **Keep the file to yourself.** `mpft` warns when a file that holds or points
   at credentials is readable by others, and `[policy] strict_permissions = true`
   makes it an error. See [Policies](policies.md).
-- **A [`./mpt.toml`](file.md#the-file-in-the-working-directory) cannot carry
+- **A [`./mpft.toml`](file.md#the-file-in-the-working-directory) cannot carry
   a credential command**, so a directory you happen to be standing in cannot
-  make `mpt` run something on your behalf.
+  make `mpft` run something on your behalf.
 
 The provider passes the string to `sh -c` (on Windows, `cmd /C`), so pipes and
 quoting work as usual. Only the first line of standard output is used, and a
@@ -174,7 +174,7 @@ non-zero exit is an error.
 The `file` provider and `--password-file` both check permissions:
 
 ```
-WARN mpt::credentials: /home/deploy/partner.pw is readable by others (mode 644); chmod 600 it
+WARN mpft::credentials: /home/deploy/partner.pw is readable by others (mode 644); chmod 600 it
 ```
 
 With `[policy] strict_permissions = true` (in the configuration that names the
@@ -192,7 +192,7 @@ warned about, or refused, instead.
 
 ## Single sign-on
 
-Where a protocol has an answer that is better than a long-lived password, `mpt`
+Where a protocol has an answer that is better than a long-lived password, `mpft`
 uses it, and the token arrives through the same providers as a password would:
 
 - **S3**: the [AWS credential chain](../protocols/s3.md#single-sign-on-and-roles),

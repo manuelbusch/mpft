@@ -102,7 +102,7 @@ pub struct CopyOptions {
     /// With `check`: require a valid signature over the source's checksum
     /// file from one of the trusted keys.
     pub verify: Option<Arc<dyn Verifier>>,
-    /// Upload to `<name>.mpt-part` and rename it into place afterwards, so
+    /// Upload to `<name>.mpft-part` and rename it into place afterwards, so
     /// that the final name never denotes an incomplete file. Ignored by
     /// targets that cannot rename (http, s3, mail). Default `true`.
     pub atomic: bool,
@@ -111,7 +111,7 @@ pub struct CopyOptions {
     pub cancel: Option<CancellationToken>,
     /// Filled in while the source is read, for a progress display.
     pub progress: Option<Arc<Progress>>,
-    /// Continue an interrupted transfer: whatever of `<name>.mpt-part` is
+    /// Continue an interrupted transfer: whatever of `<name>.mpft-part` is
     /// already on the target stays, and only the rest is sent. Needs `atomic`
     /// (there is no partial file otherwise) and a target that can append.
     pub resume: bool,
@@ -445,7 +445,7 @@ pub async fn copy_many(
     }
     meta.signer = opts.sign.clone();
 
-    // Atomic finish: upload to `<name>.mpt-part` and rename it into place, so
+    // Atomic finish: upload to `<name>.mpft-part` and rename it into place, so
     // a partial file never appears under the final name.
     let mut plans: Vec<Option<PartPlan>> = dsts
         .iter()
@@ -779,7 +779,7 @@ async fn cancelled(cancel: Option<&CancellationToken>) {
 }
 
 /// Suffix of the temporary file an atomic transfer writes to.
-pub const PART_SUFFIX: &str = ".mpt-part";
+pub const PART_SUFFIX: &str = ".mpft-part";
 
 /// What one target needs: where the bytes go, and how to finish.
 struct Job<'a> {
@@ -815,7 +815,7 @@ struct PartPlan {
     resume_from: u64,
 }
 
-/// Decide whether this target gets a `.mpt-part` file, and open an endpoint
+/// Decide whether this target gets a `.mpft-part` file, and open an endpoint
 /// for it. Targets that cannot rename (http, s3, mail) send directly.
 fn part_plan(
     dst: &dyn Endpoint,
@@ -882,7 +882,7 @@ async fn resume_offset(plan: &PartPlan, size: Option<u64>) -> u64 {
     }
 }
 
-/// Move the `.mpt-part` file into place, or clean it up after a failure.
+/// Move the `.mpft-part` file into place, or clean it up after a failure.
 async fn finalize(job: &Job<'_>, result: Result<()>) -> Result<()> {
     let Some(plan) = job.plan else {
         return result;
@@ -1220,7 +1220,7 @@ mod tests {
             .collect();
         names.sort();
         assert_eq!(names, ["a.txt", "a.txt.sha256"]);
-        assert!(!dir.path().join("out.mpt-part").exists());
+        assert!(!dir.path().join("out.mpft-part").exists());
 
         // A path that is not there is still the file name itself.
         let dst = crate::open(dir.path().join("renamed.txt").to_str().unwrap()).unwrap();
@@ -1446,7 +1446,7 @@ mod tests {
             std::fs::read(dir.path().join("out/src.bin")).unwrap().len(),
             1000
         );
-        assert!(!dir.path().join("out/src.bin.mpt-part").exists());
+        assert!(!dir.path().join("out/src.bin.mpft-part").exists());
     }
 
     #[tokio::test]
@@ -1466,10 +1466,10 @@ mod tests {
             !dir.path().join("out/src.bin").exists(),
             "an incomplete file must not appear under the final name"
         );
-        assert!(!dir.path().join("out/src.bin.mpt-part").exists());
+        assert!(!dir.path().join("out/src.bin.mpft-part").exists());
 
         // Without the atomic finish an incomplete file stays behind under the
-        // final name — which is exactly what the .mpt-part detour avoids.
+        // final name — which is exactly what the .mpft-part detour avoids.
         let opts = CopyOptions {
             atomic: false,
             ..Default::default()
@@ -1584,7 +1584,7 @@ mod tests {
         );
         assert!(!dir.path().join("out/src.bin").exists());
         assert!(
-            !dir.path().join("out/src.bin.mpt-part").exists(),
+            !dir.path().join("out/src.bin.mpft-part").exists(),
             "the partial file must be cleaned up"
         );
     }
@@ -1901,7 +1901,7 @@ mod tests {
         );
         assert!(report.targets[0].sidecar.is_none());
         assert!(!dir.path().join("out/in.bin").exists());
-        assert!(!dir.path().join("out/in.bin.mpt-part").exists());
+        assert!(!dir.path().join("out/in.bin.mpft-part").exists());
         assert!(!dir.path().join("out/in.bin.sha256").exists());
 
         // No checksum file at all → explicit error.
@@ -1931,7 +1931,7 @@ mod tests {
         let err = check_signature_age(None, Some(hour))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("mpt-signed-at"), "{err}");
+        assert!(err.contains("mpft-signed-at"), "{err}");
         // A clock that runs a little behind must not turn into a huge age…
         let minute = Duration::from_secs(60);
         assert!(check_signature_age(Some(SystemTime::now() + minute), Some(hour)).is_ok());
@@ -1954,7 +1954,7 @@ mod tests {
         let out = dir.path().join("out");
         std::fs::create_dir(&out).unwrap();
         // What an interrupted transfer left behind.
-        std::fs::write(out.join("data.bin.mpt-part"), &payload[..10_000]).unwrap();
+        std::fs::write(out.join("data.bin.mpft-part"), &payload[..10_000]).unwrap();
 
         let src = crate::open(src_path.to_str().unwrap()).unwrap();
         let dst = crate::open(&format!("{}/", out.display())).unwrap();
@@ -1978,11 +1978,11 @@ mod tests {
             report.digests[0].1,
             crate::hash::digest_bytes(HashAlgo::Sha256, &payload)
         );
-        assert!(!out.join("data.bin.mpt-part").exists());
+        assert!(!out.join("data.bin.mpft-part").exists());
 
         // A leftover that is not shorter than the payload is not resumable.
         std::fs::remove_file(out.join("data.bin")).unwrap();
-        std::fs::write(out.join("data.bin.mpt-part"), vec![0u8; 30_000]).unwrap();
+        std::fs::write(out.join("data.bin.mpft-part"), vec![0u8; 30_000]).unwrap();
         let report = copy_many(src.as_ref(), &[dst.as_ref()], &opts)
             .await
             .unwrap();
@@ -2024,7 +2024,7 @@ mod tests {
         let out = dir.path().join("out");
         std::fs::create_dir(&out).unwrap();
         // Longer than the payload, which nothing could tell without a size.
-        std::fs::write(out.join("data.bin.mpt-part"), vec![9u8; 8_000]).unwrap();
+        std::fs::write(out.join("data.bin.mpft-part"), vec![9u8; 8_000]).unwrap();
         let src = UnsizedSource {
             loc: crate::Location::parse("/nowhere/data.bin").unwrap(),
             data: vec![7u8; 5_000],
@@ -2048,7 +2048,7 @@ mod tests {
         std::fs::write(&src_path, &payload).unwrap();
         let out = dir.path().join("out");
         std::fs::create_dir(&out).unwrap();
-        std::fs::write(out.join("data.bin.mpt-part"), vec![9u8; 1_000]).unwrap();
+        std::fs::write(out.join("data.bin.mpft-part"), vec![9u8; 1_000]).unwrap();
 
         let src = crate::open(src_path.to_str().unwrap()).unwrap();
         let dst = crate::open(&format!("{}/", out.display())).unwrap();

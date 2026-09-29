@@ -1,6 +1,6 @@
 # Installation
 
-`mpt` is a single binary with no runtime dependencies: no interpreter, no
+`mpft` is a single binary with no runtime dependencies: no interpreter, no
 shared library beyond what the operating system provides, no configuration
 needed to start. Building it needs a Rust toolchain of version **1.89 or
 newer**.
@@ -8,19 +8,19 @@ newer**.
 ## Building from source
 
 ```
-git clone <repository> multi_protocol_transceiver
-cd multi_protocol_transceiver
+git clone <repository> mpft
+cd mpft
 cargo build --release
 ```
 
-The binary is `target/release/mpt`. Copy it wherever your `PATH` points, or
+The binary is `target/release/mpft`. Copy it wherever your `PATH` points, or
 let cargo do it:
 
 ```
 cargo install --path .
 ```
 
-That puts `mpt` in `~/.cargo/bin`, which cargo's own installer already added to
+That puts `mpft` in `~/.cargo/bin`, which cargo's own installer already added to
 your `PATH`.
 
 ## Choosing protocols
@@ -39,11 +39,11 @@ which matters for a container image or a CI runner.
 | `mail` | `mailto:`, `smtp://` | ✓ |
 | `sign-ssh` | signing and verifying with OpenSSH keys | ✓ |
 | `sign-pgp` | signing and verifying with OpenPGP keys | ✓ |
-| `relay` | `mpt relay` and `cp --via` (implies `ssh`), see [Relaying through a fast host](../server/relay.md) | ✓ |
-| `keyring` | secrets from the OS key store, and `mpt credentials` | – |
+| `relay` | `mpft relay` and `cp --via` (implies `ssh`), see [Relaying through a fast host](../server/relay.md) | ✓ |
+| `keyring` | secrets from the OS key store, and `mpft credentials` | – |
 | `vault` | secrets from HashiCorp Vault | – |
 | `s3-aws-auth` | the AWS credential chain: SSO, profiles, AssumeRole, IMDS | – |
-| `server` | `mpt serve`, see [Jobs over HTTP](../server/serve.md) | – |
+| `server` | `mpft serve`, see [Jobs over HTTP](../server/serve.md) | – |
 
 `all` is a shorthand for the nine default features. To build a smaller binary,
 switch the defaults off and name what you want:
@@ -63,17 +63,17 @@ A URL whose protocol was not compiled in fails immediately, before any connectio
 is attempted, and the message names the missing feature:
 
 ```
-$ mpt cp report.pdf sftp://srv.example.com/in/
+$ mpft cp report.pdf sftp://srv.example.com/in/
 error: unsupported scheme 'sftp (compiled without the 'ssh' feature)'
 ```
 
 ## Listing the compiled-in schemes
 
-`mpt schemes` prints what this particular binary can speak, which is the
+`mpft schemes` prints what this particular binary can speak, which is the
 quickest way to see whether a feature made it in:
 
 ```
-$ mpt schemes
+$ mpft schemes
 prefix      recv  send  port    feature   options
 file://     yes   yes   -       -         -
             local file system (bare paths work too)
@@ -87,19 +87,19 @@ can send but never receive.
 
 ## Shell completions and the manual page
 
-`mpt` generates both itself:
+`mpft` generates both itself:
 
 ```
-mpt completions zsh  > ~/.zfunc/_mpt
-mpt completions bash > /etc/bash_completion.d/mpt
-mpt man > /usr/local/share/man/man1/mpt.1
+mpft completions zsh  > ~/.zfunc/_mpft
+mpft completions bash > /etc/bash_completion.d/mpft
+mpft man > /usr/local/share/man/man1/mpft.1
 ```
 
 `bash`, `zsh`, `fish`, `elvish` and `powershell` are supported. The manual page
 is roff, so it can also be read without installing it:
 
 ```
-mpt man | man -l -
+mpft man | man -l -
 ```
 
 ## Supported platforms

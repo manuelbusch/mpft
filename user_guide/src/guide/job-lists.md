@@ -2,13 +2,13 @@
 
 Everything on the previous page starts from arguments you type. Often the jobs
 come from somewhere else: a `find`, a database export, a spreadsheet, a queue
-of events. `mpt batch` reads them from a file or from standard input.
+of events. `mpft batch` reads them from a file or from standard input.
 
 ```
-mpt batch jobs.txt --parallel 8
-find /export -name '*.pdf' -printf '%p sftp://srv/in/\n' | mpt batch -
-mpt batch jobs.csv --dry-run
-inotifywait -m -e close_write /var/spool/out --format '%w%f sftp://srv/in/' | mpt batch - --follow
+mpft batch jobs.txt --parallel 8
+find /export -name '*.pdf' -printf '%p sftp://srv/in/\n' | mpft batch -
+mpft batch jobs.csv --dry-run
+inotifywait -m -e close_write /var/spool/out --format '%w%f sftp://srv/in/' | mpft batch - --follow
 ```
 
 A job is one source and its targets, as on the command line, and it runs
@@ -64,13 +64,13 @@ guess would be wrong.
 ## Running a list
 
 ```
-$ mpt batch jobs.txt
+$ mpft batch jobs.txt
 [2/2] notes.txt -> out/: 8 bytes in 3.75ms
 [1/2] data1.csv -> out/: 6 bytes in 3.82ms
 2/2 jobs ok in 3.87ms
 ```
 
-URLs in a list are what you would type on the command line: `mpt://` profile
+URLs in a list are what you would type on the command line: `mpft://` profile
 names and options work. The credentials for every endpoint in the list are
 fetched once, before the first job starts, rather than per job.
 [`--via`](../server/relay.md) sends every job of the list through a relay.
@@ -78,7 +78,7 @@ fetched once, before the first job starts, rather than per job.
 A failure is reported against its job and the rest continue:
 
 ```
-$ mpt batch jobs.txt
+$ mpft batch jobs.txt
 [2/2] FAILED in/nope.csv: I/O error: No such file or directory (os error 2)
 [1/2] in/data1.csv -> out/: 6 bytes in 4.34ms
 1/2 jobs ok in 4.40ms
@@ -91,16 +91,16 @@ list that would have two jobs writing one file fails immediately with exit code 
 
 ## Reading from a pipe
 
-`mpt batch -` reads the list from standard input. The common case is `find`:
+`mpft batch -` reads the list from standard input. The common case is `find`:
 
 ```
-find /export -name '*.pdf' -newermt '-1 day' -printf '%p sftp://srv/in/\n' | mpt batch -
+find /export -name '*.pdf' -newermt '-1 day' -printf '%p sftp://srv/in/\n' | mpft batch -
 ```
 
 Anything that can print two words per line works: `awk` over a report, `psql
 -t`, a script that decides where each file should go.
 
-Note that the password cannot also come from stdin in this case — `mpt` refuses
+Note that the password cannot also come from stdin in this case — `mpft` refuses
 `--password-stdin` together with `batch -` rather than reading one into the
 other.
 
@@ -111,7 +111,7 @@ not wait: each line is run as soon as it is complete, and the batch ends when
 the input does.
 
 ```
-$ ( echo "data1.csv out/"; sleep 1; echo "data2.csv out/" ) | mpt batch - --follow
+$ ( echo "data1.csv out/"; sleep 1; echo "data2.csv out/" ) | mpft batch - --follow
 [1] data1.csv -> out/: 6 bytes in 6.26ms
 [2] data2.csv -> out/: 6 bytes in 6.93ms
 2/2 jobs ok in 1.02s
@@ -126,7 +126,7 @@ watcher:
 
 ```
 inotifywait -m -e close_write --format '%w%f sftp://srv/in/' /var/spool/out \
-  | mpt batch - --follow --skip-existing
+  | mpft batch - --follow --skip-existing
 ```
 
 or any program that decides jobs as it goes. Three things behave differently
@@ -163,14 +163,14 @@ For a program, `--json` writes one JSON object per job to stdout as it
 finishes — JSON Lines, with a `job` field holding its position in the list:
 
 ```
-$ mpt --json batch jobs.txt 2>/dev/null
+$ mpft --json batch jobs.txt 2>/dev/null
 {"cancelled":false,"error":"I/O error: No such file or directory (os error 2)","job":2,"ok":false,"source":"in/nope.csv"}
 {"bytes_read":6,"check":null,"digests":{},"elapsed_ms":3,"job":1,"ok":true,"remove_error":null,"source":"in/data1.csv","source_removed":null,"targets":[{"attempts":1,"bytes":6,"cancelled":false,"elapsed_ms":3,"error":null,"ok":true,"sidecar":null,"signature":null,"skipped":false,"target":"out/"}]}
 ```
 
 Objects arrive as jobs complete, so `jq -c` can follow a long run live rather
 than waiting for the end. The human-readable lines stay on stderr throughout.
-[Using mpt in scripts](../automation/scripting.md) has the field list.
+[Using mpft in scripts](../automation/scripting.md) has the field list.
 
 ## Stopping after the first failure
 
@@ -178,8 +178,8 @@ than waiting for the end. The human-readable lines stay on stderr throughout.
 already running:
 
 ```
-$ mpt batch jobs.txt --fail-fast --parallel 1
-WARN mpt::batch: failed, stopping the batch job=1
+$ mpft batch jobs.txt --fail-fast --parallel 1
+WARN mpft::batch: failed, stopping the batch job=1
 [1/9] FAILED nosuch.csv: I/O error: No such file or directory (os error 2)
 [2/9] FAILED export2.csv: cancelled
 [3/9] FAILED export3.csv: cancelled

@@ -8,5 +8,5 @@ fuzz_target!(|data: &[u8]| {
     let Ok(text) = std::str::from_utf8(data) else {
         return;
     };
-    let _ = mpt::sign::ssh::AllowedSigners::parse(text);
+    let _ = mpft::sign::ssh::AllowedSigners::parse(text);
 });

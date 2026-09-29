@@ -6,9 +6,9 @@ with its targets, run as a fan-out of its own. Up to `--parallel` jobs (4 by
 default) are in flight at a time.
 
 ```
-mpt cp -t sftp://srv/in/ *.csv                    # several sources named directly
-mpt cp 'sftp://srv/out/*.csv' /data/incoming/     # a pattern, expanded by listing
-mpt cp -r /data/export/ sftp://srv/in/export/     # a whole directory tree
+mpft cp -t sftp://srv/in/ *.csv                    # several sources named directly
+mpft cp 'sftp://srv/out/*.csv' /data/incoming/     # a pattern, expanded by listing
+mpft cp -r /data/export/ sftp://srv/in/export/     # a whole directory tree
 ```
 
 A fourth way — a list from a file or a pipe — is
@@ -17,7 +17,7 @@ A fourth way — a list from a file or a pipe — is
 Output is per job, prefixed with its position in the list:
 
 ```
-$ mpt cp -t backup/a/ -t backup/b/ data1.csv data2.csv
+$ mpft cp -t backup/a/ -t backup/b/ data1.csv data2.csv
 [1/2] ok                 6 bytes     6.51ms  backup/a/
 [1/2] ok                 6 bytes     6.52ms  backup/b/
 [1/2] data1.csv: 6 bytes read, 2/2 targets ok in 6.72ms
@@ -37,23 +37,23 @@ same `-t` as in GNU `cp`, and it exists for the same reason: with several
 sources, the last argument can no longer be the target.
 
 ```
-mpt cp -t sftp://srv/in/ report.pdf summary.csv notes.txt
-mpt cp -t sftp://srv/in/ -t "s3://bucket/in/" *.csv     # every file to both
+mpft cp -t sftp://srv/in/ report.pdf summary.csv notes.txt
+mpft cp -t sftp://srv/in/ -t "s3://bucket/in/" *.csv     # every file to both
 ```
 
 Repeating `-t` gives every job the same fan-out. The shell expands `*.csv`
-before `mpt` sees it, so this works for local sources without any pattern
+before `mpft` sees it, so this works for local sources without any pattern
 support at all. Targets must be directories, since several files are going
 into them.
 
 ## Patterns on the far side
 
 A shell cannot expand `sftp://srv/out/*.csv` — it has no idea what is on the
-server. `mpt` can: if the last path component of the **source** contains `*` or
+server. `mpft` can: if the last path component of the **source** contains `*` or
 `[…]`, the directory is listed and every matching file becomes a job.
 
 ```
-$ mpt cp 'in/*.csv' out/
+$ mpft cp 'in/*.csv' out/
 [3/3] in/data3.csv -> out/: 6 bytes in 3.30ms
 [2/3] in/data2.csv -> out/: 6 bytes in 3.36ms
 [1/3] in/data1.csv -> out/: 6 bytes in 3.40ms
@@ -92,7 +92,7 @@ A pattern that matches nothing is an error, on the assumption that you expected
 something:
 
 ```
-$ mpt cp 'in/*.nothing' out/
+$ mpft cp 'in/*.nothing' out/
 error: invalid URL: in/*.nothing matches no file (--allow-empty makes that fine)
 ```
 
@@ -100,7 +100,7 @@ For a [scheduled job](../automation/scheduling.md) over an inbox that is often
 empty, say so:
 
 ```
-mpt cp --allow-empty 'sftp://srv/outbox/*.csv' /data/incoming/
+mpft cp --allow-empty 'sftp://srv/outbox/*.csv' /data/incoming/
 ```
 
 ## Whole directories with `-r`
@@ -110,11 +110,11 @@ what travels, the way `rsync` reads it:
 
 | Command | Result |
 |---|---|
-| `mpt cp -r export/ sftp://srv/in/` | the *contents* of `export` land in `/in/` |
-| `mpt cp -r export sftp://srv/in/` | the directory itself lands as `/in/export/` |
+| `mpft cp -r export/ sftp://srv/in/` | the *contents* of `export` land in `/in/` |
+| `mpft cp -r export sftp://srv/in/` | the directory itself lands as `/in/export/` |
 
 ```
-$ mpt cp -r src_tree/ out/tree/
+$ mpft cp -r src_tree/ out/tree/
 [2/2] src_tree/sub/one.txt -> out/tree/sub/: 4 bytes in 3.46ms
 [1/2] src_tree/top.txt -> out/tree/: 4 bytes in 3.52ms
 2/2 jobs ok in 3.57ms
@@ -140,7 +140,7 @@ leading spaces and all. A name that cannot be one file on the target — `.`,
 rather than renamed:
 
 ```
-WARN mpt::batch::expand: skipping a listed name that cannot be copied: invalid URL:
+WARN mpft::batch::expand: skipping a listed name that cannot be copied: invalid URL:
      unsafe file name '..': refers to a directory name=..
 ```
 
@@ -158,7 +158,7 @@ has the detail.
 a copy into a move:
 
 ```
-$ mpt cp --delete-source export.csv sftp://srv/in/
+$ mpft cp --delete-source export.csv sftp://srv/in/
 export.csv -> sftp://srv/in/?timeout=30: 40000 bytes in 2.55ms
 source deleted
 ```
@@ -169,7 +169,7 @@ checksum must have matched first, and a source on a protocol that cannot delete
 drain an inbox and leave it empty for the next run:
 
 ```
-mpt cp -r --skip-existing --delete-source sftp://srv/outbox/ /data/inbox/
+mpft cp -r --skip-existing --delete-source sftp://srv/outbox/ /data/inbox/
 ```
 
 The directories stay; only the files are removed.
@@ -187,7 +187,7 @@ size is all there is, and a warning in the log says so. Send with
 the jobs without transferring anything:
 
 ```
-$ mpt cp --dry-run 'in/*.csv' out/
+$ mpft cp --dry-run 'in/*.csv' out/
 [1/3] in/data1.csv -> out/
 [2/3] in/data2.csv -> out/
 [3/3] in/data3.csv -> out/
@@ -203,7 +203,7 @@ A list in which two jobs would write the same file is refused **before anything
 is transferred**:
 
 ```
-$ mpt cp -t out/ in/data1.csv in/data1.csv
+$ mpft cp -t out/ in/data1.csv in/data1.csv
 error: invalid URL: jobs 1 and 2 write the same target out/data1.csv
 ```
 

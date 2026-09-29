@@ -1,7 +1,7 @@
 # Logging and observability
 
-What `mpt` writes about itself, where, at which level, and what an operator
-can watch. The result lines a person reads are on [Using mpt in
+What `mpft` writes about itself, where, at which level, and what an operator
+can watch. The result lines a person reads are on [Using mpft in
 scripts](scripting.md#stdout-and-stderr); this page is about the log behind
 them.
 
@@ -13,8 +13,8 @@ service manager or a redirection decides where stderr ends up, and under
 systemd that is the journal.
 
 ```
-mpt cp report.pdf sftp://srv/in/ 2>> /var/log/mpt/mpt.log     # keep it
-mpt -v cp … 2>&1 | logger -t mpt                                # to syslog
+mpft cp report.pdf sftp://srv/in/ 2>> /var/log/mpft/mpft.log     # keep it
+mpft -v cp … 2>&1 | logger -t mpft                                # to syslog
 ```
 
 ## Levels
@@ -28,7 +28,7 @@ The level is decided in this order, the first that applies:
 4. `warn`, the built-in default.
 
 ```
-RUST_LOG=mpt::protocols::ssh=debug,warn mpt cp …     # one module in detail
+RUST_LOG=mpft::protocols::ssh=debug,warn mpft cp …     # one module in detail
 ```
 
 What each level adds:
@@ -41,22 +41,22 @@ What each level adds:
 | `-vvv` | everything, including the libraries underneath |
 
 ```
-$ mpt -v cp report.pdf out/
-2026-09-12T15:19:46.471183Z  INFO mpt::transfer: copy targets=1 size=Some(40000) cache=Stream hash=None check=false
+$ mpft -v cp report.pdf out/
+2026-09-12T15:19:46.471183Z  INFO mpft::transfer: copy targets=1 size=Some(40000) cache=Stream hash=None check=false
 report.pdf -> out/: 40000 bytes in 5.03ms
 
-$ mpt -vv cp report.pdf out/again/
-2026-09-12T15:19:46.485268Z  INFO mpt::transfer: copy targets=1 size=Some(40000) cache=Stream hash=None check=false
-2026-09-12T15:19:46.485301Z DEBUG mpt::transfer: copy source=report.pdf
-2026-09-12T15:19:46.485391Z DEBUG mpt::transfer: uploading to a temporary file loc=out/again/report.pdf.mpt-part
-2026-09-12T15:19:46.489033Z DEBUG mpt::transfer: renamed into place part=report.pdf.mpt-part name=report.pdf
+$ mpft -vv cp report.pdf out/again/
+2026-09-12T15:19:46.485268Z  INFO mpft::transfer: copy targets=1 size=Some(40000) cache=Stream hash=None check=false
+2026-09-12T15:19:46.485301Z DEBUG mpft::transfer: copy source=report.pdf
+2026-09-12T15:19:46.485391Z DEBUG mpft::transfer: uploading to a temporary file loc=out/again/report.pdf.mpft-part
+2026-09-12T15:19:46.489033Z DEBUG mpft::transfer: renamed into place part=report.pdf.mpft-part name=report.pdf
 report.pdf -> out/again/: 40000 bytes in 3.91ms
 ```
 
 ## The line format
 
 One line per event: a UTC timestamp in RFC 3339, the level, the module that
-wrote it (`mpt::transfer`, `mpt::protocols::ssh`, `mpt::relay::sshd`, …), a
+wrote it (`mpft::transfer`, `mpft::protocols::ssh`, `mpft::relay::sshd`, …), a
 colon, the message, and then `key=value` fields. The fields are what a log
 search keys on: `job=`, `peer=`, `fingerprint=`, `target=`, `attempt=`. Colour
 follows [`--color`](scripting.md#colour) and is off in a pipe.
@@ -78,7 +78,7 @@ password on demand logs the target it asked about, not the answer. Pasting a
 
 Both run for a long time and log per session rather than per run:
 
-- **`mpt serve`** logs at `-v` when a job starts (`running` with its id and
+- **`mpft serve`** logs at `-v` when a job starts (`running` with its id and
   transfer count), when it is over (`over` with its state), when it is
   cancelled, when the journal re-runs one, and when finished jobs age out of
   `retention`. A misconfigured profile or a failing credential provider is
@@ -86,7 +86,7 @@ Both run for a long time and log per session rather than per run:
   `GET /v1/healthz` with the token reports the version, whether the server is
   accepting jobs, and how many are queued and running — the one live figure
   it publishes. See [Jobs over HTTP](../server/serve.md#logging).
-- **`mpt relay --listen`** logs its host-key fingerprint at start-up, every
+- **`mpft relay --listen`** logs its host-key fingerprint at start-up, every
   login with the peer and the key's fingerprint, every session's outcome and
   exit code, and — at `-vv` — every password it asked for. A refused login
   names the fingerprint it refused. See [Running a

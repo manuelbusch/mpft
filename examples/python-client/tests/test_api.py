@@ -5,8 +5,8 @@ from websockets.datastructures import Headers
 from websockets.exceptions import InvalidStatus
 from websockets.http11 import Response
 
-from mpt_client import cli
-from mpt_client.api import ApiError, MptApi
+from mpft_client import cli
+from mpft_client.api import ApiError, MpftApi
 
 BODY = b'{"error": {"kind": "unauthorized", "message": "a valid bearer token is required"}}'
 
@@ -34,7 +34,7 @@ def test_watch_exits_with_3_when_the_upgrade_is_refused(monkeypatch, capsys):
         raise ApiError.from_handshake(InvalidStatus(Response(401, "Unauthorized", Headers(), BODY)))
         yield  # an async generator, like the real one
 
-    monkeypatch.setattr(MptApi, "events", refused)
+    monkeypatch.setattr(MpftApi, "events", refused)
     code = cli.main(["watch", "--all", "--json"])
     assert code == 3
     assert "401 unauthorized" in capsys.readouterr().err

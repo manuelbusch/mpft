@@ -1,4 +1,4 @@
-//! `mpt relay --listen` and `cp --via` end to end: the binary is started
+//! `mpft relay --listen` and `cp --via` end to end: the binary is started
 //! as a relay with its own SSH server, and the binary is the client that
 //! sends a file through it. Only local directories are the targets, so
 //! nothing here needs the test servers.
@@ -45,7 +45,7 @@ impl Relay {
         )
         .unwrap();
         let port_file = d.join("port");
-        let mut command = Command::new(env!("CARGO_BIN_EXE_mpt"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_mpft"));
         for (name, value) in env {
             match value {
                 Some(v) => command.env(name, v),
@@ -53,7 +53,7 @@ impl Relay {
             };
         }
         let child = command
-            .env_remove("MPT_CONFIG")
+            .env_remove("MPFT_CONFIG")
             .current_dir(d)
             .arg("-vv")
             .arg("relay")
@@ -102,7 +102,7 @@ impl Relay {
         )
     }
 
-    /// Run `mpt --config client.toml cp --via … <args>` and return the exit
+    /// Run `mpft --config client.toml cp --via … <args>` and return the exit
     /// code, stdout and stderr.
     fn cp(&self, key: &str, args: &[&str]) -> (i32, String, String) {
         self.cp_with(key, &[], args)
@@ -110,8 +110,8 @@ impl Relay {
 
     /// The same with `global` flags in front of `cp`.
     fn cp_with(&self, key: &str, global: &[&str], args: &[&str]) -> (i32, String, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
-            .env_remove("MPT_CONFIG")
+        let out = Command::new(env!("CARGO_BIN_EXE_mpft"))
+            .env_remove("MPFT_CONFIG")
             .arg("--config")
             .arg(self.path("client.toml"))
             .arg("--color")
@@ -163,8 +163,8 @@ fn a_file_goes_through_the_relay_to_every_target() {
             "--hash",
             "blake3",
             src.to_str().unwrap(),
-            "mpt://a/",
-            "mpt://b/",
+            "mpft://a/",
+            "mpft://b/",
         ],
     );
     assert_eq!(code, 0, "{err}");
@@ -183,7 +183,7 @@ fn a_file_goes_through_the_relay_to_every_target() {
     assert!(relay.log().contains("relay login"), "{}", relay.log());
 
     // The same with --json: one report line per job, as a batch prints it.
-    let (code, out, _) = relay.cp("client", &["--json", src.to_str().unwrap(), "mpt://a/"]);
+    let (code, out, _) = relay.cp("client", &["--json", src.to_str().unwrap(), "mpft://a/"]);
     assert_eq!(code, 0);
     let report: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
     assert_eq!(report["ok"], true);
@@ -214,15 +214,15 @@ fn a_batch_goes_through_the_relay_job_by_job() {
     std::fs::write(
         &list,
         format!(
-            "{} mpt://a/ mpt://b/\n{} mpt://a/ mpt://b/\n{}/in/f[2-4].bin mpt://b/\n",
+            "{} mpft://a/ mpft://b/\n{} mpft://a/ mpft://b/\n{}/in/f[2-4].bin mpft://b/\n",
             files[0].0.display(),
             files[1].0.display(),
             relay.dir.path().display()
         ),
     )
     .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
-        .env_remove("MPT_CONFIG")
+    let out = Command::new(env!("CARGO_BIN_EXE_mpft"))
+        .env_remove("MPFT_CONFIG")
         .arg("--config")
         .arg(relay.path("client.toml"))
         .args([
@@ -277,7 +277,7 @@ fn a_batch_goes_through_the_relay_job_by_job() {
             "--parallel",
             "1",
             "-t",
-            "mpt://b/wall/",
+            "mpft://b/wall/",
             files[0].0.to_str().unwrap(),
             files[1].0.to_str().unwrap(),
         ],
@@ -295,14 +295,14 @@ fn a_stranger_a_bad_target_and_a_refused_flag() {
     let src = relay.path("x.txt");
     std::fs::write(&src, b"hello").unwrap();
 
-    let (code, _, err) = relay.cp("stranger", &[src.to_str().unwrap(), "mpt://a/"]);
+    let (code, _, err) = relay.cp("stranger", &[src.to_str().unwrap(), "mpft://a/"]);
     assert_eq!(code, 4, "{err}");
     assert!(err.contains("authentication failed"), "{err}");
     assert!(!relay.path("a/x.txt").exists());
 
     // A target the relay cannot write: the failure comes back as cp's own.
     std::fs::write(relay.path("b/blocker"), b"").unwrap();
-    let (code, _, err) = relay.cp("client", &[src.to_str().unwrap(), "mpt://b/blocker/"]);
+    let (code, _, err) = relay.cp("client", &[src.to_str().unwrap(), "mpft://b/blocker/"]);
     assert_eq!(code, 1, "{err}");
     assert!(err.contains("FAILED"), "{err}");
     assert!(err.contains("I/O error: relay: "), "{err}");
@@ -319,8 +319,8 @@ fn a_stranger_a_bad_target_and_a_refused_flag() {
     )
     .unwrap();
     let run = |args: &[&str]| {
-        let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
-            .env_remove("MPT_CONFIG")
+        let out = Command::new(env!("CARGO_BIN_EXE_mpft"))
+            .env_remove("MPFT_CONFIG")
             .arg("--config")
             .arg(relay.path("via.toml"))
             .args(["--color", "never", "cp"])
@@ -332,13 +332,13 @@ fn a_stranger_a_bad_target_and_a_refused_flag() {
             String::from_utf8_lossy(&out.stderr).into_owned(),
         )
     };
-    let (code, err) = run(&[src.to_str().unwrap(), "mpt://a/"]);
+    let (code, err) = run(&[src.to_str().unwrap(), "mpft://a/"]);
     assert_eq!(code, 0, "{err}");
     assert!(
         err.contains("1/1 jobs ok"),
         "went through the relay:\n{err}"
     );
-    let (code, err) = run(&["--no-via", src.to_str().unwrap(), "mpt://b/"]);
+    let (code, err) = run(&["--no-via", src.to_str().unwrap(), "mpft://b/"]);
     assert_eq!(code, 0, "{err}");
     assert!(!err.contains("jobs ok"), "copied from here:\n{err}");
     // The blocked target above and the configured relay: two logins,
@@ -350,7 +350,7 @@ fn a_stranger_a_bad_target_and_a_refused_flag() {
         relay.log()
     );
 
-    let (code, _, err) = relay.cp("client", &["--check", src.to_str().unwrap(), "mpt://a/"]);
+    let (code, _, err) = relay.cp("client", &["--check", src.to_str().unwrap(), "mpft://a/"]);
     assert_eq!(code, 2, "{err}");
     assert!(
         err.contains("--check is not available with a relay"),
@@ -386,7 +386,7 @@ fn the_credential_modes_have_to_match() {
             "--via-credentials",
             "on-demand",
             src.to_str().unwrap(),
-            "mpt://a/",
+            "mpft://a/",
         ],
     );
     assert_eq!(code, 2, "{err}");
@@ -395,7 +395,7 @@ fn the_credential_modes_have_to_match() {
     assert!(!header_relay.path("a/x.txt").exists());
 
     let demand_relay = Relay::start(&["--credentials", "on-demand"]);
-    let (code, _, err) = demand_relay.cp("client", &[src.to_str().unwrap(), "mpt://a/"]);
+    let (code, _, err) = demand_relay.cp("client", &[src.to_str().unwrap(), "mpft://a/"]);
     assert_eq!(code, 2, "{err}");
     assert!(err.contains("--via-credentials on-demand"), "{err}");
     assert!(!demand_relay.path("a/x.txt").exists());
@@ -407,7 +407,7 @@ fn the_credential_modes_have_to_match() {
             "--via-credentials",
             "on-demand",
             src.to_str().unwrap(),
-            "mpt://a/",
+            "mpft://a/",
         ],
     );
     assert_eq!(code, 0, "{err}");
@@ -421,7 +421,12 @@ fn the_credential_modes_have_to_match() {
     for mode in ["header", "on-demand"] {
         let (code, _, err) = any_relay.cp(
             "client",
-            &["--via-credentials", mode, src.to_str().unwrap(), "mpt://a/"],
+            &[
+                "--via-credentials",
+                mode,
+                src.to_str().unwrap(),
+                "mpft://a/",
+            ],
         );
         assert_eq!(code, 0, "{mode}: {err}");
     }
@@ -432,8 +437,8 @@ fn the_credential_modes_have_to_match() {
 /// in more than once for one file) and the answer is not kept.
 #[test]
 fn passwords_are_asked_for_on_demand() {
-    let Some(ftp) = std::env::var("MPT_IT_FTP").ok().filter(|s| !s.is_empty()) else {
-        eprintln!("skipping: MPT_IT_FTP not set");
+    let Some(ftp) = std::env::var("MPFT_IT_FTP").ok().filter(|s| !s.is_empty()) else {
+        eprintln!("skipping: MPFT_IT_FTP not set");
         return;
     };
     let (base, query) = ftp.split_once('?').unwrap_or((&ftp, ""));
@@ -444,7 +449,7 @@ fn passwords_are_asked_for_on_demand() {
         .and_then(|(_, rest)| rest.split_once('@'))
         .and_then(|(userinfo, _)| userinfo.split_once(':'))
         .map(|(_, pw)| pw.to_string())
-        .expect("MPT_IT_FTP carries a password");
+        .expect("MPFT_IT_FTP carries a password");
 
     let relay = Relay::start(&["--credentials", "on-demand"]);
     let payload: Vec<u8> = (0..500_000u32).map(|i| (i % 233) as u8).collect();
@@ -475,8 +480,8 @@ fn passwords_are_asked_for_on_demand() {
 
     // What arrived is the file, read back without the relay.
     let back = relay.path("back.bin");
-    let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
-        .env_remove("MPT_CONFIG")
+    let out = Command::new(env!("CARGO_BIN_EXE_mpft"))
+        .env_remove("MPFT_CONFIG")
         .args(["--color", "never", "cp", &target])
         .arg(&back)
         .output()
@@ -500,7 +505,7 @@ fn a_profile_picks_its_relay_and_the_rest_is_copied_from_here() {
         relay.path("profile_via.toml"),
         format!(
             "[profiles.relay]\nurl = \"{}\"\n\
-             [profiles.a]\nurl = \"{}/a/\"\nvia = \"mpt://relay\"\n\
+             [profiles.a]\nurl = \"{}/a/\"\nvia = \"mpft://relay\"\n\
              [profiles.b]\nurl = \"{}/b/\"\n",
             relay.via("client"),
             relay.dir.path().display(),
@@ -512,8 +517,8 @@ fn a_profile_picks_its_relay_and_the_rest_is_copied_from_here() {
     let payload: Vec<u8> = (0..250_000u32).map(|i| (i % 211) as u8).collect();
     std::fs::write(&src, &payload).unwrap();
     let run = |args: &[&str]| {
-        let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
-            .env_remove("MPT_CONFIG")
+        let out = Command::new(env!("CARGO_BIN_EXE_mpft"))
+            .env_remove("MPFT_CONFIG")
             .arg("--config")
             .arg(relay.path("profile_via.toml"))
             .args(["--color", "never", "--json", "cp"])
@@ -530,8 +535,8 @@ fn a_profile_picks_its_relay_and_the_rest_is_copied_from_here() {
         "--hash",
         "sha256",
         src.to_str().unwrap(),
-        "mpt://a/",
-        "mpt://b/",
+        "mpft://a/",
+        "mpft://b/",
     ]);
     assert_eq!(code, 0, "{err}");
     assert_eq!(std::fs::read(relay.path("a/mixed.bin")).unwrap(), payload);
@@ -563,7 +568,7 @@ fn a_profile_picks_its_relay_and_the_rest_is_copied_from_here() {
 
     // The relay's failure is reported for its target only.
     std::fs::write(relay.path("a/wall"), b"").unwrap();
-    let (code, out, err) = run(&[src.to_str().unwrap(), "mpt://a/wall/", "mpt://b/again/"]);
+    let (code, out, err) = run(&[src.to_str().unwrap(), "mpft://a/wall/", "mpft://b/again/"]);
     assert_eq!(code, 1, "{err}");
     let report: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
     assert_eq!(report["targets"][0]["ok"], false, "{report}");
@@ -571,7 +576,7 @@ fn a_profile_picks_its_relay_and_the_rest_is_copied_from_here() {
     assert!(relay.path("b/again/mixed.bin").exists());
 
     // --no-via switches every relay off, the profiles' included.
-    let (code, _, err) = run(&["--no-via", src.to_str().unwrap(), "mpt://a/plain/"]);
+    let (code, _, err) = run(&["--no-via", src.to_str().unwrap(), "mpft://a/plain/"]);
     assert_eq!(code, 0, "{err}");
     assert!(relay.path("a/plain/mixed.bin").exists());
     assert_eq!(
@@ -581,16 +586,16 @@ fn a_profile_picks_its_relay_and_the_rest_is_copied_from_here() {
         relay.log()
     );
 
-    // `mpt profiles` shows the relay of a profile.
-    let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
-        .env_remove("MPT_CONFIG")
+    // `mpft profiles` shows the relay of a profile.
+    let out = Command::new(env!("CARGO_BIN_EXE_mpft"))
+        .env_remove("MPFT_CONFIG")
         .arg("--config")
         .arg(relay.path("profile_via.toml"))
         .args(["--color", "never", "profiles"])
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("via    mpt://relay"), "{text}");
+    assert!(text.contains("via    mpft://relay"), "{text}");
 }
 
 /// A source whose profile names a relay is read by that relay: a path
@@ -611,8 +616,8 @@ fn a_source_behind_the_relay_is_pulled_by_it() {
         relay.path("pull.toml"),
         format!(
             "[profiles.relay]\nurl = \"{}\"\n\
-             [profiles.src]\nurl = \"in/x.bin\"\nvia = \"mpt://relay\"\n\
-             [profiles.a]\nurl = \"{}/a/\"\nvia = \"mpt://relay\"\n\
+             [profiles.src]\nurl = \"in/x.bin\"\nvia = \"mpft://relay\"\n\
+             [profiles.a]\nurl = \"{}/a/\"\nvia = \"mpft://relay\"\n\
              [profiles.b]\nurl = \"{}/b/\"\n",
             relay.via("client"),
             relay.dir.path().display(),
@@ -621,8 +626,8 @@ fn a_source_behind_the_relay_is_pulled_by_it() {
     )
     .unwrap();
     let run = |args: &[&str]| {
-        let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
-            .env_remove("MPT_CONFIG")
+        let out = Command::new(env!("CARGO_BIN_EXE_mpft"))
+            .env_remove("MPFT_CONFIG")
             .arg("--config")
             .arg(relay.path("pull.toml"))
             .args(["--color", "never", "--json", "-vv", "cp"])
@@ -635,7 +640,7 @@ fn a_source_behind_the_relay_is_pulled_by_it() {
             String::from_utf8_lossy(&out.stderr).into_owned(),
         )
     };
-    let (code, out, err) = run(&["mpt://src", "mpt://a/"]);
+    let (code, out, err) = run(&["mpft://src", "mpft://a/"]);
     assert_eq!(code, 0, "{err}");
     assert_eq!(std::fs::read(relay.path("a/x.bin")).unwrap(), payload);
     let report: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
@@ -647,7 +652,7 @@ fn a_source_behind_the_relay_is_pulled_by_it() {
 
     // A target from here next to it: refused with --delete-source, since
     // the relay cannot know when the other target has the file.
-    let (code, _, err) = run(&["--delete-source", "mpt://src", "mpt://a/", "mpt://b/"]);
+    let (code, _, err) = run(&["--delete-source", "mpft://src", "mpft://a/", "mpft://b/"]);
     assert_eq!(code, 2, "{err}");
     assert!(
         err.contains("behind the relay that reads the source"),
@@ -657,7 +662,7 @@ fn a_source_behind_the_relay_is_pulled_by_it() {
 
     // Every target behind the relay, but a relay that was not started
     // with --allow-delete: refused before anything is read.
-    let (code, _, err) = run(&["--delete-source", "mpt://src", "mpt://a/again/"]);
+    let (code, _, err) = run(&["--delete-source", "mpft://src", "mpft://a/again/"]);
     assert_eq!(code, 2, "{err}");
     assert!(err.contains("--allow-delete"), "{err}");
     assert!(relay.path("in/x.bin").exists());
@@ -668,8 +673,8 @@ fn a_source_behind_the_relay_is_pulled_by_it() {
 /// client — one on another host, never a file of its own.
 #[test]
 fn a_relay_deletes_a_pulled_source_only_when_allowed() {
-    let Some(ftp) = it_env("MPT_IT_FTP") else {
-        eprintln!("skipping: MPT_IT_FTP not set");
+    let Some(ftp) = it_env("MPFT_IT_FTP") else {
+        eprintln!("skipping: MPFT_IT_FTP not set");
         return;
     };
     let relay = Relay::start(&["--allow-delete"]);
@@ -678,9 +683,9 @@ fn a_relay_deletes_a_pulled_source_only_when_allowed() {
     let remote = format!("{}/{name}?{query}", base.trim_end_matches('/'));
     let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 211) as u8).collect();
     std::fs::write(relay.path(&name), &payload).unwrap();
-    let mpt = |config: Option<&Path>, args: &[&str]| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_mpt"));
-        command.env_remove("MPT_CONFIG");
+    let mpft = |config: Option<&Path>, args: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_mpft"));
+        command.env_remove("MPFT_CONFIG");
         if let Some(config) = config {
             command.arg("--config").arg(config);
         }
@@ -695,15 +700,15 @@ fn a_relay_deletes_a_pulled_source_only_when_allowed() {
             String::from_utf8_lossy(&out.stderr).into_owned(),
         )
     };
-    let (code, _, err) = mpt(None, &[relay.path(&name).to_str().unwrap(), &remote]);
+    let (code, _, err) = mpft(None, &[relay.path(&name).to_str().unwrap(), &remote]);
     assert_eq!(code, 0, "{err}");
     std::fs::write(
         relay.path("pull.toml"),
         format!(
             "[profiles.relay]\nurl = \"{}\"\n\
-             [profiles.src]\nurl = \"{remote}\"\nvia = \"mpt://relay\"\n\
-             [profiles.local]\nurl = \"{}\"\nvia = \"mpt://relay\"\n\
-             [profiles.a]\nurl = \"{}/a/\"\nvia = \"mpt://relay\"\n",
+             [profiles.src]\nurl = \"{remote}\"\nvia = \"mpft://relay\"\n\
+             [profiles.local]\nurl = \"{}\"\nvia = \"mpft://relay\"\n\
+             [profiles.a]\nurl = \"{}/a/\"\nvia = \"mpft://relay\"\n",
             relay.via("client"),
             relay.path(&name).display(),
             relay.dir.path().display()
@@ -713,20 +718,23 @@ fn a_relay_deletes_a_pulled_source_only_when_allowed() {
     let config = relay.path("pull.toml");
 
     // A file on the relay host stays, --allow-delete or not.
-    let (code, _, err) = mpt(
+    let (code, _, err) = mpft(
         Some(&config),
-        &["--delete-source", "mpt://local", "mpt://a/"],
+        &["--delete-source", "mpft://local", "mpft://a/"],
     );
     assert_eq!(code, 2, "{err}");
     assert!(err.contains("never deleted by a relay"), "{err}");
     assert!(relay.path(&name).exists());
 
-    let (code, out, err) = mpt(Some(&config), &["--delete-source", "mpt://src", "mpt://a/"]);
+    let (code, out, err) = mpft(
+        Some(&config),
+        &["--delete-source", "mpft://src", "mpft://a/"],
+    );
     assert_eq!(code, 0, "{err}");
     assert_eq!(std::fs::read(relay.path("a").join(&name)).unwrap(), payload);
     let report: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
     assert_eq!(report["source_removed"], true, "{report}");
-    let (code, _, _) = mpt(None, &[&remote, relay.path("back.bin").to_str().unwrap()]);
+    let (code, _, _) = mpft(None, &[&remote, relay.path("back.bin").to_str().unwrap()]);
     assert_ne!(code, 0, "the source is still on the server");
 }
 
@@ -753,9 +761,9 @@ fn a_target_behind_another_relay_is_served_by_the_first_one() {
         format!(
             "[profiles.r1]\nurl = \"{}\"\n\
              [profiles.r2]\nurl = \"{}\"\n\
-             [profiles.src]\nurl = \"in/chain.bin\"\nvia = \"mpt://r1\"\n\
-             [profiles.a]\nurl = \"{}/a/\"\nvia = \"mpt://r1\"\n\
-             [profiles.b]\nurl = \"{}/b/\"\nvia = \"mpt://r2\"\n",
+             [profiles.src]\nurl = \"in/chain.bin\"\nvia = \"mpft://r1\"\n\
+             [profiles.a]\nurl = \"{}/a/\"\nvia = \"mpft://r1\"\n\
+             [profiles.b]\nurl = \"{}/b/\"\nvia = \"mpft://r2\"\n",
             r1.via("client"),
             r2.via("client"),
             r1.dir.path().display(),
@@ -763,14 +771,14 @@ fn a_target_behind_another_relay_is_served_by_the_first_one() {
         ),
     )
     .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
-        .env_remove("MPT_CONFIG")
+    let out = Command::new(env!("CARGO_BIN_EXE_mpft"))
+        .env_remove("MPFT_CONFIG")
         .arg("--config")
         .arg(r1.path("chain.toml"))
         .args([
             "--color", "never", "--json", "-vv", "cp", "--hash", "sha256",
         ])
-        .args(["mpt://src", "mpt://a/", "mpt://b/"])
+        .args(["mpft://src", "mpft://a/", "mpft://b/"])
         .output()
         .unwrap();
     let err = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -819,8 +827,8 @@ fn a_target_behind_another_relay_is_served_by_the_first_one() {
 /// of them logs or keeps it.
 #[test]
 fn a_password_for_a_chained_target_travels_through_both_relays() {
-    let Some(ftp) = it_env("MPT_IT_FTP") else {
-        eprintln!("skipping: MPT_IT_FTP not set");
+    let Some(ftp) = it_env("MPFT_IT_FTP") else {
+        eprintln!("skipping: MPFT_IT_FTP not set");
         return;
     };
     let (base, query) = ftp.split_once('?').unwrap_or((&ftp, ""));
@@ -831,7 +839,7 @@ fn a_password_for_a_chained_target_travels_through_both_relays() {
         .and_then(|(_, rest)| rest.split_once('@'))
         .and_then(|(userinfo, _)| userinfo.split_once(':'))
         .map(|(_, pw)| pw.to_string())
-        .expect("MPT_IT_FTP carries a password");
+        .expect("MPFT_IT_FTP carries a password");
 
     let r1 = Relay::start(&["--credentials", "on-demand"]);
     let r2 = Relay::start(&["--credentials", "on-demand"]);
@@ -843,21 +851,21 @@ fn a_password_for_a_chained_target_travels_through_both_relays() {
         format!(
             "[profiles.r1]\nurl = \"{}\"\n\
              [profiles.r2]\nurl = \"{}\"\n\
-             [profiles.src]\nurl = \"in/chain.bin\"\nvia = \"mpt://r1\"\n\
-             [profiles.a]\nurl = \"{}/a/\"\nvia = \"mpt://r1\"\n\
-             [profiles.b]\nurl = \"{target}\"\nvia = \"mpt://r2\"\n",
+             [profiles.src]\nurl = \"in/chain.bin\"\nvia = \"mpft://r1\"\n\
+             [profiles.a]\nurl = \"{}/a/\"\nvia = \"mpft://r1\"\n\
+             [profiles.b]\nurl = \"{target}\"\nvia = \"mpft://r2\"\n",
             r1.via("client"),
             r2.via("client"),
             r1.dir.path().display(),
         ),
     )
     .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
-        .env_remove("MPT_CONFIG")
+    let out = Command::new(env!("CARGO_BIN_EXE_mpft"))
+        .env_remove("MPFT_CONFIG")
         .arg("--config")
         .arg(r1.path("demand.toml"))
         .args(["--color", "never", "-vv", "cp", "--via-credentials"])
-        .args(["on-demand", "mpt://src", "mpt://a/", "mpt://b"])
+        .args(["on-demand", "mpft://src", "mpft://a/", "mpft://b"])
         .output()
         .unwrap();
     let err = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -884,8 +892,8 @@ fn a_password_for_a_chained_target_travels_through_both_relays() {
 
     // What arrived at the far target is the file, read back from here.
     let back = r1.path("back.bin");
-    let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
-        .env_remove("MPT_CONFIG")
+    let out = Command::new(env!("CARGO_BIN_EXE_mpft"))
+        .env_remove("MPFT_CONFIG")
         .args(["--color", "never", "cp", &target])
         .arg(&back)
         .output()
@@ -907,8 +915,8 @@ fn it_env(name: &str) -> Option<String> {
 /// through the forwarded agent, with no agent and no keys of its own.
 #[test]
 fn the_relay_signs_with_the_clients_keys_through_the_forwarded_agent() {
-    let Some(sftp) = it_env("MPT_IT_SFTP") else {
-        eprintln!("skipping: MPT_IT_SFTP not set");
+    let Some(sftp) = it_env("MPFT_IT_SFTP") else {
+        eprintln!("skipping: MPFT_IT_SFTP not set");
         return;
     };
     let bare_home = tempfile::tempdir().unwrap();
@@ -934,8 +942,8 @@ fn the_relay_signs_with_the_clients_keys_through_the_forwarded_agent() {
     assert!(!log.contains(key_path), "{log}");
     // Read back from here, with the key.
     let back = relay.path("back.bin");
-    let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
-        .env_remove("MPT_CONFIG")
+    let out = Command::new(env!("CARGO_BIN_EXE_mpft"))
+        .env_remove("MPFT_CONFIG")
         .args(["--color", "never", "cp"])
         .arg(format!(
             "{}{name}?{}",
@@ -973,8 +981,8 @@ fn the_relay_signs_with_the_clients_keys_through_the_forwarded_agent() {
 /// that authorized_keys does not list gets in through the relay too.
 #[test]
 fn the_relay_authenticates_with_the_clients_certificate() {
-    let Some(cert) = it_env("MPT_IT_SFTP_CERT") else {
-        eprintln!("skipping: MPT_IT_SFTP_CERT not set");
+    let Some(cert) = it_env("MPFT_IT_SFTP_CERT") else {
+        eprintln!("skipping: MPFT_IT_SFTP_CERT not set");
         return;
     };
     let bare_home = tempfile::tempdir().unwrap();
@@ -999,8 +1007,8 @@ fn the_relay_reads_stdin_without_a_server() {
     let dir = tempfile::tempdir().unwrap();
     let target = format!("{}/", dir.path().display());
     let run = |header: serde_json::Value, body: &[u8]| {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_mpt"))
-            .env_remove("MPT_CONFIG")
+        let mut child = Command::new(env!("CARGO_BIN_EXE_mpft"))
+            .env_remove("MPFT_CONFIG")
             .args(["relay", "--allow-local"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1053,8 +1061,8 @@ fn the_relay_reads_stdin_without_a_server() {
 /// refused before the payload is read, with exit code 2.
 #[test]
 fn the_relay_refuses_a_key_file_a_client_names() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mpt"))
-        .env_remove("MPT_CONFIG")
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mpft"))
+        .env_remove("MPFT_CONFIG")
         .arg("relay")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1084,8 +1092,8 @@ fn the_relay_refuses_a_key_file_a_client_names() {
 fn the_relay_serves_no_local_file_unless_allowed() {
     let dir = tempfile::tempdir().unwrap();
     let target = format!("{}/", dir.path().display());
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mpt"))
-        .env_remove("MPT_CONFIG")
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mpft"))
+        .env_remove("MPFT_CONFIG")
         .arg("relay")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1153,7 +1161,7 @@ fn http_recorder() -> (u16, std::sync::mpsc::Receiver<String>) {
     (port, rx)
 }
 
-/// The relay's own password — `--password`, `MPT_PASSWORD` — is not for
+/// The relay's own password — `--password`, `MPFT_PASSWORD` — is not for
 /// a host a client names: it would go to whichever host that is. A
 /// profile of the relay's own configuration still gets it.
 #[test]
@@ -1166,9 +1174,9 @@ fn the_relays_own_password_stays_off_the_clients_urls() {
     )
     .unwrap();
     let run = |flags: &[&str], dst: &str| {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_mpt"))
-            .env_remove("MPT_CONFIG")
-            .env("MPT_PASSWORD", "from-the-environment")
+        let mut child = Command::new(env!("CARGO_BIN_EXE_mpft"))
+            .env_remove("MPFT_CONFIG")
+            .env("MPFT_PASSWORD", "from-the-environment")
             .arg("--config")
             .arg(dir.path().join("relay.toml"))
             .args(flags)
@@ -1208,7 +1216,7 @@ fn the_relays_own_password_stays_off_the_clients_urls() {
     );
     // echo -n 'owner:from-the-environment' | base64
     assert_eq!(
-        run(&[], "mpt://mine/"),
+        run(&[], "mpft://mine/"),
         "Basic b3duZXI6ZnJvbS10aGUtZW52aXJvbm1lbnQ="
     );
 }
@@ -1218,8 +1226,8 @@ fn the_relays_own_password_stays_off_the_clients_urls() {
 /// target behind the second relay needs it, and gets it only then.
 #[test]
 fn the_agent_goes_on_to_a_second_relay_only_when_asked() {
-    let Some(sftp) = it_env("MPT_IT_SFTP") else {
-        eprintln!("skipping: MPT_IT_SFTP not set");
+    let Some(sftp) = it_env("MPFT_IT_SFTP") else {
+        eprintln!("skipping: MPFT_IT_SFTP not set");
         return;
     };
     let bare_home = tempfile::tempdir().unwrap();
@@ -1235,21 +1243,21 @@ fn the_agent_goes_on_to_a_second_relay_only_when_asked() {
         format!(
             "[profiles.r1]\nurl = \"{}\"\n\
              [profiles.r2]\nurl = \"{}\"\n\
-             [profiles.src]\nurl = \"in/{name}\"\nvia = \"mpt://r1\"\n\
-             [profiles.far]\nurl = \"{sftp}\"\nvia = \"mpt://r2\"\n",
+             [profiles.src]\nurl = \"in/{name}\"\nvia = \"mpft://r1\"\n\
+             [profiles.far]\nurl = \"{sftp}\"\nvia = \"mpft://r2\"\n",
             r1.via("client"),
             r2.via("client"),
         ),
     )
     .unwrap();
     let run = |flags: &[&str]| {
-        let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
-            .env_remove("MPT_CONFIG")
+        let out = Command::new(env!("CARGO_BIN_EXE_mpft"))
+            .env_remove("MPFT_CONFIG")
             .arg("--config")
             .arg(r1.path("onward.toml"))
             .args(["--color", "never", "cp"])
             .args(flags)
-            .args(["mpt://src", "mpt://far"])
+            .args(["mpft://src", "mpft://far"])
             .output()
             .unwrap();
         (
@@ -1278,17 +1286,17 @@ async fn the_relay_lists_a_directory_for_the_client() {
     std::fs::create_dir_all(relay.path("in/sub")).unwrap();
     std::fs::write(relay.path("in/a.csv"), b"abc").unwrap();
     assert!(!Path::new("in/a.csv").exists());
-    let via = mpt::relay::via::Via::new(
+    let via = mpft::relay::via::Via::new(
         Default::default(),
-        &mpt::CopyOptions::default(),
-        &mpt::relay::via::ViaSettings {
+        &mpft::CopyOptions::default(),
+        &mpft::relay::via::ViaSettings {
             timeout: 20,
             ..Default::default()
         },
     );
-    let at = mpt::Location::parse(&relay.via("client")).unwrap();
+    let at = mpft::Location::parse(&relay.via("client")).unwrap();
     let cancel = tokio_util::sync::CancellationToken::new();
-    let dir = mpt::Location::parse("in/").unwrap();
+    let dir = mpft::Location::parse("in/").unwrap();
     let mut entries = via.list(&at, &dir, &cancel).await.unwrap();
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     let seen: Vec<(&str, Option<u64>, bool)> = entries
@@ -1299,7 +1307,7 @@ async fn the_relay_lists_a_directory_for_the_client() {
     assert_eq!((seen[1].0, seen[1].2), ("sub", true));
     assert!(relay.log().contains("relay operation"), "{}", relay.log());
 
-    let missing = mpt::Location::parse("nope/").unwrap();
+    let missing = mpft::Location::parse("nope/").unwrap();
     let err = via.list(&at, &missing, &cancel).await.unwrap_err();
     assert!(err.is_not_found(), "{err}");
 }
@@ -1315,14 +1323,14 @@ fn ls_lists_a_directory_behind_a_relay() {
         relay.path("ls.toml"),
         format!(
             "[profiles.relay]\nurl = \"{}\"\n\
-             [profiles.in]\nurl = \"in/\"\nvia = \"mpt://relay\"\n",
+             [profiles.in]\nurl = \"in/\"\nvia = \"mpft://relay\"\n",
             relay.via("client"),
         ),
     )
     .unwrap();
     let ls = |args: &[&str]| {
-        let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
-            .env_remove("MPT_CONFIG")
+        let out = Command::new(env!("CARGO_BIN_EXE_mpft"))
+            .env_remove("MPFT_CONFIG")
             .arg("--config")
             .arg(relay.path("ls.toml"))
             .args(["--color", "never"])
@@ -1335,7 +1343,7 @@ fn ls_lists_a_directory_behind_a_relay() {
             String::from_utf8_lossy(&out.stderr).into_owned(),
         )
     };
-    let (code, out, err) = ls(&["ls", "mpt://in/"]);
+    let (code, out, err) = ls(&["ls", "mpft://in/"]);
     assert_eq!(code, 0, "{err}");
     assert!(
         out.lines()
@@ -1348,7 +1356,7 @@ fn ls_lists_a_directory_behind_a_relay() {
         "{out}"
     );
 
-    let (code, out, err) = ls(&["--json", "ls", "mpt://in/"]);
+    let (code, out, err) = ls(&["--json", "ls", "mpft://in/"]);
     assert_eq!(code, 0, "{err}");
     let rows: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
     let file = rows.iter().find(|r| r["name"] == "a.csv").unwrap();
@@ -1357,7 +1365,7 @@ fn ls_lists_a_directory_behind_a_relay() {
     assert!(file["modified"].is_string(), "{file}");
 
     // From here there is no such directory.
-    let (code, _, err) = ls(&["ls", "--no-via", "mpt://in/"]);
+    let (code, _, err) = ls(&["ls", "--no-via", "mpft://in/"]);
     assert_ne!(code, 0);
     assert!(err.contains("listing in/"), "{err}");
     assert_eq!(
@@ -1388,16 +1396,16 @@ fn patterns_and_trees_behind_a_relay_are_expanded_by_it() {
         relay.path("expand.toml"),
         format!(
             "[profiles.relay]\nurl = \"{}\"\n\
-             [profiles.src]\nurl = \"in/\"\nvia = \"mpt://relay\"\n\
-             [profiles.out]\nurl = \"out/\"\nvia = \"mpt://relay\"\n",
+             [profiles.src]\nurl = \"in/\"\nvia = \"mpft://relay\"\n\
+             [profiles.out]\nurl = \"out/\"\nvia = \"mpft://relay\"\n",
             relay.via("client"),
         ),
     )
     .unwrap();
     let here = tempfile::tempdir().unwrap();
     let run = |args: &[&str]| {
-        let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
-            .env_remove("MPT_CONFIG")
+        let out = Command::new(env!("CARGO_BIN_EXE_mpft"))
+            .env_remove("MPFT_CONFIG")
             .current_dir(here.path())
             .arg("--config")
             .arg(relay.path("expand.toml"))
@@ -1411,7 +1419,7 @@ fn patterns_and_trees_behind_a_relay_are_expanded_by_it() {
             String::from_utf8_lossy(&out.stderr).into_owned(),
         )
     };
-    let (code, out, err) = run(&["mpt://src/*.csv", "mpt://out/pattern/"]);
+    let (code, out, err) = run(&["mpft://src/*.csv", "mpft://out/pattern/"]);
     assert_eq!(code, 0, "{out}{err}");
     assert_eq!(
         std::fs::read(relay.path("out/pattern/a.csv")).unwrap(),
@@ -1424,12 +1432,12 @@ fn patterns_and_trees_behind_a_relay_are_expanded_by_it() {
     assert!(!relay.path("out/pattern/c.txt").exists());
 
     // A dry run lists as well, and creates nothing.
-    let (code, out, err) = run(&["--dry-run", "-r", "mpt://src", "mpt://out/dry/"]);
+    let (code, out, err) = run(&["--dry-run", "-r", "mpft://src", "mpft://out/dry/"]);
     assert_eq!(code, 0, "{out}{err}");
     assert!(out.contains("sub/d.csv"), "{out}");
     assert!(!relay.path("out/dry").exists());
 
-    let (code, out, err) = run(&["-r", "mpt://src", "mpt://out/tree/"]);
+    let (code, out, err) = run(&["-r", "mpft://src", "mpft://out/tree/"]);
     assert_eq!(code, 0, "{out}{err}");
     assert_eq!(
         std::fs::read(relay.path("out/tree/sub/d.csv")).unwrap(),
@@ -1443,7 +1451,7 @@ fn patterns_and_trees_behind_a_relay_are_expanded_by_it() {
     );
 
     // A file with -r is a file: the relay tells its size.
-    let (code, out, err) = run(&["-r", "mpt://src/b.csv", "mpt://out/one/"]);
+    let (code, out, err) = run(&["-r", "mpft://src/b.csv", "mpft://out/one/"]);
     assert_eq!(code, 0, "{out}{err}");
     assert_eq!(std::fs::read(relay.path("out/one/b.csv")).unwrap(), b"bb");
     assert!(relay.log().contains("op=\"size\""), "{}", relay.log());

@@ -140,7 +140,7 @@ pub trait Sender: Send + Sync {
     }
 
     /// Whether the target can rename a file, which is what makes an atomic
-    /// finish possible: upload to `<name>.mpt-part`, then rename into place.
+    /// finish possible: upload to `<name>.mpft-part`, then rename into place.
     fn supports_rename(&self) -> bool {
         false
     }

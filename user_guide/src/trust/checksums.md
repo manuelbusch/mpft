@@ -6,7 +6,7 @@ themselves, and the file on the far side looks like a file. A checksum makes
 the difference detectable.
 
 ```
-mpt cp --hash sha256 report.pdf sftp://srv.example.com/incoming/
+mpft cp --hash sha256 report.pdf sftp://srv.example.com/incoming/
 ```
 
 ## Algorithms and checksum files
@@ -18,7 +18,7 @@ no matter how many targets there are, because there is one payload.
 The result is written next to every target that received the file:
 
 ```
-$ mpt cp --hash sha256 report.pdf out/
+$ mpft cp --hash sha256 report.pdf out/
 report.pdf -> out/: 12 bytes in 4.39ms
 + out/report.pdf.sha256
 sha256  4dc21b974cc293d0dfbb25326f0df4ac461f29d69ccc2c2dc5391f4f39a45aed
@@ -43,7 +43,7 @@ report.pdf: OK
 ```
 
 Whoever picks the file up verifies it with a tool they already have, on a
-machine without `mpt`.
+machine without `mpft`.
 
 ## In a fan-out
 
@@ -69,13 +69,13 @@ second attachment instead.
 transferred against it, and fails if they disagree:
 
 ```
-$ mpt cp --check sftp://srv/in/report.pdf ./
+$ mpft cp --check sftp://srv/in/report.pdf ./
 sftp://srv/in/report.pdf -> ./: 12 bytes in 4.39ms
 blake3  4ee59acf208cdb32d826d48ea23246352f6c47babdb7f0d237744536ef34c0eb
 check ok (BLAKE3)
 ```
 
-The algorithm comes from whichever file is there. `mpt` tries `<name>.b3`,
+The algorithm comes from whichever file is there. `mpft` tries `<name>.b3`,
 then `<name>.sha256`, then `<name>.sha512`, and uses the first it finds. That
 is why the run above reports BLAKE3 without having been asked for it.
 
@@ -102,7 +102,7 @@ with exit code 3.
 A mismatch shows both digests:
 
 ```
-$ mpt cp --check out/report.pdf ./
+$ mpft cp --check out/report.pdf ./
 blake3  a08daaa9b2cf700b857ace55a2c1cc1775eaaaac17fba456be9cebacd102965a
 CHECK FAILED (BLAKE3): expected 4ee59acf208cdb32d826d48ea23246352f6c47babdb7f0d237744536ef34c0eb,
                        got a08daaa9b2cf700b857ace55a2c1cc1775eaaaac17fba456be9cebacd102965a
@@ -132,7 +132,7 @@ error: copy report.pdf: remote error: check: no checksum file next to the source
 Both flags work together, and with several targets:
 
 ```
-mpt cp --check --hash sha256 sftp://old/out/report.pdf sftp://new/in/ "s3://bucket/in/"
+mpft cp --check --hash sha256 sftp://old/out/report.pdf sftp://new/in/ "s3://bucket/in/"
 ```
 
 That verifies the source against its own checksum file and leaves a fresh one

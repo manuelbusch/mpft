@@ -1,10 +1,10 @@
 # Several targets at once
 
-`mpt cp` takes any number of targets after the source. The source is read
+`mpft cp` takes any number of targets after the source. The source is read
 **once**, and the bytes are handed to every target as they arrive:
 
 ```
-$ mpt cp --hash sha256 report.pdf sftp://deploy@srv.example.com/incoming/ "s3://bucket/reports/" "mailto:boss@example.com?subject=Report"
+$ mpft cp --hash sha256 report.pdf sftp://deploy@srv.example.com/incoming/ "s3://bucket/reports/" "mailto:boss@example.com?subject=Report"
 ok             40000 bytes    79.43ms  sftp://deploy@srv.example.com/incoming/
         + sftp://deploy@srv.example.com/incoming/report.pdf.sha256
 ok             40000 bytes     7.13ms  s3://bucket/reports/
@@ -56,13 +56,13 @@ added together. Where that is not acceptable, the cache decouples them.
 | Size known up front | only if the source could say | always, once buffered |
 
 ```
-mpt cp --cache --retries 2 big.iso sftp://a.example.com/ sftp://b.example.com/
+mpft cp --cache --retries 2 big.iso sftp://a.example.com/ sftp://b.example.com/
 ```
 
 Above the limit the copy fails rather than quietly spilling to disk:
 
 ```
-$ mpt cp --cache big.iso backup/
+$ mpft cp --cache big.iso backup/
 error: copy big.iso: I/O error: payload exceeds the configured limit of 268435456 bytes
 ```
 
@@ -92,7 +92,7 @@ message that failed halfway was accepted.
 A failing target does not stop the others:
 
 ```
-$ mpt cp report.pdf backup/ sftp://unreachable.example.com/in/
+$ mpft cp report.pdf backup/ sftp://unreachable.example.com/in/
 ok             40000 bytes     4.37ms  backup/
 FAILED             0 bytes   254.50µs  sftp://unreachable.example.com/in/: authentication failed: …
 report.pdf: 40000 bytes read, 1/2 targets ok in 4.60ms

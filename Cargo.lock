@@ -2984,7 +2984,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "multi_protocol_transceiver"
+name = "mpft"
 version = "0.1.0"
 dependencies = [
  "anstream 0.6.21",

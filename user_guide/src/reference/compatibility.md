@@ -1,14 +1,14 @@
 # Compatibility and stability
 
-What a script, a job list or a client can rely on from one version of `mpt` to
+What a script, a job list or a client can rely on from one version of `mpft` to
 the next, and what may change without notice.
 
 ## Versions
 
-`mpt` is at 0.1. While the major version is 0, a minor release (0.1 → 0.2)
+`mpft` is at 0.1. While the major version is 0, a minor release (0.1 → 0.2)
 may change behaviour that the list below does not cover, and the change is
 noted in the release notes; a patch release (0.1.0 → 0.1.1) does not. The
-version is `mpt --version`, and the guide states which version it describes on
+version is `mpft --version`, and the guide states which version it describes on
 its [first page](../introduction.md).
 
 ## What stays stable

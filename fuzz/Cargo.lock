@@ -1681,6 +1681,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "glob"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
+
+[[package]]
 name = "gloo-timers"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2480,7 +2486,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "multi_protocol_transceiver"
+name = "mpft"
 version = "0.1.0"
 dependencies = [
  "anstream 0.6.21",
@@ -2495,6 +2501,8 @@ dependencies = [
  "csv",
  "dirs",
  "futures",
+ "getrandom 0.4.3",
+ "glob",
  "hex",
  "lettre",
  "mime_guess",
@@ -2529,11 +2537,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "multi_protocol_transceiver-fuzz"
+name = "mpft-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
- "multi_protocol_transceiver",
+ "mpft",
 ]
 
 [[package]]

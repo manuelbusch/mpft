@@ -4,9 +4,9 @@ The local file system is the endpoint every other one is usually paired with,
 and the only one that needs no scheme:
 
 ```
-mpt cp report.pdf sftp://srv.example.com/in/
-mpt cp /var/log/app.log "s3://bucket/logs/"
-mpt cp -r ./exports/ sftp://srv.example.com/in/exports/
+mpft cp report.pdf sftp://srv.example.com/in/
+mpft cp /var/log/app.log "s3://bucket/logs/"
+mpft cp -r ./exports/ sftp://srv.example.com/in/exports/
 ```
 
 A bare path is a local file. `file:///var/log/app.log` means the same thing
@@ -20,7 +20,7 @@ slash](../getting-started/addressing.md#where-a-file-lands),
 or a directory that already exists, makes a target a directory, as elsewhere.
 
 A `~` in a local path is expanded by the shell, so write it unquoted. Inside a
-URL option (`?key=~/.ssh/id_ed25519`) it is `mpt` that expands it; see
+URL option (`?key=~/.ssh/id_ed25519`) it is `mpft` that expands it; see
 [Quoting](../getting-started/addressing.md#quoting).
 
 ## Directories are created
@@ -41,7 +41,7 @@ Local files have every capability in the
 caveat.
 
 ```
-$ mpt ls .
+$ mpft ls .
 d            -  out
 -        40000  report.pdf
 -           77  report.pdf.sha256
@@ -55,7 +55,7 @@ Nothing stops both sides being local, and it is a reasonable way to get
 checksums, atomic finishing and a fan-out over a plain copy:
 
 ```
-mpt cp --hash sha256 release.tar.gz /mnt/archive/ /mnt/offsite/
+mpft cp --hash sha256 release.tar.gz /mnt/archive/ /mnt/offsite/
 ```
 
 The file is read once and written twice, with a checksum file beside each copy.
@@ -66,7 +66,7 @@ the other three things.
 
 The payload is written with the process's own umask, as any program's output
 would be. Ownership and permissions of the source are not carried across:
-`mpt` moves file *contents* between systems that mostly cannot express each
+`mpft` moves file *contents* between systems that mostly cannot express each
 other's metadata. Where that matters, use a tool built for it (`rsync`,
 `tar`) or set the permissions afterwards.
 

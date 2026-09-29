@@ -67,7 +67,7 @@ pub(crate) trait Renamer: Send {
 
 /// Suffix under which [`replace_aside`] keeps the file it replaces until the
 /// new one is in place.
-pub const OLD_SUFFIX: &str = ".mpt-old";
+pub const OLD_SUFFIX: &str = ".mpft-old";
 
 /// Rename `from` to `to` on a server whose rename may refuse an existing
 /// target, without a moment in which neither file is there for good: the
@@ -83,7 +83,7 @@ pub(crate) async fn replace_aside(r: &mut dyn Renamer, from: &str, to: &str) -> 
     let old = format!("{to}{OLD_SUFFIX}");
     if r.rename(to, &old).await.is_err() {
         // A file left under the temporary name by a run that stopped half
-        // way is in the way. The name is mpt's own, so it goes, once.
+        // way is in the way. The name is mpft's own, so it goes, once.
         if r.remove(&old).await.is_err() {
             // Nothing there to move aside, or it cannot be moved: the
             // first error is the one that says what is wrong.
@@ -186,33 +186,33 @@ mod tests {
     #[tokio::test]
     async fn replacing_a_file_never_loses_both() {
         let mut s = Server::default();
-        s.files.insert("f.mpt-part".into(), "new");
-        replace_aside(&mut s, "f.mpt-part", "f").await.unwrap();
+        s.files.insert("f.mpft-part".into(), "new");
+        replace_aside(&mut s, "f.mpft-part", "f").await.unwrap();
         assert_eq!(s.files.len(), 1);
         assert_eq!(s.files["f"], "new");
 
         // An existing target is replaced, and its old version is gone after.
-        s.files.insert("f.mpt-part".into(), "newer");
-        replace_aside(&mut s, "f.mpt-part", "f").await.unwrap();
+        s.files.insert("f.mpft-part".into(), "newer");
+        replace_aside(&mut s, "f.mpft-part", "f").await.unwrap();
         assert_eq!(s.files.len(), 1);
         assert_eq!(s.files["f"], "newer");
 
         // The rename into place fails: the old file is back where it was.
-        s.files.insert("f.mpt-part".into(), "newest");
-        s.refuse = Some(("f.mpt-part".into(), "f".into()));
-        assert!(replace_aside(&mut s, "f.mpt-part", "f").await.is_err());
+        s.files.insert("f.mpft-part".into(), "newest");
+        s.refuse = Some(("f.mpft-part".into(), "f".into()));
+        assert!(replace_aside(&mut s, "f.mpft-part", "f").await.is_err());
         assert_eq!(s.files["f"], "newer");
-        assert_eq!(s.files["f.mpt-part"], "newest");
-        assert!(!s.files.contains_key("f.mpt-old"));
+        assert_eq!(s.files["f.mpft-part"], "newest");
+        assert!(!s.files.contains_key("f.mpft-old"));
     }
 
     #[tokio::test]
     async fn a_stale_file_under_the_temporary_name_is_not_in_the_way() {
         let mut s = Server::default();
         s.files.insert("f".into(), "old");
-        s.files.insert("f.mpt-old".into(), "left by a crash");
-        s.files.insert("f.mpt-part".into(), "new");
-        replace_aside(&mut s, "f.mpt-part", "f").await.unwrap();
+        s.files.insert("f.mpft-old".into(), "left by a crash");
+        s.files.insert("f.mpft-part".into(), "new");
+        replace_aside(&mut s, "f.mpft-part", "f").await.unwrap();
         assert_eq!(s.files.len(), 1, "{:?}", s.files);
         assert_eq!(s.files["f"], "new");
     }

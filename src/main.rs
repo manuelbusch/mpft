@@ -5,13 +5,13 @@ use std::time::Duration;
 use anstyle::{AnsiColor, Style};
 use anyhow::Context;
 use clap::{ColorChoice, Parser, Subcommand};
-use mpt::batch::jobs::{Format, JobSpec};
-use mpt::sign::{SignSpec, VerifySpec};
-use mpt::{CacheMode, CopyOptions, HashAlgo, Scheme, TeeOptions};
+use mpft::batch::jobs::{Format, JobSpec};
+use mpft::sign::{SignSpec, VerifySpec};
+use mpft::{CacheMode, CopyOptions, HashAlgo, Scheme, TeeOptions};
 
 /// Send and receive files over many protocols, addressed by URL prefix.
 #[derive(Parser)]
-#[command(name = "mpt", version, about, long_about = None)]
+#[command(name = "mpft", version, about, long_about = None)]
 struct Cli {
     /// Verbose logging (-v info, -vv debug, -vvv trace)
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
@@ -22,8 +22,8 @@ struct Cli {
     #[arg(long, global = true)]
     insecure: bool,
 
-    /// Configuration file (default: $MPT_CONFIG, else ~/.config/mpt/config.toml,
-    /// plus ./mpt.toml for [defaults] and [policy])
+    /// Configuration file (default: $MPFT_CONFIG, else ~/.config/mpft/config.toml,
+    /// plus ./mpft.toml for [defaults] and [policy])
     #[arg(long, global = true, value_name = "PATH")]
     config: Option<PathBuf>,
 
@@ -33,7 +33,7 @@ struct Cli {
 
     /// Password for sftp, scp, ftp(s), http(s) and webdav(s) endpoints whose
     /// URL has none. A password in the URL or in argv is visible to every
-    /// other process; prefer MPT_PASSWORD, --password-file or
+    /// other process; prefer MPFT_PASSWORD, --password-file or
     /// --password-stdin.
     #[arg(long, global = true)]
     password: Option<String>,
@@ -53,7 +53,7 @@ struct Cli {
 
     /// Refuse instead of warning when credentials would go over the wire
     /// unencrypted (ftp://, http:// basic auth, smtp without TLS). Also
-    /// settable with MPT_REFUSE_PLAINTEXT_AUTH=1.
+    /// settable with MPFT_REFUSE_PLAINTEXT_AUTH=1.
     #[arg(long, global = true)]
     refuse_plaintext_auth: bool,
 
@@ -96,12 +96,12 @@ struct Cli {
     progress: Option<ColorChoice>,
 
     /// Write straight to the target name instead of uploading to
-    /// <name>.mpt-part and renaming it into place when the transfer is done
+    /// <name>.mpft-part and renaming it into place when the transfer is done
     #[arg(long, global = true)]
     no_atomic: bool,
 
     /// Continue an interrupted transfer: keep what is already in
-    /// <name>.mpt-part on the target and send only the rest
+    /// <name>.mpft-part on the target and send only the rest
     #[arg(long, global = true, conflicts_with = "no_atomic")]
     resume: bool,
 
@@ -126,7 +126,7 @@ struct Cli {
     check: bool,
 
     /// Sign the checksum file: `ssh` (ssh-agent or default key), `ssh:<key>`
-    /// or `pgp:<secret-key.asc>`; passphrase via MPT_SIGN_KEY_PASSPHRASE.
+    /// or `pgp:<secret-key.asc>`; passphrase via MPFT_SIGN_KEY_PASSPHRASE.
     /// Without a key part, [signing] key from the configuration is used.
     /// Implies --hash sha256 unless --hash is given.
     #[arg(long, global = true, value_name = "SPEC")]
@@ -196,7 +196,7 @@ enum Cmd {
     Schemes,
     /// Print a completion script for a shell (bash, zsh, fish, elvish, powershell)
     Completions { shell: clap_complete::Shell },
-    /// Print the manual page in roff format (`mpt man | man -l -`)
+    /// Print the manual page in roff format (`mpft man | man -l -`)
     Man,
     /// List the profiles the configuration defines
     Profiles,
@@ -220,7 +220,7 @@ enum Cmd {
     Relay(RelayArgs),
 }
 
-/// Flags of `mpt relay`; each one wins over its `[relay]` key.
+/// Flags of `mpft relay`; each one wins over its `[relay]` key.
 #[cfg(feature = "relay")]
 #[derive(clap::Args, Debug, Clone)]
 struct RelayArgs {
@@ -229,11 +229,11 @@ struct RelayArgs {
     #[arg(long, value_name = "ADDR", num_args = 0..=1, default_missing_value = "0.0.0.0:2222")]
     listen: Option<String>,
     /// The server's host key; generated when the file is missing
-    /// (~/.local/state/mpt/relay_host_key on Linux, ~/Library/Application
-    /// Support/mpt/relay_host_key on macOS, %LOCALAPPDATA%\mpt\relay_host_key on Windows)
+    /// (~/.local/state/mpft/relay_host_key on Linux, ~/Library/Application
+    /// Support/mpft/relay_host_key on macOS, %LOCALAPPDATA%\mpft\relay_host_key on Windows)
     #[arg(long, value_name = "PATH")]
     host_key: Option<PathBuf>,
-    /// Who may connect, in OpenSSH format (~/.config/mpt/authorized_keys)
+    /// Who may connect, in OpenSSH format (~/.config/mpft/authorized_keys)
     #[arg(long, value_name = "PATH")]
     authorized_keys: Option<PathBuf>,
     /// Relays running at once; further sessions wait (4)
@@ -253,7 +253,7 @@ struct RelayArgs {
     /// the default), on-demand (asked of the client at every login, never
     /// held here) or any
     #[arg(long, value_name = "MODE", value_parser = parse_relay_credentials)]
-    credentials: Option<mpt::relay::RelayCredentials>,
+    credentials: Option<mpft::relay::RelayCredentials>,
     /// Refuse the client's forwarded ssh-agent (with --listen); the SSH
     /// targets then authenticate with this side's keys and passwords only
     #[arg(long)]
@@ -263,7 +263,7 @@ struct RelayArgs {
     #[arg(long)]
     allow_delete: bool,
     /// Log in to the SSH hosts a client names with this side's own identity
-    /// too: its ssh-agent, ~/.ssh/id_*, [ssh] key and MPT_SSH_KEY. Off unless
+    /// too: its ssh-agent, ~/.ssh/id_*, [ssh] key and MPFT_SSH_KEY. Off unless
     /// given: then only the client's forwarded agent and the passwords it
     /// sends serve such a host
     #[arg(long)]
@@ -278,7 +278,7 @@ struct RelayArgs {
     port_file: Option<PathBuf>,
 }
 
-/// Flags of `mpt serve`; each one wins over its `[server]` key.
+/// Flags of `mpft serve`; each one wins over its `[server]` key.
 #[cfg(feature = "server")]
 #[derive(clap::Args, Debug, Clone)]
 struct ServeArgs {
@@ -286,7 +286,7 @@ struct ServeArgs {
     /// a token
     #[arg(long, value_name = "ADDR")]
     bind: Option<String>,
-    /// Take any URL in a job, not only mpt://<profile>/ ones
+    /// Take any URL in a job, not only mpft://<profile>/ ones
     #[arg(long)]
     allow_any_url: bool,
     /// Environment variable that holds the bearer token clients must send
@@ -339,7 +339,7 @@ struct BatchArgs {
     /// contents into the target, `dir` the directory itself
     #[arg(short = 'r', long)]
     recursive: bool,
-    /// Send the source once to this SSH host running `mpt relay` (an
+    /// Send the source once to this SSH host running `mpft relay` (an
     /// ssh:// URL or a profile with one) and let it deliver to the targets
     #[cfg(feature = "relay")]
     #[arg(long, value_name = "URL", conflicts_with = "no_via")]
@@ -353,7 +353,7 @@ struct BatchArgs {
     /// login, never held by the relay; the relay has to allow it)
     #[cfg(feature = "relay")]
     #[arg(long, value_name = "MODE", value_parser = parse_credentials)]
-    via_credentials: Option<mpt::relay::Credentials>,
+    via_credentials: Option<mpft::relay::Credentials>,
     /// Do not forward an ssh-agent to the relay; SSH targets then need a
     /// password, or a key on the relay (by default the relay signs with
     /// this side's keys and certificates through the forwarded agent)
@@ -468,9 +468,9 @@ impl Cmd {
                         .with_context(|| format!("reading the job list {}", file.display()))?;
                     (text, file.file_name().and_then(|n| n.to_str()))
                 };
-                let format = format.unwrap_or_else(|| mpt::batch::jobs::detect(name, &text));
+                let format = format.unwrap_or_else(|| mpft::batch::jobs::detect(name, &text));
                 tracing::debug!(%format, "job list");
-                Work::Many(mpt::batch::jobs::parse(&text, format)?)
+                Work::Many(mpft::batch::jobs::parse(&text, format)?)
             }
             Cmd::Ls { url, .. } => Work::Urls(vec![url.clone()]),
             _ => Work::Urls(Vec::new()),
@@ -499,7 +499,7 @@ impl Cmd {
         }
     }
 
-    /// `mpt serve` and `mpt relay --listen`: Ctrl-C drains rather than stops.
+    /// `mpft serve` and `mpft relay --listen`: Ctrl-C drains rather than stops.
     fn is_serve(&self) -> bool {
         #[cfg(feature = "server")]
         if matches!(self, Cmd::Serve(_)) {
@@ -513,7 +513,7 @@ impl Cmd {
     }
 }
 
-/// `mpt credentials …`, only with the `keyring` feature.
+/// `mpft credentials …`, only with the `keyring` feature.
 #[cfg(feature = "keyring")]
 #[derive(Subcommand)]
 enum CredentialCmd {
@@ -564,7 +564,7 @@ struct Settings {
     via: Option<String>,
     /// How that relay gets the targets' passwords.
     #[cfg(feature = "relay")]
-    via_credentials: mpt::relay::Credentials,
+    via_credentials: mpft::relay::Credentials,
     /// Whether that relay gets this side's ssh-agent forwarded.
     #[cfg(feature = "relay")]
     via_agent: bool,
@@ -576,8 +576,8 @@ struct Settings {
 impl Settings {
     /// What the relays are told besides the copy's options.
     #[cfg(feature = "relay")]
-    fn via_settings(&self) -> mpt::relay::via::ViaSettings {
-        mpt::relay::via::ViaSettings {
+    fn via_settings(&self) -> mpft::relay::via::ViaSettings {
+        mpft::relay::via::ViaSettings {
             credentials: self.via_credentials,
             agent: self.via_agent,
             agent_onward: self.via_agent_onward,
@@ -585,12 +585,12 @@ impl Settings {
         }
     }
 
-    fn resolve(cli: &Cli, cfg: &mpt::Config) -> anyhow::Result<Settings> {
+    fn resolve(cli: &Cli, cfg: &mpft::Config) -> anyhow::Result<Settings> {
         let d = &cfg.defaults;
         let size = |v: &Option<String>, what: &str| -> anyhow::Result<Option<u64>> {
             match v {
                 None => Ok(None),
-                Some(v) => Some(mpt::config::parse_size(v))
+                Some(v) => Some(mpft::config::parse_size(v))
                     .transpose()
                     .map_err(|e| anyhow::anyhow!("[defaults] {what}: {e}")),
             }
@@ -631,7 +631,7 @@ impl Settings {
                     Some(v) => v
                         .parse()
                         .map_err(|e| anyhow::anyhow!("[defaults] via_credentials: {e}"))?,
-                    None => mpt::relay::Credentials::Header,
+                    None => mpft::relay::Credentials::Header,
                 },
             },
             #[cfg(feature = "relay")]
@@ -662,7 +662,7 @@ impl Settings {
 
 // Exit codes, so a script can tell the cases apart without reading messages.
 // clap already uses 2 for a malformed command line, which is why a bad URL or
-// configuration joins it there. `mpt::Error::exit_code` maps the library's
+// configuration joins it there. `mpft::Error::exit_code` maps the library's
 // errors onto them.
 /// At least one target failed.
 const FAILED: u8 = 1;
@@ -686,7 +686,7 @@ fn exit_code(err: &anyhow::Error) -> u8 {
         if let Some(e) = cause.downcast_ref::<ExitWith>() {
             return e.code;
         }
-        if let Some(e) = cause.downcast_ref::<mpt::Error>() {
+        if let Some(e) = cause.downcast_ref::<mpft::Error>() {
             return code_of(e);
         }
     }
@@ -694,7 +694,7 @@ fn exit_code(err: &anyhow::Error) -> u8 {
 }
 
 /// The exit code a library error stands for.
-fn code_of(e: &mpt::Error) -> u8 {
+fn code_of(e: &mpft::Error) -> u8 {
     e.exit_code()
 }
 
@@ -795,7 +795,7 @@ async fn start() -> ExitCode {
     };
     // The configuration decides the log level and the colors, so it is read
     // before either is set up; its own complaints are logged afterwards.
-    let mut cfg = match mpt::Config::load(cli.config.as_deref()) {
+    let mut cfg = match mpft::Config::load(cli.config.as_deref()) {
         Ok(cfg) => cfg,
         Err(e) => {
             eprintln!("error: {e}");
@@ -826,8 +826,8 @@ async fn start() -> ExitCode {
         anstream::eprintln!("{FAIL}error:{FAIL:#} {e}");
         return ExitCode::from(exit_code(&anyhow::Error::new(e)));
     }
-    mpt::config::install(cfg);
-    mpt::init_crypto();
+    mpft::config::install(cfg);
+    mpft::init_crypto();
     match run(cli, settings, work).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -873,9 +873,9 @@ fn init_logging(verbosity: u8, configured: Option<&str>) {
 /// Read a password from a file or from standard input, without keeping the
 /// trailing newline an editor or `echo` leaves behind.
 fn read_password(cli: &Cli) -> anyhow::Result<Option<secrecy::SecretString>> {
-    use mpt::credentials::{check_secret_file, first_line};
+    use mpft::credentials::{check_secret_file, first_line};
     if let Some(path) = &cli.password_file {
-        check_secret_file(path, mpt::policy::policy().strict_permissions)?;
+        check_secret_file(path, mpft::policy::policy().strict_permissions)?;
         // A file the flag names that cannot be read is a wrong command line.
         let text = std::fs::read_to_string(path).map_err(|e| {
             usage(format!(
@@ -907,18 +907,18 @@ struct LocateRules {
 }
 
 impl LocateRules {
-    /// A URL as a location, `mpt://` profiles resolved. `timeout` is a
+    /// A URL as a location, `mpft://` profiles resolved. `timeout` is a
     /// per-job override of the flag (the server's jobs and a relay's
     /// clients may set one), held to the flag's own limit.
-    fn locate(&self, url: &str, timeout: Option<u64>) -> mpt::Result<mpt::Location> {
-        let mut loc = mpt::config::locate(url)?;
+    fn locate(&self, url: &str, timeout: Option<u64>) -> mpft::Result<mpft::Location> {
+        let mut loc = mpft::config::locate(url)?;
         if self.insecure {
             loc.set_option("insecure", "true");
         }
         // --timeout is the default; ?timeout= in the URL wins.
         if loc.opt("timeout").is_none() {
             let timeout = timeout.map_or(self.timeout, |t| {
-                mpt::options::hold_timeout(t, self.timeout)
+                mpft::options::hold_timeout(t, self.timeout)
             });
             loc.set_option("timeout", timeout.to_string());
         }
@@ -926,7 +926,7 @@ impl LocateRules {
             loc.set_option("connect_retries", self.retries.to_string());
         }
         // A password in the URL stays; one from a profile gives way to the
-        // flag. The flag is for the schemes MPT_PASSWORD is for: not the key
+        // flag. The flag is for the schemes MPFT_PASSWORD is for: not the key
         // of an S3 bucket, not a relay, not a mail server.
         if let Some(pw) = &self.password
             && !loc.password_in_url()
@@ -940,12 +940,12 @@ impl LocateRules {
 
     /// [`LocateRules::locate`] for a relay, which opens the URLs its
     /// clients name. Such a URL gets nothing of this side's credentials:
-    /// not `--password` and its siblings, not `MPT_PASSWORD` or
-    /// `MPT_SMTP_PASSWORD` — those are for the hosts this side picks, not
+    /// not `--password` and its siblings, not `MPFT_PASSWORD` or
+    /// `MPFT_SMTP_PASSWORD` — those are for the hosts this side picks, not
     /// for whichever host a client names. The same goes for this side's SSH
     /// identity — its agent, `~/.ssh/id_*`, `[ssh] key` — unless the relay
     /// runs with `--own-keys`; and a client's URL may not name a key file on
-    /// this host. A profile of the relay's own configuration (`mpt://`) is
+    /// this host. A profile of the relay's own configuration (`mpft://`) is
     /// one of those hosts and keeps them all.
     #[cfg(feature = "relay")]
     fn locate_relayed(
@@ -953,8 +953,8 @@ impl LocateRules {
         url: &str,
         timeout: Option<u64>,
         own_keys: bool,
-    ) -> mpt::Result<mpt::Location> {
-        if mpt::config::is_profile_ref(url) {
+    ) -> mpft::Result<mpft::Location> {
+        if mpft::config::is_profile_ref(url) {
             return self.locate(url, timeout);
         }
         let rules = LocateRules {
@@ -967,7 +967,7 @@ impl LocateRules {
         if let Some(t) = loc.opt("timeout").and_then(|t| t.parse::<u64>().ok()) {
             loc.set_option(
                 "timeout",
-                mpt::options::hold_timeout(t, self.timeout).to_string(),
+                mpft::options::hold_timeout(t, self.timeout).to_string(),
             );
         }
         loc.set_env_password(false);
@@ -981,7 +981,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
     // comes early (as soon as a server's port file is there) is not missed.
     let mut signals = Interrupts::install().context("listening for Ctrl-C")?;
     if cli.refuse_plaintext_auth {
-        mpt::policy::set_refuse_plaintext_auth(true);
+        mpft::policy::set_refuse_plaintext_auth(true);
     }
     if cli.insecure {
         tracing::warn!(
@@ -991,10 +991,10 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
     }
     let password = read_password(&cli)?;
     // A profile can ask for signing and a checksum of its own; the flags win.
-    let profiles: Vec<mpt::config::Profile> = work
+    let profiles: Vec<mpft::config::Profile> = work
         .endpoint_urls()
         .iter()
-        .filter_map(|u| mpt::config::profile_of(u))
+        .filter_map(|u| mpft::config::profile_of(u))
         .collect();
     let mut settings = settings;
     if cli.hash.is_none()
@@ -1054,9 +1054,9 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
         retries: settings.retries,
         password,
     };
-    let locate = |url: &str| -> anyhow::Result<mpt::Location> { Ok(rules.locate(url, None)?) };
-    let open = |url: &str| -> anyhow::Result<Box<dyn mpt::Endpoint>> {
-        Ok(mpt::protocols::open(locate(url)?)?)
+    let locate = |url: &str| -> anyhow::Result<mpft::Location> { Ok(rules.locate(url, None)?) };
+    let open = |url: &str| -> anyhow::Result<Box<dyn mpft::Endpoint>> {
+        Ok(mpft::protocols::open(locate(url)?)?)
     };
 
     let sign = match cli.sign.as_deref().or_else(|| {
@@ -1070,7 +1070,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
     };
     let verify = verify_spec(&cli)?;
     let check = cli.check || verify.is_some();
-    if check && verify.is_none() && mpt::policy::policy().require_signature {
+    if check && verify.is_none() && mpft::policy::policy().require_signature {
         return Err(usage(
             "policy.require_signature is set, but no trusted keys are given: \
              use --verify-signers/--verify-keyring or [verify] in the configuration",
@@ -1095,15 +1095,15 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
         skip_existing: settings.skip_existing,
         delete_source: settings.delete_source,
         cancel: Some(cancel.clone()),
-        progress: show_progress(&cli, &settings).then(mpt::transfer::Progress::new),
+        progress: show_progress(&cli, &settings).then(mpft::transfer::Progress::new),
         hash: settings.hash.or(sign.as_ref().map(|_| HashAlgo::Sha256)),
         check,
         sign: match &sign {
-            Some(spec) => Some(mpt::sign::load_signer(spec).await?),
+            Some(spec) => Some(mpft::sign::load_signer(spec).await?),
             None => None,
         },
         verify: match &verify {
-            Some(spec) => Some(mpt::sign::load_verifier(spec)?),
+            Some(spec) => Some(mpft::sign::load_verifier(spec)?),
             None => None,
         },
     };
@@ -1135,7 +1135,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
     };
     #[cfg(not(feature = "relay"))]
     let via: Option<()> = None;
-    let open_loc = |loc: &mpt::Location| mpt::protocols::open(loc.clone());
+    let open_loc = |loc: &mpft::Location| mpft::protocols::open(loc.clone());
     let runner = match &via {
         #[cfg(feature = "relay")]
         Some(v) => JobRunner::Via(v),
@@ -1152,7 +1152,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
         Work::Single { src, dsts }
             if recursive
                 || dry_run
-                || mpt::batch::expand::has_pattern(&locate(&src)?)
+                || mpft::batch::expand::has_pattern(&locate(&src)?)
                 || runner.relays(&locate_job(
                     &JobSpec {
                         src: src.clone(),
@@ -1179,7 +1179,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                         if settings.json {
                             let shown = locate(&src)
                                 .map(|l| l.to_string())
-                                .unwrap_or_else(|_| mpt::location::mask_url(&src));
+                                .unwrap_or_else(|_| mpft::location::mask_url(&src));
                             print_json_failure(&shown, &e);
                         }
                         return Err(e);
@@ -1199,7 +1199,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                 let progress = opts
                     .progress
                     .take()
-                    .map(|_| mpt::batch::BatchProgress::new());
+                    .map(|_| mpft::batch::BatchProgress::new());
                 do_batch(jobs, &locate, &runner, opts, &settings, batch, progress).await
             }
             Work::Follow => {
@@ -1210,7 +1210,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                 let progress = opts
                     .progress
                     .take()
-                    .map(|_| mpt::batch::BatchProgress::new());
+                    .map(|_| mpft::batch::BatchProgress::new());
                 do_follow(
                     &locate,
                     &runner,
@@ -1250,7 +1250,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                 Some((via, relay)) => via.list(&relay, &dir, &cancel).await,
                 _ => {
                     async {
-                        let ep = mpt::protocols::open(dir.clone())?;
+                        let ep = mpft::protocols::open(dir.clone())?;
                         ep.receiver()?.list().await
                     }
                     .await
@@ -1259,7 +1259,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
             .with_context(|| format!("listing {dir}"))?;
             if settings.json {
                 let rows: Vec<serde_json::Value> =
-                    entries.iter().map(mpt::report::entry_json).collect();
+                    entries.iter().map(mpft::report::entry_json).collect();
                 println!("{}", serde_json::to_string_pretty(&rows)?);
                 return Ok(());
             }
@@ -1276,7 +1276,7 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
         }
         #[cfg(feature = "keyring")]
         Cmd::Credentials { action } => {
-            use mpt::credentials as cred;
+            use mpft::credentials as cred;
             match action {
                 CredentialCmd::Set { entry } => {
                     let mut text = String::new();
@@ -1310,17 +1310,17 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Profiles => {
-            show_profiles(&mpt::config::global());
+            show_profiles(&mpft::config::global());
             Ok(())
         }
         Cmd::Config { action } => {
             let ConfigCmd::Check = action;
-            show_config(&mpt::config::global());
+            show_config(&mpft::config::global());
             Ok(())
         }
         #[cfg(feature = "server")]
         Cmd::Serve(args) => {
-            let server = server_config(args, &mpt::config::global()).await?;
+            let server = server_config(args, &mpft::config::global()).await?;
             // Ctrl-C is the drain signal here, not the copies' cancel: a
             // running job finishes (or is cancelled by the server's grace
             // timer), and there is no terminal to draw progress on.
@@ -1343,17 +1343,17 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                 })
             };
             let rules = rules.clone();
-            let rt = mpt::server::Runtime {
+            let rt = mpft::server::Runtime {
                 #[cfg(feature = "relay")]
                 via,
                 copy: base,
-                locate: std::sync::Arc::new(move |url, o: &mpt::server::model::JobOptions| {
+                locate: std::sync::Arc::new(move |url, o: &mpft::server::model::JobOptions| {
                     rules.locate(url, o.timeout)
                 }),
                 signing: cli.sign.is_some(),
                 parallel: settings.parallel,
             };
-            mpt::server::serve(server, rt, cancel, abort).await?;
+            mpft::server::serve(server, rt, cancel, abort).await?;
             Ok(())
         }
         #[cfg(feature = "relay")]
@@ -1375,30 +1375,30 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
             let mut base = opts;
             base.cancel = None;
             base.progress = None;
-            let section = &mpt::config::global().relay;
+            let section = &mpft::config::global().relay;
             let rules = rules.clone();
             let own_keys = args.own_keys || section.own_keys.unwrap_or(false);
-            let relay = mpt::relay::Relay {
+            let relay = mpft::relay::Relay {
                 copy: base,
-                locate: std::sync::Arc::new(move |url, o: &mpt::options::JobOptions| {
+                locate: std::sync::Arc::new(move |url, o: &mpft::options::JobOptions| {
                     rules.locate_relayed(url, o.timeout, own_keys)
                 }),
                 max_size: match (args.max_size, &section.max_size) {
                     (Some(n), _) => n,
-                    (None, Some(v)) => mpt::config::parse_size(v)
+                    (None, Some(v)) => mpft::config::parse_size(v)
                         .map_err(|e| usage(format!("[relay] max_size: {e}")))?,
                     (None, None) => 0,
                 },
                 max_entries: args
                     .max_entries
                     .or(section.max_entries)
-                    .unwrap_or(mpt::relay::DEFAULT_MAX_ENTRIES),
+                    .unwrap_or(mpft::relay::DEFAULT_MAX_ENTRIES),
                 credentials: match (args.credentials, &section.credentials) {
                     (Some(mode), _) => mode,
                     (None, Some(v)) => v
                         .parse()
                         .map_err(|e| usage(format!("[relay] credentials: {e}")))?,
-                    (None, None) => mpt::relay::RelayCredentials::Header,
+                    (None, None) => mpft::relay::RelayCredentials::Header,
                 },
                 allow_delete: args.allow_delete || section.allow_delete.unwrap_or(false),
                 local_files: args.allow_local || section.local_files.unwrap_or(false),
@@ -1407,13 +1407,13 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
             match &args.listen {
                 Some(addr) => {
                     let listener = relay_listener(addr, args, section)?;
-                    mpt::relay::sshd::serve(listener, std::sync::Arc::new(relay), cancel, abort)
+                    mpft::relay::sshd::serve(listener, std::sync::Arc::new(relay), cancel, abort)
                         .await?;
                     Ok(())
                 }
                 None => {
                     let code =
-                        mpt::relay::run(&relay, tokio::io::stdin(), tokio::io::stdout()).await;
+                        mpft::relay::run(&relay, tokio::io::stdin(), tokio::io::stdout()).await;
                     if code == 0 {
                         Ok(())
                     } else {
@@ -1456,13 +1456,13 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
                 anstream::println!("{:<11} {}", "", i.description);
             }
             anstream::println!(
-                "\n{HEAD}Credentials:{HEAD:#} user[:password]@ in the URL, else MPT_PASSWORD / MPT_SMTP_PASSWORD."
+                "\n{HEAD}Credentials:{HEAD:#} user[:password]@ in the URL, else MPFT_PASSWORD / MPFT_SMTP_PASSWORD."
             );
             anstream::println!(
-                "{HEAD}SSH keys:{HEAD:#} MPT_SSH_KEY, else ssh-agent (SSH_AUTH_SOCK), else ~/.ssh/id_ed25519, id_rsa."
+                "{HEAD}SSH keys:{HEAD:#} MPFT_SSH_KEY, else ssh-agent (SSH_AUTH_SOCK), else ~/.ssh/id_ed25519, id_rsa."
             );
             anstream::println!(
-                "{HEAD}Mail:{HEAD:#} MPT_SMTP_URL (for mailto:), MPT_MAIL_FROM.  {HEAD}S3:{HEAD:#} AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_ENDPOINT_URL."
+                "{HEAD}Mail:{HEAD:#} MPFT_SMTP_URL (for mailto:), MPFT_MAIL_FROM.  {HEAD}S3:{HEAD:#} AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_ENDPOINT_URL."
             );
             Ok(())
         }
@@ -1470,13 +1470,13 @@ async fn run(cli: Cli, settings: Settings, work: Work) -> anyhow::Result<()> {
 }
 
 async fn do_copy(
-    src: Box<dyn mpt::Endpoint>,
-    targets: Vec<Box<dyn mpt::Endpoint>>,
+    src: Box<dyn mpft::Endpoint>,
+    targets: Vec<Box<dyn mpft::Endpoint>>,
     opts: &CopyOptions,
     json: bool,
 ) -> anyhow::Result<()> {
-    let refs: Vec<&dyn mpt::Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
-    let report = match mpt::copy_many(src.as_ref(), &refs, opts).await {
+    let refs: Vec<&dyn mpft::Endpoint> = targets.iter().map(|t| t.as_ref()).collect();
+    let report = match mpft::copy_many(src.as_ref(), &refs, opts).await {
         Ok(report) => report,
         Err(e) => {
             let e = anyhow::Error::new(e).context(format!("copy {}", src.location()));
@@ -1489,7 +1489,7 @@ async fn do_copy(
     if json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&mpt::report::fanout_json(&report))?
+            serde_json::to_string_pretty(&mpft::report::fanout_json(&report))?
         );
     }
     match print_report(&report, opts, "") {
@@ -1502,12 +1502,12 @@ async fn do_copy(
 /// A copy that failed before there was a report, as JSON: what a batch
 /// prints for such a job, without the job number.
 fn print_json_failure(source: &str, err: &anyhow::Error) {
-    let lib = err.chain().find_map(|c| c.downcast_ref::<mpt::Error>());
+    let lib = err.chain().find_map(|c| c.downcast_ref::<mpft::Error>());
     let line = serde_json::json!({
         "source": source,
         "ok": false,
         "error": lib.map(|e| e.to_string()).unwrap_or_else(|| format!("{err:#}")),
-        "cancelled": matches!(lib, Some(mpt::Error::Cancelled)),
+        "cancelled": matches!(lib, Some(mpft::Error::Cancelled)),
     });
     if let Ok(text) = serde_json::to_string_pretty(&line) {
         println!("{text}");
@@ -1518,19 +1518,19 @@ fn print_json_failure(source: &str, err: &anyhow::Error) {
 /// starting with `prefix`. Returns the exit code and the message of a
 /// failure, if there was one; 130 means the copy was cancelled.
 fn print_report(
-    report: &mpt::FanoutReport,
+    report: &mpft::FanoutReport,
     opts: &CopyOptions,
     prefix: &str,
 ) -> Option<(u8, String)> {
     let cancelled = report
         .targets
         .iter()
-        .any(|t| matches!(t.result, Err(mpt::Error::Cancelled)));
+        .any(|t| matches!(t.result, Err(mpft::Error::Cancelled)));
     if report.targets.len() == 1 {
         let t = &report.targets[0];
         if let Err(e) = &t.result {
             // A mismatch shows the digests and the verdict, as in a fan-out.
-            if matches!(e, mpt::Error::ChecksumMismatch { .. })
+            if matches!(e, mpft::Error::ChecksumMismatch { .. })
                 && let Some(failure) = print_checksums(report, opts, prefix)
             {
                 return Some(failure);
@@ -1634,12 +1634,12 @@ fn print_report(
 /// finishes.
 async fn do_batch(
     specs: Vec<JobSpec>,
-    locate: &dyn Fn(&str) -> anyhow::Result<mpt::Location>,
+    locate: &dyn Fn(&str) -> anyhow::Result<mpft::Location>,
     runner: &JobRunner<'_>,
     opts: CopyOptions,
     settings: &Settings,
     args: &BatchArgs,
-    progress: Option<std::sync::Arc<mpt::batch::BatchProgress>>,
+    progress: Option<std::sync::Arc<mpft::batch::BatchProgress>>,
 ) -> anyhow::Result<()> {
     let jobs = specs
         .iter()
@@ -1647,14 +1647,14 @@ async fn do_batch(
         .map(|(i, spec)| locate_job(spec, locate).with_context(|| format!("job {}", i + 1)))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let cancel = opts.cancel.clone().unwrap_or_default();
-    let open = |loc: &mpt::Location| runner.open(loc, &cancel);
+    let open = |loc: &mpft::Location| runner.open(loc, &cancel);
     let jobs = prepare_jobs(jobs, &open, args).await?;
     let n = jobs.len();
     if n == 0 {
         anstream::eprintln!("{WARN}nothing to do{WARN:#}: the job list is empty");
         return Ok(());
     }
-    mpt::batch::check_collisions(&jobs)?;
+    mpft::batch::check_collisions(&jobs)?;
     for job in &jobs {
         runner.check(job)?;
     }
@@ -1665,13 +1665,13 @@ async fn do_batch(
         return Ok(());
     }
     let bar = progress.clone().map(spawn_batch_progress);
-    let batch_opts = mpt::BatchOptions {
+    let batch_opts = mpft::BatchOptions {
         parallel: settings.parallel,
         fail_fast: args.fail_fast,
         progress,
     };
     let mut out = BatchOutput::new(Some(n), settings.json);
-    let report = mpt::batch::run_with(
+    let report = mpft::batch::run_with(
         jobs,
         |job, copy| runner.run(job, copy),
         &opts,
@@ -1685,13 +1685,13 @@ async fn do_batch(
 
 /// Who copies a job: this process, or a relay it sends the source to.
 enum JobRunner<'a> {
-    Local(&'a (dyn Fn(&mpt::Location) -> mpt::Result<Box<dyn mpt::Endpoint>> + Sync)),
+    Local(&'a (dyn Fn(&mpft::Location) -> mpft::Result<Box<dyn mpft::Endpoint>> + Sync)),
     #[cfg(feature = "relay")]
     Via(&'a std::sync::Arc<Via>),
 }
 
 #[cfg(feature = "relay")]
-use mpt::relay::via::Via;
+use mpft::relay::via::Via;
 
 /// The relays in play (see [`Via::table`]), with a relay that is not an
 /// SSH URL told as a wrong setting.
@@ -1699,17 +1699,17 @@ use mpt::relay::via::Via;
 fn via_table(
     default: Option<&str>,
     used: Option<&std::collections::BTreeSet<String>>,
-    locate: &dyn Fn(&str) -> mpt::Result<mpt::Location>,
-) -> anyhow::Result<Option<mpt::relay::plan::ViaTable>> {
+    locate: &dyn Fn(&str) -> mpft::Result<mpft::Location>,
+) -> anyhow::Result<Option<mpft::relay::plan::ViaTable>> {
     Via::table(default, used, locate).map_err(|e| match e {
-        mpt::Error::InvalidOption { name, reason } if name == "via" => usage(reason),
+        mpft::Error::InvalidOption { name, reason } if name == "via" => usage(reason),
         e => e.into(),
     })
 }
 
 impl JobRunner<'_> {
     /// Whether a relay takes part in `job`.
-    fn relays(&self, job: &mpt::Job) -> bool {
+    fn relays(&self, job: &mpft::Job) -> bool {
         match self {
             JobRunner::Local(_) => {
                 let _ = job;
@@ -1721,7 +1721,7 @@ impl JobRunner<'_> {
     }
 
     /// Refuse `job` when a flag asks for what its relay cannot do.
-    fn check(&self, job: &mpt::Job) -> anyhow::Result<()> {
+    fn check(&self, job: &mpft::Job) -> anyhow::Result<()> {
         match self {
             JobRunner::Local(_) => {
                 let _ = job;
@@ -1730,7 +1730,7 @@ impl JobRunner<'_> {
             // Told with the flag that asked for it.
             #[cfg(feature = "relay")]
             JobRunner::Via(via) => via.check(job).map_err(|e| match e {
-                mpt::Error::InvalidOption { name, reason } => {
+                mpft::Error::InvalidOption { name, reason } => {
                     usage(format!("--{name} is {reason}"))
                 }
                 e => e.into(),
@@ -1742,9 +1742,9 @@ impl JobRunner<'_> {
     /// created as a directory, by the relay that reads or writes it.
     fn open(
         &self,
-        loc: &mpt::Location,
+        loc: &mpft::Location,
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> mpt::Result<Box<dyn mpt::Endpoint>> {
+    ) -> mpft::Result<Box<dyn mpft::Endpoint>> {
         match self {
             JobRunner::Local(open) => {
                 let _ = cancel;
@@ -1755,10 +1755,10 @@ impl JobRunner<'_> {
         }
     }
 
-    fn run(&self, job: mpt::Job, copy: CopyOptions) -> mpt::batch::JobFuture<'_> {
+    fn run(&self, job: mpft::Job, copy: CopyOptions) -> mpft::batch::JobFuture<'_> {
         match self {
             JobRunner::Local(open) => Box::pin(async move {
-                let result = mpt::batch::run_job(&job, *open, &copy).await;
+                let result = mpft::batch::run_job(&job, *open, &copy).await;
                 (job, result)
             }),
             #[cfg(feature = "relay")]
@@ -1770,9 +1770,9 @@ impl JobRunner<'_> {
 /// The URLs of a job list entry as locations.
 fn locate_job(
     spec: &JobSpec,
-    locate: &dyn Fn(&str) -> anyhow::Result<mpt::Location>,
-) -> anyhow::Result<mpt::Job> {
-    Ok(mpt::Job {
+    locate: &dyn Fn(&str) -> anyhow::Result<mpft::Location>,
+) -> anyhow::Result<mpft::Job> {
+    Ok(mpft::Job {
         src: locate(&spec.src)?,
         dsts: spec
             .dsts
@@ -1785,20 +1785,20 @@ fn locate_job(
 /// Patterns and trees turned into file jobs, directories created on the
 /// way (not on a dry run).
 async fn prepare_jobs(
-    jobs: Vec<mpt::Job>,
-    open: &(dyn Fn(&mpt::Location) -> mpt::Result<Box<dyn mpt::Endpoint>> + Sync),
+    jobs: Vec<mpft::Job>,
+    open: &(dyn Fn(&mpft::Location) -> mpft::Result<Box<dyn mpft::Endpoint>> + Sync),
     args: &BatchArgs,
-) -> anyhow::Result<Vec<mpt::Job>> {
-    let opts = mpt::batch::PrepareOptions {
+) -> anyhow::Result<Vec<mpft::Job>> {
+    let opts = mpft::batch::PrepareOptions {
         allow_empty: args.allow_empty,
         recursive: args.recursive,
         no_mkdir: args.dry_run,
         limit: None,
     };
-    Ok(mpt::batch::prepare(jobs, open, &opts).await?)
+    Ok(mpft::batch::prepare(jobs, open, &opts).await?)
 }
 
-fn print_dry_run(job: &mpt::Job, index: usize, total: Option<usize>, json: bool) {
+fn print_dry_run(job: &mpft::Job, index: usize, total: Option<usize>, json: bool) {
     let dsts: Vec<String> = job.dsts.iter().map(|d| d.to_string()).collect();
     if json {
         println!(
@@ -1845,16 +1845,16 @@ impl BatchOutput {
         }
     }
 
-    fn job_done(&mut self, r: &mpt::JobReport, opts: &CopyOptions) {
+    fn job_done(&mut self, r: &mpft::JobReport, opts: &CopyOptions) {
         let prefix = format!("[{}] ", counter(r.index + 1, self.total));
         if self.json {
             let mut line = match &r.result {
-                Ok(rep) => mpt::report::fanout_json(rep),
+                Ok(rep) => mpft::report::fanout_json(rep),
                 Err(e) => serde_json::json!({
                     "source": r.job.src.to_string(),
                     "ok": false,
                     "error": e.to_string(),
-                    "cancelled": matches!(e, mpt::Error::Cancelled),
+                    "cancelled": matches!(e, mpft::Error::Cancelled),
                 }),
             };
             line["job"] = serde_json::Value::from(r.index + 1);
@@ -1893,7 +1893,7 @@ impl BatchOutput {
         self.rejected += 1;
     }
 
-    fn finish(self, report: &mpt::BatchReport) -> anyhow::Result<()> {
+    fn finish(self, report: &mpft::BatchReport) -> anyhow::Result<()> {
         let n = report.jobs.len() + self.rejected;
         let failed = report.failures().count() + self.rejected;
         let summary = if failed == 0 { OK } else { WARN };
@@ -1940,26 +1940,26 @@ impl BatchOutput {
 /// job writes is reported and skipped; the rest carry on.
 #[allow(clippy::too_many_arguments)]
 async fn do_follow(
-    locate: &dyn Fn(&str) -> anyhow::Result<mpt::Location>,
+    locate: &dyn Fn(&str) -> anyhow::Result<mpft::Location>,
     runner: &JobRunner<'_>,
     opts: CopyOptions,
     settings: &Settings,
     args: &BatchArgs,
     format: Option<Format>,
     signing: bool,
-    progress: Option<std::sync::Arc<mpt::batch::BatchProgress>>,
+    progress: Option<std::sync::Arc<mpft::batch::BatchProgress>>,
 ) -> anyhow::Result<()> {
     use futures::StreamExt;
     use tokio::io::AsyncBufReadExt;
 
     let cancelled = opts.cancel.clone().unwrap_or_default();
-    let open = |loc: &mpt::Location| runner.open(loc, &cancelled);
+    let open = |loc: &mpft::Location| runner.open(loc, &cancelled);
     let out = std::sync::Mutex::new(BatchOutput::new(None, settings.json));
     // Jobs a dry run printed instead of running them.
     let printed = std::sync::atomic::AtomicUsize::new(0);
     let cancel = opts.cancel.clone();
     let bar = progress.clone().map(spawn_batch_progress);
-    let batch_opts = mpt::BatchOptions {
+    let batch_opts = mpft::BatchOptions {
         parallel: settings.parallel,
         fail_fast: args.fail_fast,
         progress,
@@ -1972,7 +1972,7 @@ async fn do_follow(
         header: Option<String>,
         line: usize,
         index: usize,
-        targets: mpt::batch::Targets,
+        targets: mpft::batch::Targets,
     }
     let reader = Reader {
         lines: tokio::io::BufReader::new(tokio::io::stdin()).lines(),
@@ -1980,7 +1980,7 @@ async fn do_follow(
         header: None,
         line: 0,
         index: 0,
-        targets: mpt::batch::Targets::default(),
+        targets: mpft::batch::Targets::default(),
     };
     // One line in, zero or more jobs out (a pattern or a tree makes several).
     let report = {
@@ -2010,7 +2010,7 @@ async fn do_follow(
                 }
                 let format = *r
                     .format
-                    .get_or_insert_with(|| mpt::batch::jobs::detect(None, &text));
+                    .get_or_insert_with(|| mpft::batch::jobs::detect(None, &text));
                 let text = match (format, &r.header) {
                     (Format::Csv, None) => {
                         r.header = Some(text);
@@ -2022,14 +2022,14 @@ async fn do_follow(
                 let line = r.line;
                 let before = r.index;
                 let jobs = async {
-                    let specs = mpt::batch::jobs::parse_entry(&text, format)?;
+                    let specs = mpft::batch::jobs::parse_entry(&text, format)?;
                     let urls: Vec<&str> = specs
                         .iter()
                         .flat_map(|j| {
                             std::iter::once(j.src.as_str()).chain(j.dsts.iter().map(String::as_str))
                         })
                         .collect();
-                    mpt::config::resolve_more(&urls, signing).await?;
+                    mpft::config::resolve_more(&urls, signing).await?;
                     let jobs = specs
                         .iter()
                         .map(|s| locate_job(s, locate))
@@ -2063,7 +2063,7 @@ async fn do_follow(
         })
         .flatten();
         futures::pin_mut!(jobs);
-        mpt::batch::run_stream_with(
+        mpft::batch::run_stream_with(
             jobs,
             |job, copy| runner.run(job, copy),
             &opts,
@@ -2117,7 +2117,7 @@ fn show_progress(cli: &Cli, settings: &Settings) -> bool {
 
 /// Redraw the progress line four times a second until the task is dropped.
 fn spawn_progress(
-    progress: std::sync::Arc<mpt::transfer::Progress>,
+    progress: std::sync::Arc<mpft::transfer::Progress>,
 ) -> tokio::task::JoinHandle<()> {
     spawn_progress_line(move |secs| {
         let read = progress.read();
@@ -2136,7 +2136,7 @@ fn spawn_progress(
 
 /// The progress line of a batch: jobs done, jobs failed, bytes so far.
 fn spawn_batch_progress(
-    progress: std::sync::Arc<mpt::batch::BatchProgress>,
+    progress: std::sync::Arc<mpft::batch::BatchProgress>,
 ) -> tokio::task::JoinHandle<()> {
     spawn_progress_line(move |secs| {
         let bytes = progress.bytes();
@@ -2195,7 +2195,7 @@ fn human_size(bytes: u64) -> String {
 
 /// Print computed digests and the `--check` verdict; a mismatch is an error.
 fn print_checksums(
-    report: &mpt::FanoutReport,
+    report: &mpft::FanoutReport,
     opts: &CopyOptions,
     prefix: &str,
 ) -> Option<(u8, String)> {
@@ -2239,7 +2239,7 @@ fn print_checksums(
 
 /// What became of the source under `--delete-source`: a line either way,
 /// and a failure when it could not be deleted (the copy itself succeeded).
-fn print_removed(report: &mpt::FanoutReport, prefix: &str) -> Option<(u8, String)> {
+fn print_removed(report: &mpft::FanoutReport, prefix: &str) -> Option<(u8, String)> {
     match &report.source_removed {
         None => None,
         Some(Ok(())) => {
@@ -2258,17 +2258,17 @@ fn print_removed(report: &mpt::FanoutReport, prefix: &str) -> Option<(u8, String
 
 /// Parse sizes like `512`, `64K`, `256M`, `2G` (binary units).
 #[cfg(feature = "relay")]
-fn parse_credentials(s: &str) -> Result<mpt::relay::Credentials, String> {
-    s.parse().map_err(|e: mpt::Error| e.to_string())
+fn parse_credentials(s: &str) -> Result<mpft::relay::Credentials, String> {
+    s.parse().map_err(|e: mpft::Error| e.to_string())
 }
 
 #[cfg(feature = "relay")]
-fn parse_relay_credentials(s: &str) -> Result<mpt::relay::RelayCredentials, String> {
-    s.parse().map_err(|e: mpt::Error| e.to_string())
+fn parse_relay_credentials(s: &str) -> Result<mpft::relay::RelayCredentials, String> {
+    s.parse().map_err(|e: mpft::Error| e.to_string())
 }
 
 fn parse_size(s: &str) -> Result<u64, String> {
-    mpt::config::parse_size(s)
+    mpft::config::parse_size(s)
 }
 
 /// The signing key: the `--sign` value, with the key file from `[signing] key`
@@ -2276,14 +2276,14 @@ fn parse_size(s: &str) -> Result<u64, String> {
 fn sign_spec(raw: &str) -> anyhow::Result<SignSpec> {
     let mut raw = raw.to_string();
     if !raw.contains(':')
-        && let Some((fmt, key)) = mpt::config::global()
+        && let Some((fmt, key)) = mpft::config::global()
             .signing
             .key
             .as_deref()
             .and_then(|c| c.split_once(':'))
-        && mpt::SignFormat::parse(fmt).ok() == mpt::SignFormat::parse(&raw).ok()
+        && mpft::SignFormat::parse(fmt).ok() == mpft::SignFormat::parse(&raw).ok()
     {
-        raw = format!("{raw}:{}", mpt::config::expand_tilde(key));
+        raw = format!("{raw}:{}", mpft::config::expand_tilde(key));
     }
     Ok(SignSpec::parse(&raw)?)
 }
@@ -2299,11 +2299,11 @@ fn verify_spec(cli: &Cli) -> anyhow::Result<Option<VerifySpec>> {
     if !cli.check {
         return Ok(None);
     }
-    let v = &mpt::config::global().verify;
+    let v = &mpft::config::global().verify;
     Ok(
         match (
-            mpt::config::path(&v.allowed_signers),
-            mpt::config::path(&v.keyring),
+            mpft::config::path(&v.allowed_signers),
+            mpft::config::path(&v.keyring),
         ) {
             (Some(p), _) => Some(VerifySpec::SshAllowedSigners(p)),
             (_, Some(p)) => Some(VerifySpec::PgpKeyring(p)),
@@ -2312,16 +2312,16 @@ fn verify_spec(cli: &Cli) -> anyhow::Result<Option<VerifySpec>> {
     )
 }
 
-/// The server's settings: the flags of `mpt serve`, then `[server]`, then
+/// The server's settings: the flags of `mpft serve`, then `[server]`, then
 /// the built-in values. The token is fetched here, once.
 #[cfg(feature = "server")]
 async fn server_config(
     args: &ServeArgs,
-    cfg: &mpt::Config,
-) -> anyhow::Result<mpt::server::ServerConfig> {
-    use mpt::credentials::{Secret, SecretRef, Source};
+    cfg: &mpft::Config,
+) -> anyhow::Result<mpft::server::ServerConfig> {
+    use mpft::credentials::{Secret, SecretRef, Source};
     let s = &cfg.server;
-    let mut out = mpt::server::ServerConfig::default();
+    let mut out = mpft::server::ServerConfig::default();
     if let Some(bind) = args.bind.as_deref().or(s.bind.as_deref()) {
         out.bind = bind
             .parse()
@@ -2337,22 +2337,22 @@ async fn server_config(
     out.journal = args
         .journal
         .clone()
-        .or_else(|| mpt::config::path(&s.journal));
+        .or_else(|| mpft::config::path(&s.journal));
     if let Some(v) = args.retention.as_deref().or(s.retention.as_deref()) {
         out.retention =
-            mpt::config::parse_duration(v).map_err(|e| usage(format!("retention: {e}")))?;
+            mpft::config::parse_duration(v).map_err(|e| usage(format!("retention: {e}")))?;
     }
     if let Some(n) = args.parallel.or(s.parallel) {
         out.parallel = n;
     }
     if let Some(v) = &s.max_body {
-        out.max_body = mpt::config::parse_size(v)
+        out.max_body = mpft::config::parse_size(v)
             .map_err(|e| usage(format!("[server] max_body: {e}")))? as usize;
     }
     match (args.grace, s.grace.as_deref()) {
         (Some(secs), _) => out.grace = Duration::from_secs(secs),
         (None, Some(v)) => {
-            out.grace = mpt::config::parse_duration(v)
+            out.grace = mpft::config::parse_duration(v)
                 .map_err(|e| usage(format!("[server] grace: {e}")))?;
         }
         (None, None) => {}
@@ -2366,7 +2366,7 @@ async fn server_config(
         out.max_queued = n;
     }
     out.urls = if args.allow_any_url {
-        mpt::config::UrlRule::Any
+        mpft::config::UrlRule::Any
     } else {
         s.urls.unwrap_or_default()
     };
@@ -2374,33 +2374,33 @@ async fn server_config(
     Ok(out)
 }
 
-/// What `mpt relay --listen` needs, from the flags and `[relay]`.
+/// What `mpft relay --listen` needs, from the flags and `[relay]`.
 #[cfg(feature = "relay")]
 fn relay_listener(
     addr: &str,
     args: &RelayArgs,
-    section: &mpt::config::RelaySection,
-) -> anyhow::Result<mpt::relay::sshd::Listener> {
+    section: &mpft::config::RelaySection,
+) -> anyhow::Result<mpft::relay::sshd::Listener> {
     let listen = addr
         .parse()
         .map_err(|e| usage(format!("listen address '{addr}' (expected host:port): {e}")))?;
     let host_key = args
         .host_key
         .clone()
-        .or_else(|| mpt::config::path(&section.host_key))
+        .or_else(|| mpft::config::path(&section.host_key))
         .unwrap_or_else(|| {
             dirs::state_dir()
                 .or_else(dirs::data_local_dir)
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join("mpt")
+                .join("mpft")
                 .join("relay_host_key")
         });
     let authorized_keys = args
         .authorized_keys
         .clone()
-        .or_else(|| mpt::config::path(&section.authorized_keys))
+        .or_else(|| mpft::config::path(&section.authorized_keys))
         .or_else(|| {
-            mpt::config::Config::default_path().map(|p| p.with_file_name("authorized_keys"))
+            mpft::config::Config::default_path().map(|p| p.with_file_name("authorized_keys"))
         })
         .ok_or_else(|| {
             usage("no home directory to look for authorized_keys in: give --authorized-keys")
@@ -2412,11 +2412,11 @@ fn relay_listener(
     let grace = match (args.grace, section.grace.as_deref()) {
         (Some(secs), _) => Duration::from_secs(secs),
         (None, Some(v)) => {
-            mpt::config::parse_duration(v).map_err(|e| usage(format!("[relay] grace: {e}")))?
+            mpft::config::parse_duration(v).map_err(|e| usage(format!("[relay] grace: {e}")))?
         }
         (None, None) => Duration::from_secs(30),
     };
-    Ok(mpt::relay::sshd::Listener {
+    Ok(mpft::relay::sshd::Listener {
         listen,
         host_key,
         authorized_keys,
@@ -2475,8 +2475,8 @@ impl Interrupts {
     }
 }
 
-/// `mpt profiles`: the named targets and what they resolve to.
-fn show_profiles(cfg: &mpt::Config) {
+/// `mpft profiles`: the named targets and what they resolve to.
+fn show_profiles(cfg: &mpft::Config) {
     if cfg.profiles.is_empty() {
         anstream::println!(
             "{DIM}no profiles; add [profiles.<name>] with url = \"…\" to the configuration{DIM:#}"
@@ -2485,11 +2485,11 @@ fn show_profiles(cfg: &mpt::Config) {
     }
     for (name, profile) in &cfg.profiles {
         // Resolving masks the password and shows the options as they will be used.
-        let resolved = match cfg.resolve(&format!("{}{name}", mpt::config::PROFILE_PREFIX)) {
+        let resolved = match cfg.resolve(&format!("{}{name}", mpft::config::PROFILE_PREFIX)) {
             Ok(Some(loc)) => loc.masked(),
             Ok(None) | Err(_) => profile.url.clone(),
         };
-        anstream::println!("{HEAD}mpt://{name}{HEAD:#}  {DIM}{resolved}{DIM:#}");
+        anstream::println!("{HEAD}mpft://{name}{HEAD:#}  {DIM}{resolved}{DIM:#}");
         for (what, v) in [
             ("sign", profile.sign.as_deref()),
             ("hash", profile.hash.as_deref()),
@@ -2505,15 +2505,15 @@ fn show_profiles(cfg: &mpt::Config) {
     }
 }
 
-/// `mpt config check`: where the configuration came from and what it sets.
+/// `mpft config check`: where the configuration came from and what it sets.
 /// Reaching this point already means it parsed and every key is known.
-fn show_config(cfg: &mpt::Config) {
+fn show_config(cfg: &mpft::Config) {
     if cfg.sources.is_empty() {
         anstream::println!(
             "{WARN}no configuration file{WARN:#} (looked for {})",
-            mpt::config::Config::default_path()
+            mpft::config::Config::default_path()
                 .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "~/.config/mpt/config.toml".into())
+                .unwrap_or_else(|| "~/.config/mpft/config.toml".into())
         );
     } else {
         for p in &cfg.sources {
@@ -2533,10 +2533,10 @@ fn show_config(cfg: &mpt::Config) {
         };
     }
     // A secret is not shown, only whether it is written out or fetched.
-    let secret = |s: &Option<mpt::credentials::Secret>| {
+    let secret = |s: &Option<mpft::credentials::Secret>| {
         s.as_ref().map(|s| match s {
-            mpt::credentials::Secret::Literal(_) => "*** (in the file)",
-            mpt::credentials::Secret::Reference(_) => "(reference)",
+            mpft::credentials::Secret::Literal(_) => "*** (in the file)",
+            mpft::credentials::Secret::Reference(_) => "(reference)",
         })
     };
     let (d, p) = (&cfg.defaults, &cfg.policy);
@@ -2575,7 +2575,7 @@ fn show_config(cfg: &mpt::Config) {
         "ssh".cert = cfg.ssh.cert,
         "ssh".passphrase = secret(&cfg.ssh.passphrase),
         "ssh".known_hosts_file = cfg.ssh.known_hosts_file,
-        "mail".smtp = cfg.mail.smtp.as_deref().map(mpt::location::mask_url),
+        "mail".smtp = cfg.mail.smtp.as_deref().map(mpft::location::mask_url),
         "mail".password = secret(&cfg.mail.password),
         "mail".auth = cfg.mail.auth,
         "mail".from = cfg.mail.from,
@@ -2619,7 +2619,7 @@ fn show_config(cfg: &mpt::Config) {
     if !cfg.http.hosts.is_empty() {
         rows.push(("[http] hosts".into(), cfg.http.hosts.join(", ")));
     }
-    // The profiles by name; `mpt profiles` shows what they hold.
+    // The profiles by name; `mpft profiles` shows what they hold.
     if !cfg.profiles.is_empty() {
         rows.push((
             "[profiles]".into(),
@@ -2640,14 +2640,14 @@ mod tests {
     use super::*;
 
     fn cli(args: &[&str]) -> Cli {
-        let mut all = vec!["mpt"];
+        let mut all = vec!["mpft"];
         all.extend_from_slice(args);
         all.extend_from_slice(&["cp", "a", "b"]);
         Cli::parse_from(all)
     }
 
-    fn config(text: &str) -> mpt::Config {
-        mpt::Config::parse(text).unwrap()
+    fn config(text: &str) -> mpft::Config {
+        mpft::Config::parse(text).unwrap()
     }
 
     #[test]
@@ -2662,7 +2662,7 @@ mod tests {
 
     #[test]
     fn built_in_defaults_without_a_configuration() {
-        let s = Settings::resolve(&cli(&[]), &mpt::Config::default()).unwrap();
+        let s = Settings::resolve(&cli(&[]), &mpft::Config::default()).unwrap();
         assert_eq!((s.timeout, s.queue, s.retries), (30, 16, 0));
         assert!(s.atomic && !s.cache);
         assert!(s.hash.is_none());
@@ -2708,7 +2708,7 @@ mod tests {
     #[test]
     fn cp_with_a_target_flag_makes_a_job_per_source() {
         let cli = Cli::parse_from([
-            "mpt",
+            "mpft",
             "cp",
             "-t",
             "sftp://h/in/",
@@ -2739,50 +2739,50 @@ mod tests {
             ]
         );
 
-        let cli = Cli::parse_from(["mpt", "cp", "a", "b", "c"]);
+        let cli = Cli::parse_from(["mpft", "cp", "a", "b", "c"]);
         let Work::Single { src, dsts, .. } = cli.cmd.work().unwrap() else {
             panic!("expected a single copy");
         };
         assert_eq!(src, "a");
         assert_eq!(dsts, vec!["b", "c"]);
 
-        let cli = Cli::parse_from(["mpt", "cp", "a"]);
+        let cli = Cli::parse_from(["mpft", "cp", "a"]);
         let err = cli.cmd.work().unwrap_err().to_string();
         assert!(err.contains("-t"), "{err}");
     }
 
     #[test]
     fn parallel_comes_from_the_flag_then_the_configuration() {
-        let cli = Cli::parse_from(["mpt", "batch", "jobs.txt"]);
+        let cli = Cli::parse_from(["mpft", "batch", "jobs.txt"]);
         let s = Settings::resolve(&cli, &config("")).unwrap();
         assert_eq!(s.parallel, 4);
         let s = Settings::resolve(&cli, &config("[defaults]\nparallel = 8")).unwrap();
         assert_eq!(s.parallel, 8);
-        let cli = Cli::parse_from(["mpt", "batch", "--parallel", "2", "jobs.txt"]);
+        let cli = Cli::parse_from(["mpft", "batch", "--parallel", "2", "jobs.txt"]);
         let s = Settings::resolve(&cli, &config("[defaults]\nparallel = 8")).unwrap();
         assert_eq!(s.parallel, 2);
-        let cli = Cli::parse_from(["mpt", "batch", "--parallel", "0", "jobs.txt"]);
+        let cli = Cli::parse_from(["mpft", "batch", "--parallel", "0", "jobs.txt"]);
         assert!(Settings::resolve(&cli, &config("")).is_err());
     }
 
     #[test]
     fn errors_map_to_exit_codes() {
-        let code = |e: mpt::Error| exit_code(&anyhow::Error::new(e));
-        assert_eq!(code(mpt::Error::Auth("no".into())), DENIED);
-        assert_eq!(code(mpt::Error::Signature("bad key".into())), UNTRUSTED);
+        let code = |e: mpft::Error| exit_code(&anyhow::Error::new(e));
+        assert_eq!(code(mpft::Error::Auth("no".into())), DENIED);
+        assert_eq!(code(mpft::Error::Signature("bad key".into())), UNTRUSTED);
         assert_eq!(
-            code(mpt::Error::ChecksumMismatch {
+            code(mpft::Error::ChecksumMismatch {
                 algo: "SHA-256",
                 expected: "a".into(),
                 actual: "b".into()
             }),
             UNTRUSTED
         );
-        assert_eq!(code(mpt::Error::InvalidUrl("x".into())), USAGE);
-        assert_eq!(code(mpt::Error::Config("x".into())), USAGE);
-        assert_eq!(code(mpt::Error::Remote("server said no".into())), FAILED);
+        assert_eq!(code(mpft::Error::InvalidUrl("x".into())), USAGE);
+        assert_eq!(code(mpft::Error::Config("x".into())), USAGE);
+        assert_eq!(code(mpft::Error::Remote("server said no".into())), FAILED);
         // The type is found through the context a caller wrapped it in.
-        let wrapped = anyhow::Error::new(mpt::Error::Auth("no".into())).context("copy a -> b");
+        let wrapped = anyhow::Error::new(mpft::Error::Auth("no".into())).context("copy a -> b");
         assert_eq!(exit_code(&wrapped), DENIED);
         // Ctrl-C beats whatever else went wrong.
         let interrupted = anyhow::Error::new(Interrupted).context("2 of 3 targets unfinished");
@@ -2795,19 +2795,19 @@ mod tests {
     /// consequence, not an interruption.
     #[test]
     fn a_batch_stopped_by_fail_fast_keeps_the_failures_code() {
-        let job = |index: usize, result: mpt::Result<mpt::FanoutReport>| mpt::JobReport {
+        let job = |index: usize, result: mpft::Result<mpft::FanoutReport>| mpft::JobReport {
             index,
-            job: mpt::Job {
-                src: mpt::Location::parse("a.txt").unwrap(),
-                dsts: vec![mpt::Location::parse("out/").unwrap()],
+            job: mpft::Job {
+                src: mpft::Location::parse("a.txt").unwrap(),
+                dsts: vec![mpft::Location::parse("out/").unwrap()],
             },
             result,
         };
-        let report = |stopped_early: bool| mpt::BatchReport {
+        let report = |stopped_early: bool| mpft::BatchReport {
             jobs: vec![
-                job(0, Err(mpt::Error::Auth("refused".into()))),
-                job(1, Err(mpt::Error::Cancelled)),
-                job(2, Err(mpt::Error::Cancelled)),
+                job(0, Err(mpft::Error::Auth("refused".into()))),
+                job(1, Err(mpft::Error::Cancelled)),
+                job(2, Err(mpft::Error::Cancelled)),
             ],
             elapsed: std::time::Duration::from_millis(3),
             stopped_early,
@@ -2826,12 +2826,12 @@ mod tests {
 
     #[test]
     fn the_json_report_says_what_happened() {
-        let report = mpt::FanoutReport {
+        let report = mpft::FanoutReport {
             source: "a.txt".into(),
             bytes_read: 8,
             elapsed: std::time::Duration::from_millis(1200),
             targets: vec![
-                mpt::TargetReport {
+                mpft::TargetReport {
                     target: "sftp://h/in/".into(),
                     bytes: 8,
                     elapsed: std::time::Duration::from_millis(30),
@@ -2841,12 +2841,12 @@ mod tests {
                     signature: None,
                     skipped: false,
                 },
-                mpt::TargetReport {
+                mpft::TargetReport {
                     target: "ftp://h/in/".into(),
                     bytes: 0,
                     elapsed: std::time::Duration::from_millis(5),
                     attempts: 3,
-                    result: Err(mpt::Error::Auth("wrong password".into())),
+                    result: Err(mpft::Error::Auth("wrong password".into())),
                     sidecar: None,
                     signature: None,
                     skipped: false,
@@ -2856,7 +2856,7 @@ mod tests {
             checked: None,
             source_removed: None,
         };
-        let j = mpt::report::fanout_json(&report);
+        let j = mpft::report::fanout_json(&report);
         assert_eq!(j["ok"], false, "one target failed");
         assert_eq!(j["bytes_read"], 8);
         assert_eq!(j["elapsed_ms"], 1200);

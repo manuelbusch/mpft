@@ -1,12 +1,12 @@
-"""`mpt-client`: submit jobs to `mpt serve` and watch them run.
+"""`mpft-client`: submit jobs to `mpft serve` and watch them run.
 
-    export MPT_API_URL=http://127.0.0.1:7788 MPT_API_TOKEN=…
-    mpt-client submit --follow mpt://inbox/report.pdf mpt://prod/ mpt://archive/
-    mpt-client batch --follow jobs.json
-    mpt-client watch <job id>        # progress of one job over WebSocket
-    mpt-client watch --all           # every event of every job, as lines
-    mpt-client list --state running
-    mpt-client cancel <job id>
+    export MPFT_API_URL=http://127.0.0.1:7788 MPFT_API_TOKEN=…
+    mpft-client submit --follow mpft://inbox/report.pdf mpft://prod/ mpft://archive/
+    mpft-client batch --follow jobs.json
+    mpft-client watch <job id>        # progress of one job over WebSocket
+    mpft-client watch --all           # every event of every job, as lines
+    mpft-client list --state running
+    mpft-client cancel <job id>
 
 Exit status: 0 when the job ended `done`, 1 when it `failed` or was
 `cancelled`, 2 for a bad command line, 3 when the server refused.
@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .api import LINE_TYPES, ApiError, MptApi
+from .api import LINE_TYPES, ApiError, MpftApi
 from .progress import JobView, Screen, render
 
 Json = dict[str, Any]
@@ -45,7 +45,7 @@ def options_of(args: argparse.Namespace) -> Json:
     return options
 
 
-async def follow(api: MptApi, job_id: str, out=sys.stdout) -> str:
+async def follow(api: MpftApi, job_id: str, out=sys.stdout) -> str:
     """Draw the job's transfers until it is over; returns its final state.
 
     `snapshot` comes first and names the transfers of a job that already
@@ -68,12 +68,12 @@ async def follow(api: MptApi, job_id: str, out=sys.stdout) -> str:
     return view.state
 
 
-async def cmd_health(api: MptApi, args: argparse.Namespace) -> int:
+async def cmd_health(api: MpftApi, args: argparse.Namespace) -> int:
     print(json.dumps(await api.health(), indent=2))
     return 0
 
 
-async def cmd_submit(api: MptApi, args: argparse.Namespace) -> int:
+async def cmd_submit(api: MpftApi, args: argparse.Namespace) -> int:
     dst = args.dst[0] if len(args.dst) == 1 else args.dst
     accepted = await api.submit(args.src, dst, options_of(args))
     print(f"accepted {accepted['id']} ({accepted['state']})", file=sys.stderr)
@@ -83,7 +83,7 @@ async def cmd_submit(api: MptApi, args: argparse.Namespace) -> int:
     return STATUS.get(await follow(api, accepted["id"]), 1)
 
 
-async def cmd_batch(api: MptApi, args: argparse.Namespace) -> int:
+async def cmd_batch(api: MpftApi, args: argparse.Namespace) -> int:
     path = Path(args.file)
     text = sys.stdin.read() if args.file == "-" else path.read_text()
     options = options_of(args)
@@ -102,7 +102,7 @@ async def cmd_batch(api: MptApi, args: argparse.Namespace) -> int:
     return STATUS.get(await follow(api, accepted["id"]), 1)
 
 
-async def cmd_watch(api: MptApi, args: argparse.Namespace) -> int:
+async def cmd_watch(api: MpftApi, args: argparse.Namespace) -> int:
     if args.job_id:
         return STATUS.get(await follow(api, args.job_id), 1)
     # Every job's events, one line each; this stream never ends on its own.
@@ -120,7 +120,7 @@ def describe(event: Json) -> str:
         return f"{job['id']} snapshot {job['state']}"
     if kind == "lagged":
         # Snapshots of the open jobs follow; the ones that ended meanwhile
-        # are in `mpt-client list`.
+        # are in `mpft-client list`.
         return f"fell behind, {event['missed']} events missed"
     job_id = event["id"]
     match kind:
@@ -150,7 +150,7 @@ def describe(event: Json) -> str:
             return f"{job_id} {kind}"
 
 
-async def cmd_list(api: MptApi, args: argparse.Namespace) -> int:
+async def cmd_list(api: MpftApi, args: argparse.Namespace) -> int:
     jobs = await api.list_jobs(args.state, args.limit)
     if args.json:
         print(json.dumps(jobs, indent=2))
@@ -165,7 +165,7 @@ async def cmd_list(api: MptApi, args: argparse.Namespace) -> int:
     return 0
 
 
-async def cmd_show(api: MptApi, args: argparse.Namespace) -> int:
+async def cmd_show(api: MpftApi, args: argparse.Namespace) -> int:
     if args.transfer is not None:
         print(json.dumps(await api.get_transfer(args.job_id, args.transfer), indent=2))
     else:
@@ -173,7 +173,7 @@ async def cmd_show(api: MptApi, args: argparse.Namespace) -> int:
     return 0
 
 
-async def cmd_cancel(api: MptApi, args: argparse.Namespace) -> int:
+async def cmd_cancel(api: MpftApi, args: argparse.Namespace) -> int:
     answer = await api.cancel(args.job_id)
     if answer.get("cancelling"):
         print(f"{answer['id']} is being cancelled (was {answer['state']})")
@@ -202,20 +202,20 @@ def job_flags(p: argparse.ArgumentParser) -> None:
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="mpt-client",
+        prog="mpft-client",
         description=__doc__.split("\n\n")[0],
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("\n\n", 1)[1],
     )
     p.add_argument(
         "--url",
-        default=os.environ.get("MPT_API_URL", "http://127.0.0.1:7788"),
-        help="the server (MPT_API_URL, default %(default)s)",
+        default=os.environ.get("MPFT_API_URL", "http://127.0.0.1:7788"),
+        help="the server (MPFT_API_URL, default %(default)s)",
     )
     p.add_argument(
         "--token",
-        default=os.environ.get("MPT_API_TOKEN"),
-        help="the bearer token (MPT_API_TOKEN)",
+        default=os.environ.get("MPFT_API_TOKEN"),
+        help="the bearer token (MPFT_API_TOKEN)",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -230,7 +230,7 @@ def parser() -> argparse.ArgumentParser:
     s = sub.add_parser(
         "batch",
         help="many transfers from a file: JSON ({jobs, options} or a list), "
-        ".ndjson, .csv, .tsv or .txt as mpt batch takes them, or - for JSON on stdin",
+        ".ndjson, .csv, .tsv or .txt as mpft batch takes them, or - for JSON on stdin",
     )
     s.add_argument("file")
     job_flags(s)
@@ -262,7 +262,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 async def run(args: argparse.Namespace) -> int:
-    async with MptApi(args.url, args.token) as api:
+    async with MpftApi(args.url, args.token) as api:
         return await args.run(api, args)
 
 
@@ -273,14 +273,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return asyncio.run(run(args))
     except ApiError as e:
-        print(f"mpt-client: {e}", file=sys.stderr)
+        print(f"mpft-client: {e}", file=sys.stderr)
         if e.retry_after:
-            print(f"mpt-client: try again in {e.retry_after:.0f} s", file=sys.stderr)
+            print(f"mpft-client: try again in {e.retry_after:.0f} s", file=sys.stderr)
         return 3
     except KeyboardInterrupt:
         return 130
     except OSError as e:
-        print(f"mpt-client: {args.url}: {e}", file=sys.stderr)
+        print(f"mpft-client: {args.url}: {e}", file=sys.stderr)
         return 3
 
 

@@ -358,9 +358,9 @@ async fn prepare(
 /// The URLs a job was submitted with, each next to what it resolved to.
 type Refs = Vec<(String, Location)>;
 
-/// How a resolved location is shown to clients: as the `mpt://` reference
+/// How a resolved location is shown to clients: as the `mpft://` reference
 /// it came from, with the file a pattern or a tree put in place of the
-/// pattern (`mpt://in/*.csv` → `mpt://in/a.csv`), or — for a URL given in
+/// pattern (`mpft://in/*.csv` → `mpft://in/a.csv`), or — for a URL given in
 /// full — as the location with its password masked.
 fn shown(loc: &Location, refs: &[(String, Location)]) -> String {
     let same_endpoint = |base: &Location| {
@@ -368,15 +368,15 @@ fn shown(loc: &Location, refs: &[(String, Location)]) -> String {
             && base.host() == loc.host()
             && base.port_or_default() == loc.port_or_default()
     };
-    let mpt_refs = refs.iter().filter(|(url, _)| is_profile_ref(url));
+    let mpft_refs = refs.iter().filter(|(url, _)| is_profile_ref(url));
     // The reference itself, unexpanded.
-    for (url, base) in mpt_refs.clone() {
+    for (url, base) in mpft_refs.clone() {
         if same_endpoint(base) && base.path() == loc.path() {
             return url.clone();
         }
     }
     // A file under the directory the reference names.
-    for (url, base) in mpt_refs {
+    for (url, base) in mpft_refs {
         if !same_endpoint(base) || base.scheme().is_mail() {
             continue;
         }
@@ -397,7 +397,7 @@ fn shown(loc: &Location, refs: &[(String, Location)]) -> String {
 /// nothing, of a target that refused, of two jobs on one file. A file a
 /// pattern or a tree put in place of a reference is rewritten by its
 /// directory, as [`shown`] shows it (`sftp://h/data/in/a.csv` →
-/// `mpt://in/a.csv`), and so is the bare path an error of the far side
+/// `mpft://in/a.csv`), and so is the bare path an error of the far side
 /// may name (`/data/in/a.csv`). Longest first, so a file under a
 /// directory reference is rewritten as a whole and not just its
 /// directory part.
@@ -435,8 +435,8 @@ pub(super) fn redact(mut error: ApiError, refs: &[(String, Location)]) -> ApiErr
 }
 
 /// The directory a reference names on its endpoint, with the reference's
-/// own spelling of it: `(/data/in/, mpt://in/)` for `mpt://in/*.csv`
-/// resolved to `sftp://h/data/in/*.csv`, or for `mpt://in/` itself.
+/// own spelling of it: `(/data/in/, mpft://in/)` for `mpft://in/*.csv`
+/// resolved to `sftp://h/data/in/*.csv`, or for `mpft://in/` itself.
 fn reference_dir<'a>(url: &'a str, base: &'a Location) -> Option<(&'a str, &'a str)> {
     let head = url.split('?').next().unwrap_or(url);
     if base.is_dir_target() {
@@ -545,22 +545,22 @@ mod tests {
     fn transfers_are_shown_by_their_reference() {
         let loc = |s: &str| Location::parse(s).unwrap();
         let refs = vec![
-            ("mpt://in/*.csv".to_string(), loc("sftp://h/data/in/*.csv")),
-            ("mpt://out/".to_string(), loc("/srv/out/")),
+            ("mpft://in/*.csv".to_string(), loc("sftp://h/data/in/*.csv")),
+            ("mpft://out/".to_string(), loc("/srv/out/")),
             ("sftp://u:pw@h/raw/".to_string(), loc("sftp://u:pw@h/raw/")),
-            ("mpt://mail".to_string(), loc("mailto:a@example.com")),
+            ("mpft://mail".to_string(), loc("mailto:a@example.com")),
         ];
         assert_eq!(
             shown(&loc("sftp://h/data/in/a.csv"), &refs),
-            "mpt://in/a.csv"
+            "mpft://in/a.csv"
         );
         assert_eq!(
             shown(&loc("sftp://h/data/in/*.csv"), &refs),
-            "mpt://in/*.csv"
+            "mpft://in/*.csv"
         );
-        assert_eq!(shown(&loc("/srv/out/"), &refs), "mpt://out/");
-        assert_eq!(shown(&loc("/srv/out/sub/"), &refs), "mpt://out/sub/");
-        assert_eq!(shown(&loc("mailto:a@example.com"), &refs), "mpt://mail");
+        assert_eq!(shown(&loc("/srv/out/"), &refs), "mpft://out/");
+        assert_eq!(shown(&loc("/srv/out/sub/"), &refs), "mpft://out/sub/");
+        assert_eq!(shown(&loc("mailto:a@example.com"), &refs), "mpft://mail");
         // Another host, or a raw URL: the location, password masked.
         assert_eq!(
             shown(&loc("sftp://other/data/in/a.csv"), &refs),
@@ -582,9 +582,9 @@ mod tests {
             }),
             &refs,
         );
-        assert_eq!(report["source"], "mpt://in/a.csv");
-        assert_eq!(report["targets"][0]["target"], "mpt://out/");
-        assert_eq!(report["targets"][0]["sidecar"], "mpt://out/a.csv.sha256");
+        assert_eq!(report["source"], "mpft://in/a.csv");
+        assert_eq!(report["targets"][0]["target"], "mpft://out/");
+        assert_eq!(report["targets"][0]["sidecar"], "mpft://out/a.csv.sha256");
         assert_eq!(report["targets"][0]["signature"], serde_json::Value::Null);
         assert_eq!(report["targets"][1]["target"], "sftp://u:***@h/raw/");
 
@@ -597,7 +597,7 @@ mod tests {
         );
         assert_eq!(
             e.message,
-            "mpt://in/*.csv matches no file; mpt://out/x is taken"
+            "mpft://in/*.csv matches no file; mpft://out/x is taken"
         );
         // A file the pattern matched, by its URL or by its bare path.
         let e = redact(
@@ -610,7 +610,7 @@ mod tests {
         );
         assert_eq!(
             e.message,
-            "mpt://in/a.csv: permission denied (mpt://in/a.csv); mpt://out/sub/b.csv is not there"
+            "mpft://in/a.csv: permission denied (mpft://in/a.csv); mpft://out/sub/b.csv is not there"
         );
     }
 

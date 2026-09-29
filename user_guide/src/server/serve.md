@@ -1,11 +1,11 @@
-# Jobs over HTTP with `mpt serve`
+# Jobs over HTTP with `mpft serve`
 
-`mpt serve` takes transfer jobs over HTTP and runs them through the same
+`mpft serve` takes transfer jobs over HTTP and runs them through the same
 pipeline as `cp` and `batch`. A program submits a job and gets an id back; it
 then polls the job or follows it over a WebSocket, transfer by transfer, and
 reads the same report that `--json` prints. This is the way in for a web
 application, a workflow engine or a service written in another language that
-should not shell out to `mpt` for every file.
+should not shell out to `mpft` for every file.
 
 The server is a cargo feature that is **not** in the default build:
 
@@ -21,13 +21,13 @@ and what it lets a client do.
 ## Starting it
 
 The server needs a bearer token unless it listens on loopback only, and it
-needs profiles, because a job may only name `mpt://<profile>/` endpoints
+needs profiles, because a job may only name `mpft://<profile>/` endpoints
 unless told otherwise. Both go in the [configuration
 file](../configuration/file.md):
 
 ```toml
 [server]
-token = { env = "MPT_API_TOKEN" }     # any credential reference works here
+token = { env = "MPFT_API_TOKEN" }     # any credential reference works here
 
 [profiles.inbox]
 url = "/srv/inbox/"
@@ -41,14 +41,14 @@ url = "s3://archive-bucket/reports/"
 ```
 
 ```
-$ MPT_API_TOKEN=… mpt serve
+$ MPFT_API_TOKEN=… mpft serve
 ```
 
 That listens on `127.0.0.1:7788`. A first job, with `curl`:
 
 ```
-$ curl -H "Authorization: Bearer $MPT_API_TOKEN" \
-       -d '{"src": "mpt://inbox/report.pdf", "dst": ["mpt://prod/", "mpt://archive/"]}' \
+$ curl -H "Authorization: Bearer $MPFT_API_TOKEN" \
+       -d '{"src": "mpft://inbox/report.pdf", "dst": ["mpft://prod/", "mpft://archive/"]}' \
        localhost:7788/v1/jobs
 {"id":"7be835687082d16fa4bf1d11f6686297","state":"queued","transfers":1,"url":"/v1/jobs/7be835687082d16fa4bf1d11f6686297"}
 ```
@@ -69,17 +69,17 @@ keys](../reference/configuration.md#server) lists them with their defaults.
 
 ## Jobs and batches
 
-A **job** is one source with one or more targets, the same thing `mpt cp`
+A **job** is one source with one or more targets, the same thing `mpft cp`
 does, and goes to `POST /v1/jobs` (the [glossary](../appendix/glossary.md)
 keeps the server's *job* and *transfer* apart from the command line's). A **batch** is a list of them, the same
-thing `mpt batch` does, and goes to `POST /v1/batches` either as JSON or as a
+thing `mpft batch` does, and goes to `POST /v1/batches` either as JSON or as a
 [job list](../guide/job-lists.md#three-ways-to-write-a-list) in one of the
 three text forms:
 
 ```
-$ curl -H "Authorization: Bearer $MPT_API_TOKEN" -H 'Content-Type: text/plain' \
-       --data-binary 'mpt://inbox/report.pdf mpt://archive/
-mpt://inbox/data1.csv mpt://archive/' \
+$ curl -H "Authorization: Bearer $MPFT_API_TOKEN" -H 'Content-Type: text/plain' \
+       --data-binary 'mpft://inbox/report.pdf mpft://archive/
+mpft://inbox/data1.csv mpft://archive/' \
        'localhost:7788/v1/batches?parallel=2&fail_fast=true'
 {"id":"ccdddba96fe81f58fbc3ebfa385fc749","state":"queued","transfers":2,"url":"/v1/jobs/ccdddba96fe81f58fbc3ebfa385fc749"}
 ```
@@ -102,7 +102,7 @@ expanded and the targets are checked against what other jobs are writing; a
 job that fails there carries an `error` and no transfers.
 
 ```
-$ curl -s -H "Authorization: Bearer $MPT_API_TOKEN" localhost:7788/v1/jobs/7be835687082d16fa4bf1d11f6686297
+$ curl -s -H "Authorization: Bearer $MPFT_API_TOKEN" localhost:7788/v1/jobs/7be835687082d16fa4bf1d11f6686297
 {
   "id": "7be835687082d16fa4bf1d11f6686297",
   "kind": "single",
@@ -122,8 +122,8 @@ $ curl -s -H "Authorization: Bearer $MPT_API_TOKEN" localhost:7788/v1/jobs/7be83
     {
       "index": 0,
       "id": "7be835687082d16fa4bf1d11f6686297:0",
-      "src": "mpt://inbox/report.pdf",
-      "dst": ["mpt://prod/", "mpt://archive/"],
+      "src": "mpft://inbox/report.pdf",
+      "dst": ["mpft://prod/", "mpft://archive/"],
       "state": "done",
       "progress": {"read": 40000, "total": 40000},
       "report": { "ok": true, "bytes_read": 40000, "targets": [ … ] }
@@ -153,7 +153,7 @@ creation of a tree's directories.
 A job's `options` object carries the settings that `cp` and `batch` take as
 flags: `hash`, `check`, `skip_existing`, `atomic`, `resume`, `cache`,
 `retries`, `timeout`, and for a batch `parallel` and `fail_fast`. What the job
-does not set comes from the server's own settings: the global flags of `mpt
+does not set comes from the server's own settings: the global flags of `mpft
 serve` and `[defaults]` apply to every job it runs, so a server started with
 `--hash sha256 --timeout 120` writes checksums with that timeout unless a job
 says otherwise. `--sign` on the server signs every job's checksum file. The
@@ -189,13 +189,13 @@ Three things a job may not do without the operator's say-so:
 
 ## What a client can reach
 
-By default a job may only name `mpt://<profile>/…` endpoints. The
+By default a job may only name `mpft://<profile>/…` endpoints. The
 configuration therefore decides which hosts, credentials and options the API
 can use, and no password ever travels in a request. A local directory is a
 profile with a local `url`. Anything else is refused:
 
 ```
-{"error":{"kind":"invalid_url","message":"invalid URL: /etc/hosts: only mpt://<profile>/ endpoints are accepted (set [server] urls = \"any\" or --allow-any-url to allow others)"}}
+{"error":{"kind":"invalid_url","message":"invalid URL: /etc/hosts: only mpft://<profile>/ endpoints are accepted (set [server] urls = \"any\" or --allow-any-url to allow others)"}}
 ```
 
 A reference may not add `?options` either, because [options on a reference
@@ -221,7 +221,7 @@ Two further points of the design:
   the server's log. The client learns only which profile to ask about:
   `profile 'prod' is misconfigured; see the server log`.
 - Transfers, reports and errors name endpoints as they were submitted
-  (`mpt://inbox/report.pdf`, or `mpt://inbox/a.csv` for a file a pattern
+  (`mpft://inbox/report.pdf`, or `mpft://inbox/a.csv` for a file a pattern
   matched), not by what the profile resolves to. A URL given in full under
   `urls = "any"` appears with its password masked.
 
@@ -244,10 +244,10 @@ forwards an agent serving the server's own keys.
 
 A job that asks for what only this side can do, when a relay takes part in
 it, fails before it runs with `invalid_option`: `check`, `resume`, and
-signing (`--sign` on `mpt serve`):
+signing (`--sign` on `mpft serve`):
 
 ```
-{"kind":"invalid_option","message":"invalid option 'check': not available with a relay: it needs what only this side has (the checksum file, the source, the key), and a relay takes part in copying mpt://far/a.bin"}
+{"kind":"invalid_option","message":"invalid option 'check': not available with a relay: it needs what only this side has (the checksum file, the source, the key), and a relay takes part in copying mpft://far/a.bin"}
 ```
 
 `delete_source` over a relay needs the source and every target behind the
@@ -285,7 +285,7 @@ up:
 ```
 $ curl localhost:7788/v1/healthz
 {"ok":true}
-$ curl -H "Authorization: Bearer $MPT_API_TOKEN" localhost:7788/v1/healthz
+$ curl -H "Authorization: Bearer $MPFT_API_TOKEN" localhost:7788/v1/healthz
 {"accepting":true,"jobs":{"queued":0,"running":0},"ok":true,"version":"0.1.0"}
 ```
 
@@ -299,14 +299,14 @@ and closed there when it is over:
 
 ```toml
 [server]
-journal = "~/.local/state/mpt/jobs.jsonl"
+journal = "~/.local/state/mpft/jobs.jsonl"
 ```
 
 After a restart, the jobs the file still shows as open run again with
 `attempt` raised by one. That includes the jobs a shutdown cancelled after
 its grace period ran out, but not a job a client cancelled with `DELETE`, nor
 one that finished on its own while the shutdown was cancelling the rest. A file target is safe to run twice, since a
-transfer either finished or left only a `.mpt-part`; a mail target may
+transfer either finished or left only a `.mpft-part`; a mail target may
 deliver twice, and a `delete_source` job whose source is already gone fails
 the second time. Finished jobs do not survive a restart.
 
@@ -331,7 +331,7 @@ exits 0. A second Ctrl-C cancels them immediately. Those cancelled jobs are the
 ones a journal runs again. A third exits with 130 without waiting any longer.
 
 ```
-$ mpt serve
+$ mpft serve
 ^C
 interrupted, finishing the running jobs (Ctrl-C again cancels them)…
 ```
@@ -354,7 +354,7 @@ from it in `Type=simple`, no timer, and the stop signal noted above.
 
 `examples/python-client` in the repository is a small `uv` project that
 submits jobs, follows them over the WebSocket with a progress bar per
-transfer, and lists and cancels them. Its `demo.sh` builds `mpt` with the
+transfer, and lists and cancels them. Its `demo.sh` builds `mpft` with the
 server feature, starts it on temporary directories and runs the client
 through a single transfer, a batch with a pattern, a checked copy and a
 refused profile. It is an example to copy from rather than a package to

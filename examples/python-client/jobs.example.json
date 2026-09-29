@@ -1,7 +1,7 @@
 {
   "jobs": [
-    { "src": "mpt://inbox/*.bin", "dst": "mpt://outbox/" },
-    { "src": "mpt://inbox/file1.bin", "dst": ["mpt://archive/", "mpt://outbox/copy-of-file1.bin"] }
+    { "src": "mpft://inbox/*.bin", "dst": "mpft://outbox/" },
+    { "src": "mpft://inbox/file1.bin", "dst": ["mpft://archive/", "mpft://outbox/copy-of-file1.bin"] }
   ],
   "options": { "hash": "blake3" }
 }

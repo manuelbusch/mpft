@@ -396,7 +396,7 @@ async fn submit_job(
 }
 
 /// `POST /v1/batches`: a list of transfers, as JSON or as one of the job
-/// list formats of `mpt batch` (then the options come from the query).
+/// list formats of `mpft batch` (then the options come from the query).
 async fn submit_batch(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -847,7 +847,7 @@ mod tests {
         let req = HttpRequest::builder()
             .method(Method::GET)
             .uri("/v1/jobs")
-            .header("host", "mpt.example.com")
+            .header("host", "mpft.example.com")
             .header("authorization", "Bearer s3cret")
             .body(Body::empty())
             .unwrap();
@@ -863,7 +863,7 @@ mod tests {
             "/v1/jobs",
             Some("s3cret"),
             None,
-            r#"{"src": "mpt://src/a?known_hosts=off", "dst": "mpt://dst/"}"#,
+            r#"{"src": "mpft://src/a?known_hosts=off", "dst": "mpft://dst/"}"#,
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -1155,7 +1155,7 @@ mod tests {
 
     #[tokio::test]
     async fn only_profiles_by_default() {
-        // No profiles are installed in this process, so every mpt:// URL
+        // No profiles are installed in this process, so every mpft:// URL
         // is unknown; a raw URL is refused with the hint.
         let app = app(with_token(UrlRule::Profiles));
         let (status, body) = call(
@@ -1182,7 +1182,7 @@ mod tests {
             "/v1/jobs",
             Some("s3cret"),
             None,
-            r#"{"src": "mpt://nowhere/a", "dst": "mpt://nowhere/out/"}"#,
+            r#"{"src": "mpft://nowhere/a", "dst": "mpft://nowhere/out/"}"#,
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -1204,7 +1204,7 @@ mod tests {
             "/v1/jobs",
             Some("s3cret"),
             None,
-            r#"{"src": "mpt://other/a", "dst": "mpt://prod/"}"#,
+            r#"{"src": "mpft://other/a", "dst": "mpft://prod/"}"#,
         )
         .await;
         assert!(

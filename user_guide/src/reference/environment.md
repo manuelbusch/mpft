@@ -1,6 +1,6 @@
 # Environment variables
 
-Every variable `mpt` reads. A URL option always wins over a variable, and a
+Every variable `mpft` reads. A URL option always wins over a variable, and a
 variable wins over the configuration file, with the exceptions under
 [Variables and the configuration file](#variables-and-the-configuration-file).
 
@@ -8,9 +8,9 @@ variable wins over the configuration file, with the exceptions under
 
 | Variable | Meaning |
 |---|---|
-| `MPT_PASSWORD` | password for `sftp`, `scp`, `ftp`, `ftps`, `http(s)`, `webdav(s)` when neither the URL nor its profile has one; never for `s3`, `ssh` or mail |
-| `MPT_SMTP_PASSWORD` | password for `mailto:`, `smtp://` and `smtps://`; before `[mail] password` |
-| `MPT_REFUSE_PLAINTEXT_AUTH` | `1` makes unencrypted credentials an error instead of a warning; it can only switch the refusal on |
+| `MPFT_PASSWORD` | password for `sftp`, `scp`, `ftp`, `ftps`, `http(s)`, `webdav(s)` when neither the URL nor its profile has one; never for `s3`, `ssh` or mail |
+| `MPFT_SMTP_PASSWORD` | password for `mailto:`, `smtp://` and `smtps://`; before `[mail] password` |
+| `MPFT_REFUSE_PLAINTEXT_AUTH` | `1` makes unencrypted credentials an error instead of a warning; it can only switch the refusal on |
 
 A password already in the URL is never replaced. A relay
 applies none of these to the URLs its clients name, only to its own
@@ -20,12 +20,12 @@ profiles; see [Trust](../server/relay-host.md#trust).
 
 | Variable | Meaning |
 |---|---|
-| `MPT_SSH_USER` | login name when the URL has none; then `[ssh] user`, then `$USER` |
-| `MPT_SSH_KEY` | private key file. Naming a key means the agent and the default keys are not tried |
-| `MPT_SSH_KEY_PASSPHRASE` | passphrase for it |
-| `MPT_SSH_CERT` | OpenSSH certificate for that key; `<key>-cert.pub` is found without it |
-| `MPT_SSH_KNOWN_HOSTS` | host-key policy: `strict` (the default), `accept-new`, `off`; no less than `[policy] known_hosts` |
-| `MPT_SSH_HOSTKEY` | pinned fingerprints, comma-separated |
+| `MPFT_SSH_USER` | login name when the URL has none; then `[ssh] user`, then `$USER` |
+| `MPFT_SSH_KEY` | private key file. Naming a key means the agent and the default keys are not tried |
+| `MPFT_SSH_KEY_PASSPHRASE` | passphrase for it |
+| `MPFT_SSH_CERT` | OpenSSH certificate for that key; `<key>-cert.pub` is found without it |
+| `MPFT_SSH_KNOWN_HOSTS` | host-key policy: `strict` (the default), `accept-new`, `off`; no less than `[policy] known_hosts` |
+| `MPFT_SSH_HOSTKEY` | pinned fingerprints, comma-separated |
 | `SSH_AUTH_SOCK` | ssh-agent socket; on Windows a named-pipe path |
 | `USER` | the fallback login name |
 
@@ -33,16 +33,16 @@ profiles; see [Trust](../server/relay-host.md#trust).
 
 | Variable | Meaning |
 |---|---|
-| `MPT_SIGN_KEY_PASSPHRASE` | passphrase of the signing key |
-| `MPT_SIGN_KEY_FINGERPRINT` | which ssh-agent identity to sign with (`SHA256:…`) |
+| `MPFT_SIGN_KEY_PASSPHRASE` | passphrase of the signing key |
+| `MPFT_SIGN_KEY_FINGERPRINT` | which ssh-agent identity to sign with (`SHA256:…`) |
 
 ## Mail
 
 | Variable | Meaning |
 |---|---|
-| `MPT_SMTP_URL` | the SMTP server `mailto:` targets use, e.g. `smtp://user@mail.example.com:587?tls=starttls` |
-| `MPT_MAIL_FROM` | sender address; after `?from=` and before `[mail] from` |
-| `MPT_MAIL_MAX_ATTACHMENT` | attachment limit **in bytes** (the configuration key takes a unit) |
+| `MPFT_SMTP_URL` | the SMTP server `mailto:` targets use, e.g. `smtp://user@mail.example.com:587?tls=starttls` |
+| `MPFT_MAIL_FROM` | sender address; after `?from=` and before `[mail] from` |
+| `MPFT_MAIL_MAX_ATTACHMENT` | attachment limit **in bytes** (the configuration key takes a unit) |
 
 ## S3
 
@@ -55,7 +55,7 @@ AWS tools works here.
 | `AWS_SESSION_TOKEN` | session token for temporary credentials |
 | `AWS_REGION`, `AWS_DEFAULT_REGION` | region |
 | `AWS_ENDPOINT_URL` | the server, when it is not AWS |
-| `AWS_PROFILE` | AWS profile from `~/.aws/config` (not an `mpt://` profile); also switches the credential chain on (feature `s3-aws-auth`) |
+| `AWS_PROFILE` | AWS profile from `~/.aws/config` (not an `mpft://` profile); also switches the credential chain on (feature `s3-aws-auth`) |
 
 `user:pass@` in the URL and `[s3] access_key_id` override the key pair.
 
@@ -72,21 +72,21 @@ Read by `{ vault = "…" }` references (feature `vault`).
 
 | Variable | Meaning |
 |---|---|
-| `MPT_CONFIG` | configuration file; an error if it does not exist |
-| `XDG_CONFIG_HOME` | where `mpt/config.toml` is looked for, if `--config` and `MPT_CONFIG` are unset |
+| `MPFT_CONFIG` | configuration file; an error if it does not exist |
+| `XDG_CONFIG_HOME` | where `mpft/config.toml` is looked for, if `--config` and `MPFT_CONFIG` are unset |
 | `RUST_LOG` | log filter. **Overrides `-v` and `[defaults] log`** |
 | `NO_COLOR` | any value switches colour off under `--color auto`; `--color always` still wins |
 
 ## Variables and the configuration file
 
 The rule is URL option, then variable, then configuration file: `?key=` beats
-`MPT_SSH_KEY`, which beats `[ssh] key`. These are the exceptions:
+`MPFT_SSH_KEY`, which beats `[ssh] key`. These are the exceptions:
 
 | Variable | Against the configuration |
 |---|---|
-| `MPT_PASSWORD` | a profile's `password` wins over it: the profile names this endpoint, the variable every endpoint. `--password`, `--password-file` and `--password-stdin` win over both |
-| `MPT_REFUSE_PLAINTEXT_AUTH` | the stricter side wins: `1` holds even where `[policy] refuse_plaintext_auth = false`, and unset or `0` does not undo `refuse_plaintext_auth = true` |
-| `MPT_SSH_KNOWN_HOSTS` | chooses the host-key policy, but no weaker one than `[policy] known_hosts`; a weaker one is refused (see [Policies](../configuration/policies.md#the-host-key-policy-for-the-machine)) |
+| `MPFT_PASSWORD` | a profile's `password` wins over it: the profile names this endpoint, the variable every endpoint. `--password`, `--password-file` and `--password-stdin` win over both |
+| `MPFT_REFUSE_PLAINTEXT_AUTH` | the stricter side wins: `1` holds even where `[policy] refuse_plaintext_auth = false`, and unset or `0` does not undo `refuse_plaintext_auth = true` |
+| `MPFT_SSH_KNOWN_HOSTS` | chooses the host-key policy, but no weaker one than `[policy] known_hosts`; a weaker one is refused (see [Policies](../configuration/policies.md#the-host-key-policy-for-the-machine)) |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | `[s3] access_key_id` and `secret_access_key` win over them |
 
 No variable loosens a [`[policy]`](../configuration/policies.md) rule; the two
@@ -97,8 +97,8 @@ above can only make one stricter for a run.
 Three settings people look for here and will not find:
 
 - **The known-hosts file** is `[ssh] known_hosts_file`, not an environment
-  variable. `MPT_SSH_KNOWN_HOSTS` sets the *policy*, not the path.
+  variable. `MPFT_SSH_KNOWN_HOSTS` sets the *policy*, not the path.
 - **The parallelism** is `--parallel` or `[defaults] parallel`.
-- **The API token** of [`mpt serve`](../server/serve.md) has no fixed
-  variable name. `[server] token = { env = "MPT_API_TOKEN" }` or
-  `--token-env MPT_API_TOKEN` names the variable to read.
+- **The API token** of [`mpft serve`](../server/serve.md) has no fixed
+  variable name. `[server] token = { env = "MPFT_API_TOKEN" }` or
+  `--token-env MPFT_API_TOKEN` names the variable to read.

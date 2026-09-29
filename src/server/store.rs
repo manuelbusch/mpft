@@ -44,7 +44,7 @@ struct JobEntry {
 }
 
 /// A transfer ready to run, with its endpoints as clients see them: the
-/// `mpt://` reference that was submitted where there was one, else the
+/// `mpft://` reference that was submitted where there was one, else the
 /// location with its password masked.
 #[derive(Debug, Clone)]
 pub struct Prepared {

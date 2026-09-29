@@ -17,11 +17,11 @@ machine cannot even see:
 ```toml
 [profiles.incoming]
 url = "in/report.pdf"              # relative to the relay's working directory
-via = "mpt://relay"
+via = "mpft://relay"
 ```
 
 ```
-$ mpt cp mpt://incoming mpt://prod/
+$ mpft cp mpft://incoming mpft://prod/
 [1/1] in/report.pdf -> sftp://deploy@srv.example.com/data/: 40000 bytes in 17.22ms
 1/1 jobs ok in 17.30ms
 ```
@@ -32,24 +32,24 @@ profile's own `via` makes a source travel this way; `[defaults] via` and
 
 A path on the relay host, as above, is one the relay hands out only when it
 runs with `--allow-local` ([Trust](relay-host.md#trust)). Otherwise name a
-profile of the relay's own — `url = "mpt://incoming"` here, with
+profile of the relay's own — `url = "mpft://incoming"` here, with
 `[profiles.incoming] url = "in/report.pdf"` in the relay's configuration —
 or a source on a third host, as in the examples below.
 
 ### Listing a directory behind the relay
 
-`mpt ls` asks the relay as well when the directory's profile names one: the
+`mpft ls` asks the relay as well when the directory's profile names one: the
 relay lists it and this side prints the entries as a local `ls` would, with
-`--json` too. `mpt ls --no-via` lists from here instead.
+`--json` too. `mpft ls --no-via` lists from here instead.
 
 ```toml
 [profiles.inbox]
 url = "in/"
-via = "mpt://relay"
+via = "mpft://relay"
 ```
 
 ```
-$ mpt ls mpt://inbox/
+$ mpft ls mpft://inbox/
 -        40000  report.pdf
 d            -  archive
 ```
@@ -70,7 +70,7 @@ directories a tree needs on a target behind a relay — its profile's, or
 creates nothing.
 
 ```
-$ mpt cp -r mpt://inbox/ mpt://archive/2026/
+$ mpft cp -r mpft://inbox/ mpft://archive/2026/
 ```
 
 Each listed directory, and each directory created, is one more SSH session
@@ -88,11 +88,11 @@ reads, not which of its own it removes. The source is on a third host then:
 ```toml
 [profiles.inbox]
 url = "sftp://collect@ingest.example.com/outgoing/report.pdf"
-via = "mpt://relay"
+via = "mpft://relay"
 ```
 
 ```
-$ mpt cp --delete-source mpt://inbox mpt://prod/
+$ mpft cp --delete-source mpft://inbox mpft://prod/
 [1/1] sftp://collect@ingest.example.com/outgoing/report.pdf -> sftp://deploy@srv.example.com/data/: 40000 bytes in 14.25ms
 [1/1] source deleted
 ```
@@ -127,19 +127,19 @@ url = "ssh://relay@dc2.example.com:2222"
 
 [profiles.incoming]                          # read by r1
 url = "in/report.pdf"
-via = "mpt://r1"
+via = "mpft://r1"
 
 [profiles.prod]                              # written by r1
 url = "sftp://deploy@srv.example.com/data/"
-via = "mpt://r1"
+via = "mpft://r1"
 
 [profiles.dc2]                               # written by r2, fed by r1
 url = "ftp://upload@dc2-store.example/in/"
-via = "mpt://r2"
+via = "mpft://r2"
 ```
 
 ```
-$ mpt cp --hash sha256 mpt://incoming mpt://prod/ mpt://dc2/
+$ mpft cp --hash sha256 mpft://incoming mpft://prod/ mpft://dc2/
 [1/1] ok             40000 bytes     5.00ms  sftp://deploy@srv.example.com/data/
 [1/1]         + sftp://deploy@srv.example.com/data/report.pdf.sha256
 [1/1] ok             40000 bytes    22.00ms  ftp://upload@dc2-store.example/in/

@@ -2,13 +2,13 @@
 
 ## On the relay host
 
-`mpt relay --listen` is an SSH server of its own. It needs a host key, which
+`mpft relay --listen` is an SSH server of its own. It needs a host key, which
 it generates on the first start, and an `authorized_keys` file that says who
 may relay:
 
 ```
-$ mpt relay --listen                          # 0.0.0.0:2222
-$ cat laptop.pub >> ~/.config/mpt/authorized_keys
+$ mpft relay --listen                          # 0.0.0.0:2222
+$ cat laptop.pub >> ~/.config/mpft/authorized_keys
 ```
 
 The host key's fingerprint is in the log at start-up, so a client can
@@ -16,15 +16,15 @@ The host key's fingerprint is in the log at start-up, so a client can
 `known_hosts` with `ssh-keyscan -p 2222`:
 
 ```
-INFO mpt::relay::sshd: host key generated path=/home/relay/.local/state/mpt/relay_host_key
-INFO mpt::relay::sshd: authorized_keys read keys=1 path=/home/relay/.config/mpt/authorized_keys
-INFO mpt::relay::sshd: relay host key fingerprint=SHA256:5X2qOkD53WE80U+4jq5ZaV1SGead0/ZBv3P+YX26m1o …
-INFO mpt::relay::sshd: relay listening bound=0.0.0.0:2222 parallel=4
+INFO mpft::relay::sshd: host key generated path=/home/relay/.local/state/mpft/relay_host_key
+INFO mpft::relay::sshd: authorized_keys read keys=1 path=/home/relay/.config/mpft/authorized_keys
+INFO mpft::relay::sshd: relay host key fingerprint=SHA256:5X2qOkD53WE80U+4jq5ZaV1SGead0/ZBv3P+YX26m1o …
+INFO mpft::relay::sshd: relay listening bound=0.0.0.0:2222 parallel=4
 ```
 
-The server answers `exec "mpt relay"` (the program may be given by its path,
-`/usr/local/bin/mpt relay`, but no argument is taken) and the subsystem
-`mpt`, and nothing else: no shell, no pty, no port forwarding, no sftp. The one channel it opens
+The server answers `exec "mpft relay"` (the program may be given by its path,
+`/usr/local/bin/mpft relay`, but no argument is taken) and the subsystem
+`mpft`, and nothing else: no shell, no pty, no port forwarding, no sftp. The one channel it opens
 back to the client is the agent channel, and only when the client forwards an
 agent and `--no-agent-forwarding` is not set. A connection may have four
 relays running or waiting for a slot at once; a fifth session is refused
@@ -56,7 +56,7 @@ relay server's.
 |---|---|---|---|
 | `--listen [ADDR]` | – | `0.0.0.0:2222` | listen here instead of reading one upload from stdin |
 | `--host-key <PATH>` | `host_key` | [by system](#where-the-host-key-is-kept) | the host key; generated when missing |
-| `--authorized-keys <PATH>` | `authorized_keys` | `~/.config/mpt/authorized_keys` | who may relay |
+| `--authorized-keys <PATH>` | `authorized_keys` | `~/.config/mpft/authorized_keys` | who may relay |
 | `--parallel <N>` | `parallel` | `4` | relays running concurrently; further sessions wait |
 | `--max-size <SIZE>` | `max_size` | `0` (no limit) | refuse larger uploads, and larger sources the relay reads; a source that does not state its size fails once it passes the limit |
 | `--max-entries <N>` | `max_entries` | `100000` | refuse to list a directory with more entries; `0` for no limit |
@@ -64,7 +64,7 @@ relay server's.
 | `--credentials <MODE>` | `credentials` | `header` | how clients may send the targets' passwords: `header`, `on-demand` or `any` |
 | `--no-agent-forwarding` | `agent_forwarding` | `true` | take the ssh-agent a client forwards; the flag refuses it |
 | `--allow-delete` | `allow_delete` | `false` | let a client have the source deleted that the relay read for it; see [Deleting a source the relay read](relay-topologies.md#deleting-a-source-the-relay-read) |
-| `--own-keys` | `own_keys` | `false` | log in to the SSH hosts a client names with the relay's own identity too: its ssh-agent, `~/.ssh/id_*`, `[ssh] key`, `MPT_SSH_KEY`; see [Trust](#trust) |
+| `--own-keys` | `own_keys` | `false` | log in to the SSH hosts a client names with the relay's own identity too: its ssh-agent, `~/.ssh/id_*`, `[ssh] key`, `MPFT_SSH_KEY`; see [Trust](#trust) |
 | `--allow-local` | `local_files` | `false` | let a client name files on the relay host: a local path as a source, a target or a directory to list or make; see [Trust](#trust) |
 | `--port-file <PATH>` | – | – | write the port actually bound, for `--listen 127.0.0.1:0` |
 
@@ -90,21 +90,21 @@ directory, or where a system has none, in its local data directory:
 
 | System | Default path |
 |---|---|
-| Linux and other Unix systems | `$XDG_STATE_HOME/mpt/relay_host_key`, by default `~/.local/state/mpt/relay_host_key` |
-| macOS | `~/Library/Application Support/mpt/relay_host_key` |
-| Windows | `%LOCALAPPDATA%\mpt\relay_host_key` |
+| Linux and other Unix systems | `$XDG_STATE_HOME/mpft/relay_host_key`, by default `~/.local/state/mpft/relay_host_key` |
+| macOS | `~/Library/Application Support/mpft/relay_host_key` |
+| Windows | `%LOCALAPPDATA%\mpft\relay_host_key` |
 
 The log names the path at start-up either way.
 
 ### Through an existing sshd
 
 Without a server of its own, a relay is an account on an ordinary `sshd`
-with `mpt` in its `PATH`: the client runs `mpt relay` there, and the protocol
+with `mpft` in its `PATH`: the client runs `mpft relay` there, and the protocol
 on the channel is the same. Keep the key from doing anything else, but let
 the agent through:
 
 ```
-command="mpt relay",restrict,agent-forwarding ssh-ed25519 AAAAC3Nz… laptop
+command="mpft relay",restrict,agent-forwarding ssh-ed25519 AAAAC3Nz… laptop
 ```
 
 in that account's `~/.ssh/authorized_keys` (`sshd` also needs
@@ -130,7 +130,7 @@ refused, since a client that can read and write the account's files can
 rewrite its configuration and, with a credential command in it, run what it
 likes as that account. What the relay wants to give of its disk it gives
 through a [profile](../configuration/profiles.md) of its own, which the
-client names as `mpt://<name>/`; `--allow-local` (or `[relay] local_files =
+client names as `mpft://<name>/`; `--allow-local` (or `[relay] local_files =
 true`) lets clients name any path, for a relay whose clients are trusted as
 far as its account is:
 
@@ -139,10 +139,10 @@ invalid option 'url': /srv/in/: a file on the relay host; this relay serves none
 ```
 
 The relay's own password settings — `--password`, `--password-file`,
-`--password-stdin`, `MPT_PASSWORD` and `MPT_SMTP_PASSWORD` — are not applied
+`--password-stdin`, `MPFT_PASSWORD` and `MPFT_SMTP_PASSWORD` — are not applied
 to a URL a client names, since they would go to whichever host that is. They
 apply to the relay's own [profiles](../configuration/profiles.md), an
-`mpt://<name>/` URL in a header, as they do for `cp`, and so do each
+`mpft://<name>/` URL in a header, as they do for `cp`, and so do each
 profile's password and credential references. What is tied to a host stays
 with it: `[http] token` goes only to its hosts and `[mail] password` only to
 its server. A client names such a profile as it is, never with `?options` of
@@ -156,7 +156,7 @@ header is refused.
 The relay's own SSH identity is held back the same way. An SSH host a client
 names is logged into with the agent the client forwarded and the password
 the client sent, not with the relay's ssh-agent, its `~/.ssh/id_*`, its
-`[ssh] key` or `MPT_SSH_KEY`: those would make the relay's key answer for
+`[ssh] key` or `MPFT_SSH_KEY`: those would make the relay's key answer for
 whichever host a client picks. `--own-keys` (or `[relay] own_keys = true`)
 lets them serve such hosts too, for a relay whose clients are meant to reach
 hosts through its key. A profile of the relay's own uses them either way. A
@@ -184,13 +184,13 @@ header line and then the file in frames, control messages in between; the
 relay writes JSON lines back and exits the way `cp` would. [Relay
 protocol](../reference/relay-protocol.md) has the shapes.
 
-`mpt relay` without `--listen` speaks it on standard input and output, which
+`mpft relay` without `--listen` speaks it on standard input and output, which
 is how it runs under an ordinary `sshd` and how it can be tried without one.
 Version 1 — the header, then exactly `size` raw bytes, no questions — is
 still accepted and is the easiest way to see it work:
 
 ```
-$ printf '{"v": 1, "name": "piped.txt", "size": 6, "dst": ["/srv/in/"]}\nhello\n' | mpt relay --allow-local
+$ printf '{"v": 1, "name": "piped.txt", "size": 6, "dst": ["/srv/in/"]}\nhello\n' | mpft relay --allow-local
 {"progress":{"read":6,"total":6}}
 {"report":{"bytes_read":6,"ok":true,"source":"piped.txt","targets":[…]}}
 ```

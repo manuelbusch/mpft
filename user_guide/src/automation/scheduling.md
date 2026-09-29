@@ -1,8 +1,8 @@
 # Scheduled and triggered runs
 
-`mpt` has no scheduler, no retry queue and no state database. cron, systemd
+`mpft` has no scheduler, no retry queue and no state database. cron, systemd
 timers and CI runners already do that job, and they do it where the rest of
-your operational tooling can see it. What `mpt` offers is a run that is safe
+your operational tooling can see it. What `mpft` offers is a run that is safe
 to repeat and an outcome that is unambiguous enough for those systems to act
 on.
 
@@ -11,7 +11,7 @@ on.
 Two flags do most of the work:
 
 ```
-mpt cp -r --skip-existing --allow-empty \
+mpft cp -r --skip-existing --allow-empty \
     sftp://srv.example.com/outbox/ /data/incoming/
 ```
 
@@ -27,7 +27,7 @@ files are large enough that a half-finished one should be kept, and
 when the source should be drained rather than mirrored:
 
 ```
-mpt cp -r --skip-existing --resume --delete-source \
+mpft cp -r --skip-existing --resume --delete-source \
     sftp://srv.example.com/outbox/ /data/incoming/
 ```
 
@@ -38,8 +38,8 @@ mpt cp -r --skip-existing --resume --delete-source \
 
 ```cron
 # m  h  dom mon dow  command
-  17 *  *   *   *    /usr/local/bin/mpt cp -r --skip-existing --allow-empty \
-                       sftp://srv.example.com/outbox/ /data/incoming/ 2>&1 | logger -t mpt
+  17 *  *   *   *    /usr/local/bin/mpft cp -r --skip-existing --allow-empty \
+                       sftp://srv.example.com/outbox/ /data/incoming/ 2>&1 | logger -t mpft
 ```
 
 Three things to get right:
@@ -54,7 +54,7 @@ cron gives a job almost no environment, so name the configuration explicitly
 rather than relying on `$HOME`:
 
 ```cron
-17 * * * * MPT_CONFIG=/etc/mpt/config.toml /usr/local/bin/mpt cp -r --skip-existing …
+17 * * * * MPFT_CONFIG=/etc/mpft/config.toml /usr/local/bin/mpft cp -r --skip-existing …
 ```
 
 ## systemd
@@ -73,10 +73,10 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=exporter
-Environment=MPT_CONFIG=/etc/mpt/config.toml
-LoadCredential=sftp-password:/etc/mpt/sftp.pw
-ExecStart=/usr/local/bin/mpt cp -r --skip-existing --allow-empty \
-    /data/export/ mpt://prod/incoming/
+Environment=MPFT_CONFIG=/etc/mpft/config.toml
+LoadCredential=sftp-password:/etc/mpft/sftp.pw
+ExecStart=/usr/local/bin/mpft cp -r --skip-existing --allow-empty \
+    /data/export/ mpft://prod/incoming/
 ```
 
 ```ini
@@ -104,7 +104,7 @@ readable only by that unit's user, and the configuration reads it from there:
 ```toml
 [profiles.prod]
 url      = "sftp://deploy@srv.example.com/data/"
-key      = "/etc/mpt/deploy_ed25519"
+key      = "/etc/mpft/deploy_ed25519"
 password = { file = "${CREDENTIALS_DIRECTORY}/sftp-password" }
 ```
 
@@ -113,10 +113,10 @@ carries the secret in an environment variable, so it does not turn up in
 `/proc` or in the journal.
 
 One consequence: a configuration that refers to `${CREDENTIALS_DIRECTORY}` can
-only be read inside that unit. Running `mpt config check` by hand fails with
+only be read inside that unit. Running `mpft config check` by hand fails with
 *refers to ${CREDENTIALS_DIRECTORY}, which is not set*, because an unset
 variable is an error rather than an empty string. Check such a file with
-`systemd-run --pipe --unit=mpt-check --property=LoadCredential=… mpt config check`,
+`systemd-run --pipe --unit=mpft-check --property=LoadCredential=… mpft config check`,
 or set the variable for the length of one command.
 
 ## Credentials for service accounts
@@ -128,7 +128,7 @@ arrangements that work:
   `LoadCredential`, by a Kubernetes secret mount, or by whatever manages the
   host.
 - **A command that fetches the secret** (`{ cmd = "vault kv get
-  -field=password secret/mpt/prod" }`), if the platform has one. Anything that
+  -field=password secret/mpft/prod" }`), if the platform has one. Anything that
   prints the secret on stdout works.
 - **The AWS credential chain** for `s3://`, with the `s3-aws-auth` feature.
   An instance role or a workload identity already provides it.
@@ -136,7 +136,7 @@ arrangements that work:
 Keep the configuration file readable only by the account, and set
 `[policy] strict_permissions = true` so a wrong `chmod` is an error rather than
 a warning nobody reads. Put the file somewhere the account cannot rewrite, and
-name it with `--config` or `MPT_CONFIG`, so the policies in it are a control
+name it with `--config` or `MPFT_CONFIG`, so the policies in it are a control
 rather than a suggestion. See
 [Credentials and secrets](../configuration/credentials.md) and
 [Policies](../configuration/policies.md).
@@ -150,7 +150,7 @@ per event becomes a queue:
 
 ```
 inotifywait -m -e close_write --format '%w%f sftp://srv.example.com/in/' /var/spool/out \
-  | mpt batch - --follow --skip-existing
+  | mpft batch - --follow --skip-existing
 ```
 
 `close_write` rather than `create` matters: it fires when the writer is done,
@@ -161,14 +161,14 @@ The same pattern takes jobs from elsewhere:
 
 ```
 # from a directory listing
-find /export -name '*.pdf' -newermt '-1 day' -printf '%p sftp://srv/in/\n' | mpt batch -
+find /export -name '*.pdf' -newermt '-1 day' -printf '%p sftp://srv/in/\n' | mpft batch -
 
 # from a database
 psql -At -c "select path, target from outbox where sent is null" \
-  | tr '|' ' ' | mpt batch -
+  | tr '|' ' ' | mpft batch -
 
 # from a spreadsheet export, with columns src and dst
-mpt batch todays-jobs.csv --parallel 4
+mpft batch todays-jobs.csv --parallel 4
 ```
 
 For a long-running `--follow` process, remember that it ends when its input
@@ -176,8 +176,8 @@ ends. Under systemd that is a `Type=simple` service with `Restart=always` and
 the watcher in the same pipeline, so both come back together.
 
 When the events come from another program rather than a pipe, that program
-can submit jobs to [`mpt serve`](../server/serve.md) over HTTP and follow
-their progress, instead of building a job list and spawning `mpt`.
+can submit jobs to [`mpft serve`](../server/serve.md) over HTTP and follow
+their progress, instead of building a job list and spawning `mpft`.
 
 ## Parallelism and load
 
@@ -195,10 +195,10 @@ Keep three things from each run: the exit code, the human-readable summary,
 and, when the job matters, the JSON report.
 
 ```
-mpt --json cp -r --skip-existing /data/export/ mpt://prod/incoming/ \
-    > /var/log/mpt/$(date +%F-%H%M).json 2>> /var/log/mpt/mpt.log
+mpft --json cp -r --skip-existing /data/export/ mpft://prod/incoming/ \
+    > /var/log/mpft/$(date +%F-%H%M).json 2>> /var/log/mpft/mpft.log
 ```
 
 The JSON records which files moved and what their checksums were, which is
 the question that gets asked when a partner says something did not arrive.
-[Using mpt in scripts](scripting.md) has the fields.
+[Using mpft in scripts](scripting.md) has the fields.

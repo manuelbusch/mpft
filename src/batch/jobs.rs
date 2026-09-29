@@ -1,7 +1,7 @@
 //! The textual forms of a job list: one job per line, JSON Lines, CSV.
 //!
 //! Nothing here does I/O; the caller hands in the text and gets back URLs
-//! (still strings, so `mpt://` profiles and passwords are resolved later,
+//! (still strings, so `mpft://` profiles and passwords are resolved later,
 //! with the rest of the command's endpoints).
 
 use serde::{Deserialize, Serialize};

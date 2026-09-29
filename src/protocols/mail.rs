@@ -1,7 +1,7 @@
 //! `mailto:` and `smtp://`: deliver the payload as an e-mail attachment.
 //!
 //! * `mailto:a@x.de,b@y.de?subject=…&cc=…` — recipients in the URL, SMTP
-//!   server from `MPT_SMTP_URL` (an `smtp://` URL) and `MPT_SMTP_PASSWORD`.
+//!   server from `MPFT_SMTP_URL` (an `smtp://` URL) and `MPFT_SMTP_PASSWORD`.
 //! * `smtp://user@mail.host:587/a@x.de?tls=starttls&subject=…` — everything
 //!   in one URL.
 //!
@@ -129,17 +129,17 @@ impl MailEndpoint {
         Ok(MailEndpoint { loc })
     }
 
-    /// Resolve the SMTP server: the URL itself for `smtp://`, `MPT_SMTP_URL` for `mailto:`.
+    /// Resolve the SMTP server: the URL itself for `smtp://`, `MPFT_SMTP_URL` for `mailto:`.
     fn smtp_config(&self) -> Result<SmtpConfig> {
         let mut server = match self.loc.scheme() {
             Scheme::Smtp | Scheme::Smtps => self.loc.clone(),
             _ => {
-                let url = std::env::var("MPT_SMTP_URL")
+                let url = std::env::var("MPFT_SMTP_URL")
                     .ok()
                     .or_else(|| crate::config::global().mail.smtp.clone())
                     .ok_or_else(|| {
                         Error::Config(
-                            "mailto: requires MPT_SMTP_URL or [mail] smtp in the configuration \
+                            "mailto: requires MPFT_SMTP_URL or [mail] smtp in the configuration \
                              (e.g. smtp://user@mail.example.com:587?tls=starttls)"
                                 .into(),
                         )
@@ -147,7 +147,7 @@ impl MailEndpoint {
                 let mut s = Location::parse(&url)?;
                 if !s.scheme().is_smtp() {
                     return Err(Error::InvalidUrl(format!(
-                        "MPT_SMTP_URL must be an smtp:// or smtps:// URL, got '{}'",
+                        "MPFT_SMTP_URL must be an smtp:// or smtps:// URL, got '{}'",
                         s.scheme()
                     )));
                 }
@@ -196,7 +196,7 @@ impl MailEndpoint {
     }
 
     fn max_attachment(&self) -> u64 {
-        std::env::var("MPT_MAIL_MAX_ATTACHMENT")
+        std::env::var("MPFT_MAIL_MAX_ATTACHMENT")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .or_else(|| {
@@ -254,7 +254,7 @@ impl MailEndpoint {
         let from = self
             .opt(server, "from")
             .map(String::from)
-            .or_else(|| std::env::var("MPT_MAIL_FROM").ok())
+            .or_else(|| std::env::var("MPFT_MAIL_FROM").ok())
             .or_else(|| crate::config::global().mail.from.clone())
             .or_else(|| {
                 server
@@ -264,7 +264,7 @@ impl MailEndpoint {
             })
             .ok_or_else(|| {
                 Error::InvalidUrl(
-                    "mail: no sender (use ?from=, MPT_MAIL_FROM or an e-mail address as SMTP user)"
+                    "mail: no sender (use ?from=, MPFT_MAIL_FROM or an e-mail address as SMTP user)"
                         .into(),
                 )
             })?;

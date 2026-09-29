@@ -5,7 +5,7 @@ what the far side can do: a mailbox cannot be listed, HTTP cannot rename, S3
 has no directories. Those differences show up as capabilities rather than as
 separate commands.
 
-`mpt schemes` prints this table for the binary you have, which is also how you
+`mpft schemes` prints this table for the binary you have, which is also how you
 find out which [cargo features](../getting-started/installation.md#choosing-protocols)
 were compiled in.
 
@@ -24,8 +24,8 @@ were compiled in.
 | `mailto:` | [e-mail, server from the configuration](mail.md) | – | `mail` |
 | `smtp://` | [e-mail, server in the URL](mail.md) | 587 | `mail` |
 | `smtps://` | [the same over implicit TLS](mail.md#encryption-and-login) | 465 | `mail` |
-| `mpt://` | a [profile](../configuration/profiles.md) — resolves to one of the above | – | always |
-| `ssh://` | an SSH host running [`mpt relay`](../server/relay.md), for `--via` only; it holds no files | 22 | `relay` |
+| `mpft://` | a [profile](../configuration/profiles.md) — resolves to one of the above | – | always |
+| `ssh://` | an SSH host running [`mpft relay`](../server/relay.md), for `--via` only; it holds no files | 22 | `relay` |
 
 ## What each one can do
 
@@ -43,7 +43,7 @@ were compiled in.
 | Column | Meaning | Feature it enables |
 |---|---|---|
 | receive | can be a source | any download; mail cannot, and asking fails before any connection |
-| list | the directory can be listed | `mpt ls`, [patterns](../guide/many-files.md#patterns-on-the-far-side), `-r` with this scheme as the *source* |
+| list | the directory can be listed | `mpft ls`, [patterns](../guide/many-files.md#patterns-on-the-far-side), `-r` with this scheme as the *source* |
 | size | the source can say how large it is | the progress percentage, `--skip-existing`; SCP cannot, with [consequences](ssh.md#scp-and-the-source-size) |
 | send | can be a target | any upload |
 | rename | a file can be renamed in place | [atomic finishing](../guide/reliability.md#a-file-appears-only-when-it-is-whole); S3 does not need it, an object appears only when its upload is complete |
@@ -79,7 +79,7 @@ different ones, a job list may name a different one per line, and a copy
 between two remote systems never touches the local disk:
 
 ```
-mpt cp ftps://partner.example.com/out/data.csv \
+mpft cp ftps://partner.example.com/out/data.csv \
     sftp://internal.example.com/import/ \
     "s3://archive/2026/" \
     "mailto:team@example.com?subject=Received"

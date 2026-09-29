@@ -9,10 +9,10 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     for (algo, name, bare) in [
-        (mpt::hash::HashAlgo::Sha256, "report.pdf", false),
-        (mpt::hash::HashAlgo::Sha512, "x", true),
+        (mpft::hash::HashAlgo::Sha256, "report.pdf", false),
+        (mpft::hash::HashAlgo::Sha512, "x", true),
     ] {
-        if let Ok(hex) = mpt::hash::sidecar_digest(text, algo, name, bare) {
+        if let Ok(hex) = mpft::hash::sidecar_digest(text, algo, name, bare) {
             assert_eq!(hex.len(), algo.hex_len(), "{hex:?}");
             assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()), "{hex:?}");
             assert_eq!(hex, hex.to_ascii_lowercase());
@@ -20,5 +20,5 @@ fuzz_target!(|data: &[u8]| {
     }
     // The signing time comes out of the same file, so its parser sees
     // whatever the remote wrote as well.
-    let _ = mpt::hash::parse_signed_at(text);
+    let _ = mpft::hash::parse_signed_at(text);
 });

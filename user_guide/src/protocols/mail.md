@@ -5,14 +5,14 @@ endpoints that can send but never receive, and the only ones where the
 "directory" in a URL is a list of people.
 
 ```
-mpt cp report.pdf "mailto:boss@example.com?subject=Weekly%20report"
-mpt cp report.pdf "smtp://reports@mail.example.com:587/boss@example.com?subject=Report"
+mpft cp report.pdf "mailto:boss@example.com?subject=Weekly%20report"
+mpft cp report.pdf "smtp://reports@mail.example.com:587/boss@example.com?subject=Report"
 ```
 
 Being send-only is checked before anything connects:
 
 ```
-$ mpt cp mailto:x@example.com ./
+$ mpft cp mailto:x@example.com ./
 error: copy mailto:x@example.com?timeout=30: scheme 'mailto' cannot receive
 ```
 
@@ -25,23 +25,23 @@ every command:
 ```toml
 [mail]
 smtp     = "smtp://reports@mail.example.com:587?tls=starttls"
-password = { keyring = "mpt/smtp" }
+password = { keyring = "mpft/smtp" }
 from     = "reports@example.com"
 ```
 
 `password` belongs to the server `smtp` names: it is used for that host and
-port, whether `mailto:`, `$MPT_SMTP_URL` or an `smtp://` URL reaches it, and
+port, whether `mailto:`, `$MPFT_SMTP_URL` or an `smtp://` URL reaches it, and
 never sent to another server.
 
 ```
-mpt cp report.pdf "mailto:boss@example.com"
+mpft cp report.pdf "mailto:boss@example.com"
 ```
 
-`$MPT_SMTP_URL` and `$MPT_SMTP_PASSWORD` do the same for one run. Without
+`$MPFT_SMTP_URL` and `$MPFT_SMTP_PASSWORD` do the same for one run. Without
 either:
 
 ```
-error: authentication failed: mailto: requires MPT_SMTP_URL or [mail] smtp in the
+error: authentication failed: mailto: requires MPFT_SMTP_URL or [mail] smtp in the
        configuration (e.g. smtp://user@mail.example.com:587?tls=starttls)
 ```
 
@@ -49,13 +49,13 @@ error: authentication failed: mailto: requires MPT_SMTP_URL or [mail] smtp in th
 suits a one-off or a script that talks to a local relay:
 
 ```
-mpt cp report.pdf "smtp://127.0.0.1:25/ops@example.com?tls=none&from=cron@example.com"
+mpft cp report.pdf "smtp://127.0.0.1:25/ops@example.com?tls=none&from=cron@example.com"
 ```
 
 Several recipients are separated by commas or semicolons:
 
 ```
-mpt cp report.pdf "mailto:boss@example.com,team@example.com"
+mpft cp report.pdf "mailto:boss@example.com,team@example.com"
 ```
 
 ## The message
@@ -69,7 +69,7 @@ mpt cp report.pdf "mailto:boss@example.com,team@example.com"
 | `?filename=` | name the attachment differently from the source |
 
 ```
-$ mpt cp --hash sha256 report.pdf "mailto:boss@example.com,team@example.com?subject=Weekly%20report&cc=cc@example.com"
+$ mpft cp --hash sha256 report.pdf "mailto:boss@example.com,team@example.com?subject=Weekly%20report&cc=cc@example.com"
 report.pdf -> mailto:boss@example.com,team@example.com?subject=Weekly report&cc=cc@example.com: 12 bytes in 18.79ms
 sha256  92455f427ad655c4a7d21709eb2d121d5567e30736c2614e6dcab1af884c8252
 ```
@@ -98,12 +98,12 @@ no directory to put a checksum file in, so `--hash` adds a second attachment
 Mail needs a `From:`, and it is looked for in this order:
 
 1. `?from=` on the URL
-2. `$MPT_MAIL_FROM`
+2. `$MPFT_MAIL_FROM`
 3. `[mail] from` in the configuration
 4. the SMTP user name, if it is an address
 
 ```
-error: invalid URL: mail: no sender (use ?from=, MPT_MAIL_FROM or an e-mail address
+error: invalid URL: mail: no sender (use ?from=, MPFT_MAIL_FROM or an e-mail address
        as SMTP user)
 ```
 
@@ -130,7 +130,7 @@ every scheme.
 other programs read that prefix:
 
 ```
-mpt cp report.pdf "smtps://reports@mail.example.com/boss@example.com"
+mpft cp report.pdf "smtps://reports@mail.example.com/boss@example.com"
 ```
 
 `tls=none` with a password [warns](../trust/connections.md#credentials-in-the-clear),
@@ -160,7 +160,7 @@ Mail is the one protocol that cannot stream. The message has to be assembled
 and base64-encoded before it can be sent, so the payload is held in memory, and
 there is a limit:
 
-- `$MPT_MAIL_MAX_ATTACHMENT`, in bytes, or
+- `$MPFT_MAIL_MAX_ATTACHMENT`, in bytes, or
 - `[mail] max_attachment`, with a unit (`25M`), or
 - 25 MiB by default.
 
@@ -169,7 +169,7 @@ instead. An `s3://` upload and a `mailto:` notification in the same fan-out do
 that in one command:
 
 ```
-mpt cp big-report.pdf "s3://reports/2026/" "mailto:boss@example.com?subject=Report%20uploaded&body=In%20the%20reports%20bucket"
+mpft cp big-report.pdf "s3://reports/2026/" "mailto:boss@example.com?subject=Report%20uploaded&body=In%20the%20reports%20bucket"
 ```
 
 Base64 also means the message is about a third larger than the file, which

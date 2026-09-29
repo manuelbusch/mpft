@@ -4,9 +4,9 @@ FTP is the one protocol here where two options, `passive` and `nat`, decide
 whether a transfer works at all through a firewall.
 
 ```
-mpt cp report.pdf ftps://upload@ftp.partner.example/incoming/
-mpt ls "ftps://upload@ftp.partner.example/incoming/?tls=implicit"
-mpt cp ftp://anonymous@ftp.example.org/pub/data.csv ./
+mpft cp report.pdf ftps://upload@ftp.partner.example/incoming/
+mpft ls "ftps://upload@ftp.partner.example/incoming/?tls=implicit"
+mpft cp ftp://anonymous@ftp.example.org/pub/data.csv ./
 ```
 
 ## TLS modes
@@ -29,8 +29,8 @@ under [TLS certificates](../trust/connections.md#tls-certificates).
 ## Passive mode and NAT
 
 ```
-mpt cp report.pdf "ftps://upload@ftp.example.com/in/?passive=false"
-mpt cp report.pdf "ftps://upload@ftp.example.com/in/?nat=true"
+mpft cp report.pdf "ftps://upload@ftp.example.com/in/?passive=false"
+mpft cp report.pdf "ftps://upload@ftp.example.com/in/?nat=true"
 ```
 
 **`passive=true` is the default**, and it is what works from behind a firewall:
@@ -39,7 +39,7 @@ connect back, which needs an inbound hole. Try it only when a server insists
 on it.
 
 **`nat=true`** helps with the classic misconfiguration where a server behind
-NAT announces its internal address for the data connection. With it, `mpt`
+NAT announces its internal address for the data connection. With it, `mpft`
 ignores the announced address and reuses the one it is already talking to. If
 transfers hang after the listing works, this is the first thing to try.
 
@@ -49,7 +49,7 @@ FTP supports listing, sizes (`SIZE`), renaming (`RNFR`/`RNTO`), appending
 (`APPE`) and directory creation (`MKD`), so every column of the [capability
 matrix](overview.md#what-each-one-can-do) is ticked.
 
-Renaming onto an existing name is refused by most servers, so `mpt` deletes the
+Renaming onto an existing name is refused by most servers, so `mpft` deletes the
 target first and then renames. Atomic finishing therefore behaves the same
 here as everywhere else.
 
@@ -64,8 +64,8 @@ directory anyway. To address something relative to the login directory, use
 `/~/`, as over SSH:
 
 ```
-mpt cp report.pdf ftps://deploy@srv.example.com/~/incoming/
-mpt ls ftps://deploy@srv.example.com/~/
+mpft cp report.pdf ftps://deploy@srv.example.com/~/incoming/
+mpft ls ftps://deploy@srv.example.com/~/
 ```
 
 ## Timeouts

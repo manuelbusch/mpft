@@ -1,4 +1,4 @@
-# Why mpt?
+# Why mpft?
 
 Moving a file from one machine to another is a solved problem, once per
 protocol: `scp` for SSH, `curl` for HTTP, `lftp` for FTP, `aws s3 cp` for
@@ -12,10 +12,10 @@ and a temporary file in the middle because the same bytes have to be read three
 times. Then someone asks for a checksum beside each copy, and for the transfer
 not to leave half a file behind when the line drops at 03:00.
 
-That script is what `mpt` replaces:
+That script is what `mpft` replaces:
 
 ```
-mpt cp --hash sha256 export.csv \
+mpft cp --hash sha256 export.csv \
     sftp://deploy@srv.example.com/incoming/ \
     "s3://bucket/exports/" \
     "mailto:colleague@example.com?subject=Nightly%20export"
@@ -34,7 +34,7 @@ not each protocol library's.
 
 ## The source is read once
 
-`mpt cp` takes any number of targets. The source is read a single time and the
+`mpft cp` takes any number of targets. The source is read a single time and the
 bytes are handed to every target concurrently, in constant memory, with nothing
 written to disk in between. A slow target does not make the others wait for it,
 a failing target does not stop the rest, and each one reports its own outcome.
@@ -70,7 +70,7 @@ protects against someone who can replace both the file and its checksum.
 ## Secrets stay out of the command line
 
 A password on the command line is visible in `ps` and in the shell history.
-`mpt` takes credentials from environment variables, files, the OS key store,
+`mpft` takes credentials from environment variables, files, the OS key store,
 HashiCorp Vault, or the standard output of any command — a reference in the
 configuration file, resolved at the moment the endpoint is used, and only for
 the endpoints the current command actually touches.
@@ -91,10 +91,10 @@ Unattended use is the primary use case:
   pipe into a work queue;
 - `--dry-run` shows what would happen;
 - `--skip-existing` makes a scheduled run send only what is new;
-- [`mpt serve`](server/serve.md) takes jobs over HTTP from a program that
+- [`mpft serve`](server/serve.md) takes jobs over HTTP from a program that
   should not shell out, and reports on them the same way.
 
-## What mpt is not
+## What mpft is not
 
 Knowing where a tool stops is part of knowing when to use it.
 
@@ -104,8 +104,8 @@ Knowing where a tool stops is part of knowing when to use it.
 - **It is not a sync tool.** `--skip-existing` compares name and size, not
   content, and nothing is ever deleted on a target to match a source.
 - **It is not a scheduler.** There is no built-in cron and no retry queue.
-  `mpt` is meant to be called by systemd timers, cron or a CI job, and to
-  report clearly enough that those can act on the result. [`mpt
+  `mpft` is meant to be called by systemd timers, cron or a CI job, and to
+  report clearly enough that those can act on the result. [`mpft
   serve`](server/serve.md) runs the jobs it is given, as soon as it is given
   them; deciding when to submit one is still the caller's job.
 - **It does not watch anything.** `batch --follow` reads a pipe for as long

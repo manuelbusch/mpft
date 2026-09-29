@@ -1,13 +1,13 @@
 # Copying a file
 
-`mpt cp` takes a source and a target. Both are [URLs](../getting-started/addressing.md),
+`mpft cp` takes a source and a target. Both are [URLs](../getting-started/addressing.md),
 either may be local or remote, and nothing about the command changes when the
 protocol does.
 
 ```
-mpt cp report.pdf sftp://deploy@srv.example.com/incoming/     # up
-mpt cp sftp://deploy@srv.example.com/incoming/report.pdf ./   # down
-mpt cp ftps://old.example.com/out/x.csv "s3://bucket/in/"     # between two servers
+mpft cp report.pdf sftp://deploy@srv.example.com/incoming/     # up
+mpft cp sftp://deploy@srv.example.com/incoming/report.pdf ./   # down
+mpft cp ftps://old.example.com/out/x.csv "s3://bucket/in/"     # between two servers
 ```
 
 The third case never touches the local disk. The bytes are read from one
@@ -23,8 +23,8 @@ decides, or a directory that already exists: `backup/` puts the file at
 A **local** target creates the directories it needs. A **remote** one does not:
 
 ```
-$ mpt cp report.pdf backup/2026/09/            # directories created
-$ mpt cp report.pdf sftp://srv.example.com/no/such/dir/
+$ mpft cp report.pdf backup/2026/09/            # directories created
+$ mpft cp report.pdf sftp://srv.example.com/no/such/dir/
 error: … sftp: No such file
 ```
 
@@ -50,7 +50,7 @@ so it never pollutes a log or a pipe.
 line of its own, which suits a build log:
 
 ```
-$ mpt --progress always cp big.bin sftp://srv.example.com/in/
+$ mpft --progress always cp big.bin sftp://srv.example.com/in/
 656.0 KiB / 381.5 MiB (  0%)  558.5 MiB/s
 148.9 MiB / 381.5 MiB ( 39%)  589.4 MiB/s
 297.0 MiB / 381.5 MiB ( 78%)  590.8 MiB/s
@@ -83,8 +83,8 @@ after that. S3 uploads count their progress per part instead; [Timeouts on
 S3](../protocols/s3.md#timeouts-on-s3) has the detail.
 
 ```
-mpt --timeout 120 cp big.iso sftp://srv.example.com/in/
-mpt cp big.iso "sftp://srv.example.com/in/?timeout=120"     # this endpoint only
+mpft --timeout 120 cp big.iso sftp://srv.example.com/in/
+mpft cp big.iso "sftp://srv.example.com/in/?timeout=120"     # this endpoint only
 ```
 
 `--timeout 0` disables it. Over SFTP, SCP, FTP, HTTP and WebDAV, connecting
@@ -107,7 +107,7 @@ second part needs the payload again, `--retries` without `--cache` is an
 error:
 
 ```
-$ mpt --retries 2 cp report.pdf sftp://srv.example.com/in/
+$ mpft --retries 2 cp report.pdf sftp://srv.example.com/in/
 error: copy report.pdf: invalid option 'retries': retries need the memory cache (a stream cannot be replayed)
 ```
 
@@ -134,11 +134,11 @@ not trusted.
 ## What `cp` does not do
 
 **`-` is not standard input.** A lone dash is treated as a file called `-`,
-which almost certainly does not exist. Only `mpt batch -` reads stdin, and it
+which almost certainly does not exist. Only `mpft batch -` reads stdin, and it
 reads a job list rather than a payload. To send something a program produced,
 write it to a file first.
 
-**A directory is not a file.** `mpt cp sftp://srv/incoming/ ./` asks to read a
+**A directory is not a file.** `mpft cp sftp://srv/incoming/ ./` asks to read a
 directory as if it were a file and fails. Copying directories is
 [`-r`](many-files.md#whole-directories-with--r).
 

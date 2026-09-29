@@ -1,4 +1,4 @@
-//! `mpt relay`: one upload, fanned out by the relay.
+//! `mpft relay`: one upload, fanned out by the relay.
 //!
 //! A relay is `cp` with its stdin as the source. The first line on stdin
 //! is a JSON [`Header`] — the file's name and size, the targets, the
@@ -1938,7 +1938,7 @@ mod tests {
         let err = report["targets"][0]["error"].as_str().unwrap();
         assert!(err.contains("40 of 100"), "{err}");
         assert!(!dir.path().join("x.bin").exists());
-        assert!(!dir.path().join("x.bin.mpt-part").exists());
+        assert!(!dir.path().join("x.bin.mpft-part").exists());
     }
 
     #[tokio::test]
@@ -2021,17 +2021,17 @@ mod tests {
             None => crate::Location::parse(url),
         });
         let header = |dst: &str| json!({ "name": "x.txt", "size": 5, "dst": [dst] }).to_string();
-        let (code, lines) = relay_run(&r, &header("mpt://out/?insecure=true"), b"hello").await;
+        let (code, lines) = relay_run(&r, &header("mpft://out/?insecure=true"), b"hello").await;
         assert_eq!(code, 2, "{lines:?}");
         let message = lines[0]["error"]["message"].as_str().unwrap();
         assert!(message.contains("?options"), "{message}");
         assert!(!dir.path().join("x.txt").exists());
         // The same for an operation, and the profile as it is goes through.
         let (code, lines) =
-            held_open(&r, json!({ "op": "list", "src": "mpt://out/?timeout=1" })).await;
+            held_open(&r, json!({ "op": "list", "src": "mpft://out/?timeout=1" })).await;
         assert_eq!(code, 2, "{lines:?}");
         let payload = protocol::frame(protocol::DATA, b"hello");
-        let (code, lines) = relay_run(&r, &header("mpt://out/"), &payload).await;
+        let (code, lines) = relay_run(&r, &header("mpft://out/"), &payload).await;
         assert_eq!(code, 0, "{lines:?}");
         assert_eq!(std::fs::read(dir.path().join("x.txt")).unwrap(), b"hello");
     }
@@ -2044,10 +2044,10 @@ mod tests {
         let mut r = relay(0);
         r.locate = Arc::new(|_, _| {
             Err(Error::Config(
-                "profile 'out': credentials: /home/relay/.config/mpt/secret.sh: exit 1".into(),
+                "profile 'out': credentials: /home/relay/.config/mpft/secret.sh: exit 1".into(),
             ))
         });
-        let header = json!({ "name": "x", "size": 1, "dst": ["mpt://out/"] }).to_string();
+        let header = json!({ "name": "x", "size": 1, "dst": ["mpft://out/"] }).to_string();
         let (code, lines) = relay_run(&r, &header, b"x").await;
         assert_eq!(code, 2, "{lines:?}");
         let error = &lines[0]["error"];
@@ -2086,7 +2086,7 @@ mod tests {
         std::fs::write(&src, b"hello").unwrap();
         let (code, lines) = relay_run(
             &r,
-            &json!({ "src": src.to_str().unwrap(), "dst": ["mpt://out/"] }).to_string(),
+            &json!({ "src": src.to_str().unwrap(), "dst": ["mpft://out/"] }).to_string(),
             b"",
         )
         .await;
@@ -2095,7 +2095,7 @@ mod tests {
         assert_eq!(code, 2, "{lines:?}");
         // The relay's own profile reaches its disk.
         let payload = protocol::frame(protocol::DATA, b"hello");
-        let (code, lines) = relay_run(&r, &header("mpt://out/"), &payload).await;
+        let (code, lines) = relay_run(&r, &header("mpft://out/"), &payload).await;
         assert_eq!(code, 0, "{lines:?}");
         assert_eq!(std::fs::read(dir.path().join("x.txt")).unwrap(), b"hello");
         // And so does a client's path once the relay allows it.

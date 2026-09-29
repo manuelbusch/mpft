@@ -1,5 +1,5 @@
 [book]
-title = "Multi Protocol Transceiver (User Guide)"
+title = "Multi Protocol File Transceiver (User Guide)"
 authors = ["Manuel Busch"]
 language = "en"
 src = "src"

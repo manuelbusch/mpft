@@ -1,6 +1,6 @@
 # Thinking in URLs
 
-`mpt` has one addressing model, and every command uses it. A source is a URL, a
+`mpft` has one addressing model, and every command uses it. A source is a URL, a
 target is a URL, and the prefix of the URL decides which protocol does the
 work. Most of the tool follows from this page.
 
@@ -50,7 +50,7 @@ where the directory does not exist yet, or on S3 and HTTP, and there it is
 silent: you get a file named after the directory you expected. When in doubt,
 add the slash.
 
-The rule also cuts the other way for sources. `mpt cp sftp://srv/incoming/ ./`
+The rule also cuts the other way for sources. `mpft cp sftp://srv/incoming/ ./`
 asks to copy a *directory*, which a plain `cp` cannot do; that is what
 [`-r`](../guide/many-files.md) is for.
 
@@ -60,7 +60,7 @@ Everything after `?` configures **that endpoint alone**. This matters as soon
 as a command has more than one:
 
 ```
-mpt cp "ftps://old.example.com/x.csv?insecure=true" "sftp://new.example.com/in/"
+mpft cp "ftps://old.example.com/x.csv?insecure=true" "sftp://new.example.com/in/"
 ```
 
 The old server with its expired certificate is trusted; the new one is still
@@ -71,7 +71,7 @@ Options fall into three groups:
 
 | Group | Examples | Listed by |
 |---|---|---|
-| Protocol-specific | `key=`, `known_hosts=` (SSH); `tls=`, `passive=` (FTP); `endpoint=`, `region=` (S3); `subject=`, `cc=` (mail) | `mpt schemes` and the protocol pages |
+| Protocol-specific | `key=`, `known_hosts=` (SSH); `tls=`, `passive=` (FTP); `endpoint=`, `region=` (S3); `subject=`, `cc=` (mail) | `mpft schemes` and the protocol pages |
 | Shared by all schemes | `timeout=`, `connect_retries=`, `insecure=` where TLS is involved | [Protocols overview](../protocols/overview.md#options-every-scheme-understands) |
 | Passed through to the server | `?format=json` on an `http(s)://` or `webdav(s)://` URL | the server's own API |
 
@@ -91,7 +91,7 @@ The result line prints the target with the options that were **actually in
 force**, including those that came from a default or a configuration file:
 
 ```
-$ mpt cp report.pdf sftp://deploy@srv.example.com/incoming/
+$ mpft cp report.pdf sftp://deploy@srv.example.com/incoming/
 report.pdf -> sftp://deploy@srv.example.com/incoming/?timeout=30: 40000 bytes in 83.38ms
 ```
 
@@ -103,16 +103,16 @@ what a run really did when several layers of configuration are involved.
 `?` and `&` are shell metacharacters. A URL with options needs quotes:
 
 ```
-mpt cp report.pdf "sftp://srv/in/?key=~/.ssh/deploy&timeout=120"     # right
-mpt cp report.pdf sftp://srv/in/?key=~/.ssh/deploy&timeout=120       # the shell eats it
+mpft cp report.pdf "sftp://srv/in/?key=~/.ssh/deploy&timeout=120"     # right
+mpft cp report.pdf sftp://srv/in/?key=~/.ssh/deploy&timeout=120       # the shell eats it
 ```
 
 Quote every URL that contains a `?`. A plain `sftp://srv/in/` needs nothing.
 
 Two details inside a URL:
 
-- **`~` in a URL option is expanded by `mpt`.** Inside quotes the shell leaves
-  `key=~/.ssh/id_ed25519` alone, and `mpt` resolves the `~` against the home
+- **`~` in a URL option is expanded by `mpft`.** Inside quotes the shell leaves
+  `key=~/.ssh/id_ed25519` alone, and `mpft` resolves the `~` against the home
   directory. A `~` in a *local path* (`~/reports/x.pdf`) is the shell's job as
   usual, so write that one unquoted.
 - **Special characters are percent-encoded.** A subject with a space is
@@ -122,12 +122,12 @@ Two details inside a URL:
 
 ## Credentials in a URL, and why not to
 
-`user:password@host` is understood, and `mpt` warns when it sees it: the
+`user:password@host` is understood, and `mpft` warns when it sees it: the
 password is visible in the process list and the shell history. The user name
 alone is fine and often necessary:
 
 ```
-mpt cp report.pdf sftp://deploy@srv.example.com/incoming/
+mpft cp report.pdf sftp://deploy@srv.example.com/incoming/
 ```
 
 [Credentials and secrets](../configuration/credentials.md) covers where the
@@ -135,12 +135,12 @@ password goes instead.
 
 ## Send-only and receive-only schemes
 
-An endpoint can receive (be a source), send (be a target), or both. `mpt
+An endpoint can receive (be a source), send (be a target), or both. `mpft
 schemes` has the exact table. The exceptions:
 
 - **`mailto:` and `smtp://` can only send.** There is no way to read from a
   mailbox.
-- **`scp://` cannot list**, so `mpt ls` and patterns do not work with it, and
+- **`scp://` cannot list**, so `mpft ls` and patterns do not work with it, and
   it cannot be the source of a tree copy. `sftp://` can do all of that over the
   same SSH connection, so prefer it unless the far side offers nothing else.
 - **`http://` cannot list either**, and has no rename, which rules out
@@ -152,7 +152,7 @@ code 2.
 
 ## Paths on the far side
 
-Path conventions differ, and `mpt` keeps each protocol's own:
+Path conventions differ, and `mpft` keeps each protocol's own:
 
 | Scheme | Path is |
 |---|---|
@@ -169,10 +169,10 @@ scheme.
 ## Profiles
 
 A URL that recurs — with its key, its host-key pin, its timeout — can be given
-a name in the configuration file and used as `mpt://<name>/`:
+a name in the configuration file and used as `mpft://<name>/`:
 
 ```
-mpt cp report.pdf mpt://prod/incoming/
+mpft cp report.pdf mpft://prod/incoming/
 ```
 
 The path of the reference is appended to the profile's own path.

@@ -1,7 +1,7 @@
 # Relay protocol
 
-What passes over the SSH channel between `cp --via` and `mpt relay`, or over
-the standard input and output of `mpt relay` run directly. A session is a copy
+What passes over the SSH channel between `cp --via` and `mpft relay`, or over
+the standard input and output of `mpft relay` run directly. A session is a copy
 or, from version 3 on, one of the [operations besides the
 copy](#operations-besides-the-copy): a listing, a size, directories created.
 
@@ -38,7 +38,7 @@ Everything is checked before a byte of the payload is read: the version, that
 there is either a `src` or a `name` with a `size`, that `dst` is not empty,
 that the credential modes of both sides match, that no endpoint brings a
 password along when `credentials` is `on-demand` (in its URL, or from a
-profile of the relay's own), that no `mpt://` profile of the relay's carries
+profile of the relay's own), that no `mpft://` profile of the relay's carries
 `?options`, no SSH URL names a key file on the relay host (`?key=`,
 `?cert=`, `?passphrase=`) and no URL is a local path of the relay host unless
 it runs with `--allow-local` (see [Trust](../server/relay-host.md#trust)), and `size` or the
@@ -143,7 +143,7 @@ relay](../server/relay-topologies.md#a-target-behind-another-relay).
 ## Operations besides the copy
 
 From version 3 on, `op` asks for something other than a copy. That is how the
-client reads and prepares what only the relay reaches: `mpt ls`, and the
+client reads and prepares what only the relay reaches: `mpft ls`, and the
 expansion of patterns and trees, for an endpoint whose profile names a relay.
 
 | `op` | About | The relay | The last line |

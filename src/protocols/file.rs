@@ -211,7 +211,7 @@ mod tests {
     #[tokio::test]
     async fn a_retried_append_writes_at_the_offset() {
         let dir = tempfile::tempdir().unwrap();
-        let part = dir.path().join("f.mpt-part");
+        let part = dir.path().join("f.mpft-part");
         std::fs::write(&part, b"0123456789").unwrap();
         let ep = super::FileEndpoint::new(crate::Location::parse(part.to_str().unwrap()).unwrap());
         let meta = crate::SendMeta::default();

@@ -8,11 +8,11 @@ next run can continue or skip rather than start over.
 ## A file appears only when it is whole
 
 Every target that can rename a file is written in two steps. The payload goes
-to `<name>.mpt-part`, and only when the transfer has finished is it renamed to
+to `<name>.mpft-part`, and only when the transfer has finished is it renamed to
 `<name>`.
 
 ```
-report.pdf.mpt-part      ← while it is being written
+report.pdf.mpft-part      ← while it is being written
 report.pdf               ← the moment it is complete
 ```
 
@@ -41,10 +41,10 @@ matrix](../protocols/overview.md#what-each-one-can-do); what they use to do it:
 | mail | none needed: atomic by its nature |
 
 Plain SFTP `RENAME` and most FTP servers refuse to rename onto an existing
-file. There the file being replaced is first renamed to `<name>.mpt-old`, the
-new one is renamed into place, and only then is `<name>.mpt-old` deleted. If
+file. There the file being replaced is first renamed to `<name>.mpft-old`, the
+new one is renamed into place, and only then is `<name>.mpft-old` deleted. If
 the second rename fails, the old file is renamed back, so a failed finish never
-leaves the target without either version. A `<name>.mpt-old` that is already
+leaves the target without either version. A `<name>.mpft-old` that is already
 there, left by a run that stopped half way, is deleted when it is in the way.
 
 `--no-atomic` writes straight to the final name. It exists for pickup processes
@@ -53,7 +53,7 @@ for — a directory watcher with a pattern too loose, typically.
 
 Two transfers writing the same target at the same time still conflict. The
 difference is that the second rename now reports it instead of the two
-interleaving silently, and within one command `mpt` refuses the situation
+interleaving silently, and within one command `mpft` refuses the situation
 [before it starts](many-files.md#colliding-targets).
 
 ## Ctrl-C
@@ -72,20 +72,20 @@ run can continue it.
 
 ## Resuming with `--resume`
 
-`--resume` keeps whatever is already in `<name>.mpt-part` on the target and
+`--resume` keeps whatever is already in `<name>.mpft-part` on the target and
 sends only the rest.
 
 ```
-$ mpt --resume cp big.bin sftp://srv.example.com/in/
+$ mpft --resume cp big.bin sftp://srv.example.com/in/
 ^C
 interrupted, stopping and cleaning up (Ctrl-C again exits immediately)…
 error: copy big.bin -> sftp://srv.example.com/in/: cancelled: interrupted
 
 $ ls -l …/in/
--rw-r--r--  1 deploy  users  209240064  big.bin.mpt-part
+-rw-r--r--  1 deploy  users  209240064  big.bin.mpft-part
 
-$ mpt -v --resume cp big.bin sftp://srv.example.com/in/
-INFO mpt::transfer: resuming part=big.bin.mpt-part offset=209240064
+$ mpft -v --resume cp big.bin sftp://srv.example.com/in/
+INFO mpft::transfer: resuming part=big.bin.mpft-part offset=209240064
 big.bin -> sftp://srv.example.com/in/: 290759936 bytes in 2.08s
 ```
 
@@ -130,7 +130,7 @@ have no append, so the whole payload is sent again.
 holds a file of the source's name and size:
 
 ```
-$ mpt cp --skip-existing report.pdf a/ b/
+$ mpft cp --skip-existing report.pdf a/ b/
 skip   already there             a/
 ok             40000 bytes     4.30ms  b/
 report.pdf: 40000 bytes read, 2/2 targets ok in 4.55ms
@@ -139,7 +139,7 @@ report.pdf: 40000 bytes read, 2/2 targets ok in 4.55ms
 With a single target the line is shorter:
 
 ```
-$ mpt cp --skip-existing report.pdf a/
+$ mpft cp --skip-existing report.pdf a/
 report.pdf -> a/: already there, skipped
 ```
 
@@ -169,7 +169,7 @@ file](../configuration/file.md) when they should hold for every run.
 A scheduled job that has to survive a bad night, and be safe to run twice:
 
 ```
-mpt cp -r --skip-existing --resume --hash sha256 \
+mpft cp -r --skip-existing --resume --hash sha256 \
     /data/export/ sftp://deploy@srv.example.com/incoming/
 ```
 

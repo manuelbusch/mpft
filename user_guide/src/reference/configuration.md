@@ -4,14 +4,14 @@ Every section and key of the TOML file. [The configuration
 file](../configuration/file.md) explains how it is found and what wins over
 what; this page is the list.
 
-`mpt config check` validates a file and prints what it sets. An unknown key is
+`mpft config check` validates a file and prints what it sets. An unknown key is
 an error, and the message names the keys that were expected.
 
 The listing shows every key the file sets, with three exceptions to what it
 prints as the value: a secret appears as `(reference)` when the file says
 where to fetch it and as `*** (in the file)` when it is written out; the
 password in `[mail] smtp` appears as `***`; and the profiles are listed by name
-in one `[profiles]` row, since `mpt profiles` shows what they hold. `ok <path>`
+in one `[profiles]` row, since `mpft profiles` shows what they hold. `ok <path>`
 at the top is what says the file was accepted.
 
 ## `[defaults]`
@@ -33,7 +33,7 @@ Values for the flags of the same name. A flag on the command line wins.
 | `skip_existing` | boolean | `false` | `--skip-existing` |
 | `delete_source` | boolean | `false` | `--delete-source` |
 | `parallel` | integer, at least 1 | `4` | `--parallel` |
-| `via` | `ssh://` URL or `mpt://` profile | none | `--via`; `--no-via` switches it off for one run |
+| `via` | `ssh://` URL or `mpft://` profile | none | `--via`; `--no-via` switches it off for one run |
 | `via_credentials` | `"header"`, `"on-demand"` | `"header"` | `--via-credentials` |
 | `via_agent` | boolean | `true` | `--no-via-agent` switches the forwarding off |
 | `log` | level or `RUST_LOG` syntax | `"warn"` | `-v` |
@@ -41,7 +41,7 @@ Values for the flags of the same name. A flag on the command line wins.
 
 `via`, `via_credentials` and `via_agent` are not read from a [file in the
 working directory](../configuration/file.md#the-file-in-the-working-directory):
-they decide where the targets' credentials go. `mpt serve` takes
+they decide where the targets' credentials go. `mpft serve` takes
 `via_credentials` and `via_agent` for the relays its profiles name, but not
 `via` (see [Jobs through a relay](../server/serve.md#jobs-through-a-relay)).
 
@@ -55,7 +55,7 @@ make them stricter. See [Policies](../configuration/policies.md).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `known_hosts` | `"strict"`, `"accept-new"`, `"off"` | `strict` | default host-key policy for SSH, and the least a URL or `MPT_SSH_KNOWN_HOSTS` may ask for |
+| `known_hosts` | `"strict"`, `"accept-new"`, `"off"` | `strict` | default host-key policy for SSH, and the least a URL or `MPFT_SSH_KNOWN_HOSTS` may ask for |
 | `refuse_plaintext_auth` | boolean | `false` | refuse rather than warn about unencrypted credentials |
 | `refuse_insecure_tls` | boolean | `false` | refuse `?insecure=true` |
 | `require_signature` | boolean | `false` | `--check` must verify a signature as well |
@@ -126,12 +126,12 @@ Defaults for `s3://`.
 | `path_style` | boolean | path-style addressing instead of virtual-host style |
 | `access_key_id` | secret | access key |
 | `secret_access_key` | secret | secret key |
-| `profile` | string | AWS profile from `~/.aws/config` (not an `mpt://` profile); also switches the credential chain on (feature `s3-aws-auth`) |
+| `profile` | string | AWS profile from `~/.aws/config` (not an `mpft://` profile); also switches the credential chain on (feature `s3-aws-auth`) |
 
 ## `[server]`
 
-Settings for [`mpt serve`](../server/serve.md) (feature `server`). Each flag
-of `mpt serve` wins over its key here.
+Settings for [`mpft serve`](../server/serve.md) (feature `server`). Each flag
+of `mpft serve` wins over its key here.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
@@ -150,13 +150,13 @@ of `mpt serve` wins over its key here.
 
 ## `[relay]`
 
-Settings for [`mpt relay --listen`](../server/relay-host.md#on-the-relay-host)
-(feature `relay`). Each flag of `mpt relay` wins over its key here.
+Settings for [`mpft relay --listen`](../server/relay-host.md#on-the-relay-host)
+(feature `relay`). Each flag of `mpft relay` wins over its key here.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `host_key` | path | [by system](../server/relay-host.md#where-the-host-key-is-kept) | the server's host key; generated when the file is missing |
-| `authorized_keys` | path | `~/.config/mpt/authorized_keys` | who may relay, in OpenSSH format |
+| `authorized_keys` | path | `~/.config/mpft/authorized_keys` | who may relay, in OpenSSH format |
 | `parallel` | integer, at least 1 | `4` | relays running concurrently; further sessions wait |
 | `grace` | duration | `"30s"` | how long a shutdown waits for running relays |
 | `max_size` | size | `"0"` (no limit) | refuse larger uploads and sources |
@@ -169,7 +169,7 @@ Settings for [`mpt relay --listen`](../server/relay-host.md#on-the-relay-host)
 
 ## `[profiles.<name>]`
 
-A profile: a named endpoint addressed as `mpt://<name>/<path>`. See [Named
+A profile: a named endpoint addressed as `mpft://<name>/<path>`. See [Named
 targets](../configuration/profiles.md).
 
 | Key | Type | Meaning |
@@ -177,14 +177,14 @@ targets](../configuration/profiles.md).
 | `url` | URL | **required**: what the name stands for |
 | `password` | secret | password for this endpoint |
 | `sign` | string | sign transfers to this target, in `--sign` syntax |
-| `via` | `ssh://` URL or `mpt://` profile | the relay this endpoint is reached through; as a source, and in `ls`, the relay reads it |
+| `via` | `ssh://` URL or `mpft://` profile | the relay this endpoint is reached through; as a source, and in `ls`, the relay reads it |
 | `hash` | string | checksum algorithm for this target |
 | `atomic` | boolean | finish through a part file; `false` switches it off |
 | *anything else* | string or list | becomes a URL option on the profile's URL |
 
 The last row is what lets a profile carry `key`, `hostkey`, `timeout`,
 `endpoint`, `subject` and any other option its scheme understands. A key that
-`mpt` does not know is not an error here — it becomes an option the protocol
+`mpft` does not know is not an error here — it becomes an option the protocol
 may ignore.
 
 ## Secrets
@@ -195,10 +195,10 @@ secrets](../configuration/credentials.md).
 
 ```toml
 password = { env = "PROD_PW" }                            # environment variable
-password = { file = "~/.config/mpt/prod.pw" }             # first line of a file
+password = { file = "~/.config/mpft/prod.pw" }             # first line of a file
 password = { cmd = "op read op://Infra/prod/password" }   # stdout of a command
-password = { keyring = "mpt/prod" }                       # OS key store (feature "keyring")
-password = { vault = "secret/data/mpt/prod#password" }    # HashiCorp Vault (feature "vault")
+password = { keyring = "mpft/prod" }                       # OS key store (feature "keyring")
+password = { vault = "secret/data/mpft/prod#password" }    # HashiCorp Vault (feature "vault")
 ```
 
 ## Value formats
@@ -236,7 +236,7 @@ max_signature_age     = "7d"
 key = "ssh:~/.ssh/release_ed25519"
 
 [verify]
-allowed_signers = "~/.config/mpt/allowed_signers"
+allowed_signers = "~/.config/mpft/allowed_signers"
 
 [ssh]
 user             = "deploy"
@@ -245,7 +245,7 @@ known_hosts_file = "~/.ssh/known_hosts"
 
 [mail]
 smtp     = "smtp://reports@example.com@smtp.example.com:587?tls=starttls"
-password = { keyring = "mpt/smtp" }
+password = { keyring = "mpft/smtp" }
 from     = "reports@example.com"
 
 [s3]

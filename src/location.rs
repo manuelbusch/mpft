@@ -32,7 +32,7 @@ pub enum Scheme {
     Smtps,
 }
 
-/// Static description of a scheme, used by `mpt schemes`.
+/// Static description of a scheme, used by `mpft schemes`.
 #[derive(Debug, Clone, Copy)]
 pub struct SchemeInfo {
     pub scheme: Scheme,
@@ -80,7 +80,7 @@ impl Scheme {
         SchemeInfo {
             scheme: Scheme::Ssh,
             prefix: "ssh://",
-            description: "an SSH host running `mpt relay` (cp --via)",
+            description: "an SSH host running `mpft relay` (cp --via)",
             can_receive: false,
             can_send: false,
             default_port: Some(22),
@@ -160,7 +160,7 @@ impl Scheme {
         SchemeInfo {
             scheme: Scheme::Mailto,
             prefix: "mailto:",
-            description: "e-mail attachment, SMTP server from MPT_SMTP_URL",
+            description: "e-mail attachment, SMTP server from MPFT_SMTP_URL",
             can_receive: false,
             can_send: true,
             default_port: None,
@@ -246,11 +246,11 @@ impl Scheme {
         matches!(self, Scheme::Smtp | Scheme::Smtps)
     }
 
-    /// Whether `MPT_PASSWORD`, `--password`, `--password-file` and
+    /// Whether `MPFT_PASSWORD`, `--password`, `--password-file` and
     /// `--password-stdin` supply this scheme's password: the schemes that log
     /// in with a user name and a password. Not `s3` (whose "password" is a
     /// secret access key), not `ssh` (the relay), not mail (which has
-    /// `MPT_SMTP_PASSWORD` of its own).
+    /// `MPFT_SMTP_PASSWORD` of its own).
     pub fn takes_default_password(self) -> bool {
         matches!(
             self,
@@ -269,8 +269,8 @@ impl Scheme {
     /// when the URL has none.
     pub fn password_variable(self) -> Option<&'static str> {
         match self {
-            Scheme::Mailto | Scheme::Smtp | Scheme::Smtps => Some("MPT_SMTP_PASSWORD"),
-            s if s.takes_default_password() => Some("MPT_PASSWORD"),
+            Scheme::Mailto | Scheme::Smtp | Scheme::Smtps => Some("MPFT_SMTP_PASSWORD"),
+            s if s.takes_default_password() => Some("MPFT_PASSWORD"),
             _ => None,
         }
     }
@@ -337,7 +337,7 @@ pub struct Location {
     /// refused.
     client_named: bool,
     /// Whether an SSH login here may use this process's own identity: its
-    /// ssh-agent, the default key files, `[ssh] key` and `MPT_SSH_KEY`. Off
+    /// ssh-agent, the default key files, `[ssh] key` and `MPFT_SSH_KEY`. Off
     /// for a URL a relay's client named unless the relay allows it.
     own_keys: bool,
 }
@@ -447,8 +447,8 @@ impl Location {
         })
     }
 
-    /// Parse and then fill credentials from the environment (`MPT_PASSWORD`,
-    /// `MPT_SMTP_PASSWORD`).
+    /// Parse and then fill credentials from the environment (`MPFT_PASSWORD`,
+    /// `MPFT_SMTP_PASSWORD`).
     pub fn parse_with_env(input: &str) -> Result<Location> {
         let mut loc = Location::parse(input)?;
         loc.apply_env();
@@ -567,7 +567,7 @@ impl Location {
 
     /// Whether [`Location::apply_env`] may fill in the password from the
     /// environment. A relay switches it off for the URLs its clients name:
-    /// its own `MPT_PASSWORD` is not for whichever host a client picks.
+    /// its own `MPFT_PASSWORD` is not for whichever host a client picks.
     pub fn set_env_password(&mut self, allowed: bool) {
         self.env_password = allowed;
     }
@@ -1425,7 +1425,7 @@ mod tests {
 
     /// A name with nothing in front of it still has a directory, and it has
     /// to be one the protocol can list: an empty path is not. This is what a
-    /// bare pattern (`mpt cp '*.csv' out/`) rests on.
+    /// bare pattern (`mpft cp '*.csv' out/`) rests on.
     #[test]
     fn the_parent_of_a_bare_name_is_the_working_directory() {
         for name in ["a.bin", "*.csv", "report.pdf"] {
@@ -1893,12 +1893,16 @@ mod tests {
             "sftp", "scp", "ftp", "ftps", "http", "https", "webdav", "webdavs",
         ] {
             let scheme = Scheme::parse(s).unwrap();
-            assert_eq!(scheme.password_variable(), Some("MPT_PASSWORD"), "{s}");
+            assert_eq!(scheme.password_variable(), Some("MPFT_PASSWORD"), "{s}");
             assert!(scheme.takes_default_password(), "{s}");
         }
         for s in ["smtp", "mailto"] {
             let scheme = Scheme::parse(s).unwrap();
-            assert_eq!(scheme.password_variable(), Some("MPT_SMTP_PASSWORD"), "{s}");
+            assert_eq!(
+                scheme.password_variable(),
+                Some("MPFT_SMTP_PASSWORD"),
+                "{s}"
+            );
             assert!(!scheme.takes_default_password(), "{s}");
         }
         for s in ["s3", "ssh", "file"] {

@@ -2,7 +2,7 @@
 
 ## Licence
 
-`mpt` is free software under either the MIT licence or the Apache License,
+`mpft` is free software under either the MIT licence or the Apache License,
 Version 2.0, at your option — the arrangement most of the Rust ecosystem uses,
 so it combines with either family of licences without a conflict. The full
 texts are `LICENSE-MIT` and `LICENSE-APACHE` at the root of the repository,
@@ -16,8 +16,8 @@ cargo install cargo-license && cargo license
 
 ## Versions
 
-This guide describes `mpt` 0.1. `mpt --version` prints the version of the
-binary you have, and `mpt --help` is authoritative for that binary. What is
+This guide describes `mpft` 0.1. `mpft --version` prints the version of the
+binary you have, and `mpft --help` is authoritative for that binary. What is
 kept stable between versions, and what is not, is under [Compatibility and
 stability](../reference/compatibility.md).
 
@@ -26,7 +26,7 @@ stability](../reference/compatibility.md).
 Problems go to the repository's issue tracker. [Reporting a
 problem](troubleshooting.md#reporting-a-problem) lists what a useful report
 contains; the short form is the exact command with credentials removed, the
-output of `mpt -vv`, and `mpt --version`. Passwords are masked in every log
+output of `mpft -vv`, and `mpft --version`. Passwords are masked in every log
 line, so the output can be attached as it is.
 
 A problem that has a security consequence — a credential in a log, a check

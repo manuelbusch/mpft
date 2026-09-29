@@ -219,7 +219,7 @@ pub fn sidecar_content(hex: &str, filename: &str) -> String {
 
 /// Comment that records when a checksum file was signed. `sha256sum -c` and
 /// `b3sum -c` ignore comment lines, so the file keeps their format.
-pub const SIGNED_AT: &str = "# mpt-signed-at: ";
+pub const SIGNED_AT: &str = "# mpft-signed-at: ";
 
 /// Sidecar file with the signing time, so a verifier can refuse a signature
 /// that is too old (`policy.max_signature_age`).
@@ -478,7 +478,7 @@ mod tests {
         let c = sidecar_content_at(SHA256_ABC, "report.pdf", Some(t));
         assert_eq!(
             c,
-            format!("{SHA256_ABC}  report.pdf\n# mpt-signed-at: 2023-11-14T22:13:20Z\n")
+            format!("{SHA256_ABC}  report.pdf\n# mpft-signed-at: 2023-11-14T22:13:20Z\n")
         );
         // The comment does not get in the way of the digest.
         assert_eq!(
@@ -488,7 +488,7 @@ mod tests {
         assert_eq!(parse_signed_at(&c), Some(t));
         // Without the comment, and with an unreadable one.
         assert_eq!(parse_signed_at(&sidecar_content(SHA256_ABC, "x")), None);
-        assert_eq!(parse_signed_at("# mpt-signed-at: yesterday\n"), None);
+        assert_eq!(parse_signed_at("# mpft-signed-at: yesterday\n"), None);
         // A file that leads with comments still parses.
         let hex = sidecar_digest(
             &format!("# a comment\n{SHA256_ABC}  x\n"),

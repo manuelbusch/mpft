@@ -1,6 +1,6 @@
 //! Shared SSH session handling for `sftp://` and `scp://`.
 //!
-//! Authentication order: explicit key (`?key=` / `MPT_SSH_KEY`) → the
+//! Authentication order: explicit key (`?key=` / `MPFT_SSH_KEY`) → the
 //! ssh-agent a relay client forwarded → the local ssh-agent (`SSH_AUTH_SOCK`)
 //! → default key files in `~/.ssh` → password. A URL a relay's client named
 //! ([`Location::is_client_named`]) may not name a key file, and skips the
@@ -76,7 +76,7 @@ impl KnownHostsPolicy {
     }
 
     /// The host-key policy for `loc`: its `?known_hosts=`, else
-    /// `MPT_SSH_KNOWN_HOSTS`, else `[policy] known_hosts`, else `strict`.
+    /// `MPFT_SSH_KNOWN_HOSTS`, else `[policy] known_hosts`, else `strict`.
     /// `[policy] known_hosts` is also the least any of them may ask for:
     /// one that would check less is refused, as `?insecure=true` is under
     /// `refuse_insecure_tls`.
@@ -88,9 +88,9 @@ impl KnownHostsPolicy {
             .transpose()?;
         let asked = match loc.opt("known_hosts") {
             Some(v) => Some(("known_hosts", v.to_string())),
-            None => std::env::var("MPT_SSH_KNOWN_HOSTS")
+            None => std::env::var("MPFT_SSH_KNOWN_HOSTS")
                 .ok()
-                .map(|v| ("MPT_SSH_KNOWN_HOSTS", v)),
+                .map(|v| ("MPFT_SSH_KNOWN_HOSTS", v)),
         };
         KnownHostsPolicy::within(floor, asked, loc)
     }
@@ -186,7 +186,7 @@ impl SshConfig {
         let user = loc
             .username()
             .map(String::from)
-            .or_else(|| std::env::var("MPT_SSH_USER").ok())
+            .or_else(|| std::env::var("MPFT_SSH_USER").ok())
             .or_else(|| cfg.ssh.user.clone())
             .or_else(|| std::env::var("USER").ok())
             .ok_or_else(|| Error::Auth("no user name in URL and $USER is unset".into()))?;
@@ -211,7 +211,7 @@ impl SshConfig {
         let key_file = loc
             .opt("key")
             .map(String::from)
-            .or_else(|| configured(std::env::var("MPT_SSH_KEY").ok()))
+            .or_else(|| configured(std::env::var("MPFT_SSH_KEY").ok()))
             .or_else(|| configured(cfg.ssh.key.clone()))
             .filter(|s| !s.is_empty())
             .map(|s| PathBuf::from(expand_tilde(&s)));
@@ -219,7 +219,7 @@ impl SshConfig {
         let cert_file = loc
             .opt("cert")
             .map(String::from)
-            .or_else(|| configured(std::env::var("MPT_SSH_CERT").ok()))
+            .or_else(|| configured(std::env::var("MPFT_SSH_CERT").ok()))
             .or_else(|| configured(cfg.ssh.cert.clone()))
             .filter(|s| !s.is_empty())
             .map(|s| PathBuf::from(expand_tilde(&s)))
@@ -230,7 +230,7 @@ impl SshConfig {
         let key_passphrase = loc
             .opt("passphrase")
             .map(String::from)
-            .or_else(|| configured(std::env::var("MPT_SSH_KEY_PASSPHRASE").ok()))
+            .or_else(|| configured(std::env::var("MPFT_SSH_KEY_PASSPHRASE").ok()))
             .map(SecretString::from)
             .or_else(|| cfg.resolved.ssh_passphrase.clone().filter(|_| own));
         let known_hosts = KnownHostsPolicy::for_location(loc)?;
@@ -239,7 +239,7 @@ impl SshConfig {
             pinned.push(normalize_fingerprint(v)?);
         }
         if pinned.is_empty()
-            && let Ok(v) = std::env::var("MPT_SSH_HOSTKEY")
+            && let Ok(v) = std::env::var("MPFT_SSH_HOSTKEY")
             && !v.is_empty()
         {
             for part in v.split(',') {
@@ -729,10 +729,10 @@ mod tests {
         assert!(err.contains("known_hosts=off"), "{err}");
         assert!(err.contains("policy.known_hosts = \"accept-new\""), "{err}");
         assert!(!err.contains("pw"), "{err}");
-        let err = asked(Some(Strict), "MPT_SSH_KNOWN_HOSTS", Some("accept-new"))
+        let err = asked(Some(Strict), "MPFT_SSH_KNOWN_HOSTS", Some("accept-new"))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("MPT_SSH_KNOWN_HOSTS=accept-new"), "{err}");
+        assert!(err.contains("MPFT_SSH_KNOWN_HOSTS=accept-new"), "{err}");
         assert_eq!(
             asked(Some(AcceptNew), "known_hosts", Some("strict")).unwrap(),
             "strict"
@@ -794,7 +794,7 @@ mod tests {
     fn a_client_named_url_gets_none_of_the_relays_identity() {
         for opt in [
             "key=~/.ssh/id_ed25519",
-            "cert=/etc/mpt/c.pub",
+            "cert=/etc/mpft/c.pub",
             "passphrase=x",
         ] {
             let mut loc = Location::parse(&format!("sftp://u@example.com/x?{opt}")).unwrap();
@@ -806,9 +806,9 @@ mod tests {
             );
             assert!(!err.contains("passphrase=x"), "{err}");
         }
-        // The relay's own settings: `MPT_SSH_KEY_PASSPHRASE` stands in for
+        // The relay's own settings: `MPFT_SSH_KEY_PASSPHRASE` stands in for
         // `[ssh] key`, which the global configuration would carry.
-        unsafe { std::env::set_var("MPT_SSH_KEY_PASSPHRASE", "relay-secret") };
+        unsafe { std::env::set_var("MPFT_SSH_KEY_PASSPHRASE", "relay-secret") };
         let mut loc = Location::parse("sftp://u@example.com/x").unwrap();
         loc.set_client_named(false);
         let cfg = SshConfig::from_location(&loc).unwrap();
@@ -821,7 +821,7 @@ mod tests {
             Some("relay-secret")
         );
         assert!(cfg.loc.own_keys());
-        unsafe { std::env::remove_var("MPT_SSH_KEY_PASSPHRASE") };
+        unsafe { std::env::remove_var("MPFT_SSH_KEY_PASSPHRASE") };
     }
 
     #[test]

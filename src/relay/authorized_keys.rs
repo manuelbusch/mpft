@@ -451,7 +451,7 @@ mod tests {
     fn a_key_with_an_option_the_relay_does_not_keep_is_left_out() {
         let (_, text) = key();
         for (line, what) in [
-            (format!("command=\"mpt relay\" {text}"), "command"),
+            (format!("command=\"mpft relay\" {text}"), "command"),
             (format!("permitopen=\"h:1\" {text}"), "permitopen"),
             (format!("cert-authority {text}"), "cert-authority"),
             (format!("from=\"10.0.0.0/99\" {text}"), "address/length"),

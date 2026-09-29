@@ -1,4 +1,4 @@
-//! The client side of a relay: open an SSH session, run `mpt relay`, feed
+//! The client side of a relay: open an SSH session, run `mpft relay`, feed
 //! it the header and the payload, and read what it says back.
 //!
 //! Three tasks share the channel. The writer owns its writing half and
@@ -115,7 +115,7 @@ pub async fn send(session: Session<'_>, mut on_line: impl FnMut(&Value)) -> Resu
                 }
             }
         }
-        channel.exec(true, "mpt relay").await.map_err(ssh_err)?;
+        channel.exec(true, "mpft relay").await.map_err(ssh_err)?;
         let mut line =
             serde_json::to_string(header).map_err(|e| Error::invalid_option("header", e))?;
         line.push('\n');
@@ -192,7 +192,7 @@ pub async fn send(session: Session<'_>, mut on_line: impl FnMut(&Value)) -> Resu
                 russh::ChannelMsg::Success => accepted = true,
                 russh::ChannelMsg::Failure => {
                     return Err(Error::Remote(
-                        "the server does not run `mpt relay` (not a relay, or not in its PATH)"
+                        "the server does not run `mpft relay` (not a relay, or not in its PATH)"
                             .into(),
                     ));
                 }

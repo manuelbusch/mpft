@@ -10,11 +10,11 @@ directory you name.
 
 ## 1. A local copy
 
-Start with a copy that needs no network and no credentials. `mpt cp` takes a
+Start with a copy that needs no network and no credentials. `mpft cp` takes a
 source and a target:
 
 ```
-$ mpt cp report.pdf backup/
+$ mpft cp report.pdf backup/
 report.pdf -> backup/: 40000 bytes in 4.85ms
 ```
 
@@ -28,7 +28,7 @@ The trailing slash on `backup/` says *directory*, so the copy lands at
 directory of that name exists already:
 
 ```
-$ mpt cp report.pdf backup/2026-09-10.pdf
+$ mpft cp report.pdf backup/2026-09-10.pdf
 report.pdf -> backup/2026-09-10.pdf: 40000 bytes in 8.93ms
 ```
 
@@ -40,7 +40,7 @@ full, and where it differs between protocols.
 Now the same file to an SFTP server. A remote endpoint is a URL:
 
 ```
-$ mpt cp report.pdf sftp://deploy@srv.example.com/incoming/
+$ mpft cp report.pdf sftp://deploy@srv.example.com/incoming/
 error: copy report.pdf -> sftp://deploy@srv.example.com/incoming/?timeout=30:
        authentication failed: host key of srv.example.com:22 is not in known_hosts:
        SHA256:GFb3ByRBzc3YOA2B7PCZeSWXCPpf4DIlKm/UrNkKGhY. Verify it, then add it with
@@ -48,7 +48,7 @@ error: copy report.pdf -> sftp://deploy@srv.example.com/incoming/?timeout=30:
        ?hostkey=SHA256:GFb3ByRBzc3YOA2B7PCZeSWXCPpf4DIlKm/UrNkKGhY or ?known_hosts=accept-new
 ```
 
-This is not a misconfiguration. `mpt` checks the server's host key against
+This is not a misconfiguration. `mpft` checks the server's host key against
 `~/.ssh/known_hosts` before it sends anything, and an unknown host is refused.
 A machine that answers on port 22 is not yet a machine you have any reason to
 trust, and the check happens before a password or a file is handed to it.
@@ -57,7 +57,7 @@ The message names the three ways forward. For this walk-through, accept the
 key on first use, the way `ssh` itself offers to:
 
 ```
-$ mpt cp report.pdf "sftp://deploy@srv.example.com/incoming/?known_hosts=accept-new"
+$ mpft cp report.pdf "sftp://deploy@srv.example.com/incoming/?known_hosts=accept-new"
 WARN adding new host key for srv.example.com:22 to known_hosts: SHA256:GFb3ByRBzc3…
 report.pdf -> sftp://deploy@srv.example.com/incoming/?known_hosts=accept-new&timeout=30: 40000 bytes in 92.26ms
 ```
@@ -72,28 +72,28 @@ connection](../trust/connections.md#ssh-host-keys) has the other two ways.
 With the key known, the plain command works:
 
 ```
-$ mpt cp report.pdf sftp://deploy@srv.example.com/incoming/
+$ mpft cp report.pdf sftp://deploy@srv.example.com/incoming/
 report.pdf -> sftp://deploy@srv.example.com/incoming/?timeout=30: 40000 bytes in 83.38ms
 ```
 
-**`?timeout=30` appeared although you did not type it.** `mpt` echoes the
+**`?timeout=30` appeared although you did not type it.** `mpft` echoes the
 target with the options that were actually in force, filled in from the
 defaults. Seeing them is useful when a configuration file is in play and you
 want to know what a run really used.
 
 **Authentication happened without being mentioned.** No key was named, so
-`mpt` tried the ssh-agent and the default keys under `~/.ssh`, in the order
+`mpft` tried the ssh-agent and the default keys under `~/.ssh`, in the order
 [SFTP and SCP](../protocols/ssh.md#authentication) lists. To name a key
 explicitly, put it in the URL:
 
 ```
-mpt cp report.pdf "sftp://deploy@srv.example.com/incoming/?key=~/.ssh/deploy_ed25519"
+mpft cp report.pdf "sftp://deploy@srv.example.com/incoming/?key=~/.ssh/deploy_ed25519"
 ```
 
 ## 4. Listing the remote directory
 
 ```
-$ mpt ls sftp://deploy@srv.example.com/incoming/
+$ mpft ls sftp://deploy@srv.example.com/incoming/
 -        40000  report.pdf
 ```
 
@@ -106,7 +106,7 @@ matrix](../protocols/overview.md#what-each-one-can-do).
 Reverse the arguments to download. Nothing about the command changes shape:
 
 ```
-$ mpt cp sftp://deploy@srv.example.com/incoming/report.pdf ./
+$ mpft cp sftp://deploy@srv.example.com/incoming/report.pdf ./
 sftp://deploy@srv.example.com/incoming/report.pdf?timeout=30 -> ./: 40000 bytes in 82.44ms
 ```
 
@@ -114,7 +114,7 @@ Source and target are both just URLs, and either side may be local or remote.
 A copy from one server straight to another needs no local file:
 
 ```
-mpt cp sftp://old.example.com/export/data.csv "s3://bucket/import/?endpoint=https://minio.example.com"
+mpft cp sftp://old.example.com/export/data.csv "s3://bucket/import/?endpoint=https://minio.example.com"
 ```
 
 ## 6. A checksum for the recipient
@@ -123,7 +123,7 @@ mpt cp sftp://old.example.com/export/data.csv "s3://bucket/import/?endpoint=http
 and leaves it next to the copy:
 
 ```
-$ mpt cp --hash sha256 report.pdf sftp://deploy@srv.example.com/incoming/
+$ mpft cp --hash sha256 report.pdf sftp://deploy@srv.example.com/incoming/
 report.pdf -> sftp://deploy@srv.example.com/incoming/?timeout=30: 40000 bytes in 118.43ms
 + sftp://deploy@srv.example.com/incoming/report.pdf.sha256
 sha256  4ae30c5fbf7fd48c42dd9d26004fcde7c47cf90e0fe642c4c8069b239e4a299b
@@ -149,7 +149,7 @@ way, `--check` verifies a download against a checksum file that sits beside the
 `cp` takes more than two arguments:
 
 ```
-$ mpt cp report.pdf sftp://deploy@srv.example.com/incoming/ "s3://bucket/reports/" "mailto:boss@example.com?subject=Report"
+$ mpft cp report.pdf sftp://deploy@srv.example.com/incoming/ "s3://bucket/reports/" "mailto:boss@example.com?subject=Report"
 ok             40000 bytes    79.43ms  sftp://deploy@srv.example.com/incoming/
 ok             40000 bytes     7.13ms  s3://bucket/reports/
 ok             40000 bytes    32.14ms  mailto:boss@example.com?subject=Report
@@ -167,7 +167,7 @@ when one target fails.
 in a script than the message:
 
 ```
-$ mpt cp report.pdf sftp://deploy@srv.example.com/incoming/ ; echo $?
+$ mpft cp report.pdf sftp://deploy@srv.example.com/incoming/ ; echo $?
 4
 ```
 
@@ -179,8 +179,8 @@ as which.
 protocol conversation, `-vvv` everything:
 
 ```
-$ mpt -v cp report.pdf backup/
-INFO mpt::transfer: copy targets=1 size=Some(40000) cache=Stream hash=None check=false
+$ mpft -v cp report.pdf backup/
+INFO mpft::transfer: copy targets=1 size=Some(40000) cache=Stream hash=None check=false
 report.pdf -> backup/: 40000 bytes in 6.70ms
 ```
 

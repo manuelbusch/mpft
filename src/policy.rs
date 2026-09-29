@@ -39,7 +39,7 @@ impl Policy {
     /// The defaults, taken from the environment.
     pub fn from_env() -> Policy {
         Policy {
-            refuse_plaintext_auth: env_flag("MPT_REFUSE_PLAINTEXT_AUTH"),
+            refuse_plaintext_auth: env_flag("MPFT_REFUSE_PLAINTEXT_AUTH"),
             ..Policy::default()
         }
     }
@@ -185,7 +185,7 @@ pub fn check_credentials(loc: &Location) -> Result<()> {
         if policy.refuse_plaintext_auth {
             return Err(Error::Auth(format!(
                 "{where_}: {why} (refused by policy; switch to the TLS variant of the \
-                 scheme, or drop --refuse-plaintext-auth / MPT_REFUSE_PLAINTEXT_AUTH)"
+                 scheme, or drop --refuse-plaintext-auth / MPFT_REFUSE_PLAINTEXT_AUTH)"
             )));
         }
         warn_once(
@@ -204,7 +204,7 @@ pub fn check_credentials(loc: &Location) -> Result<()> {
         warn_once(
             format!("urlpassword:{}", loc.scheme()),
             "the password is in the URL, where the process list and the shell history \
-             can read it. Use MPT_PASSWORD, --password-file or --password-stdin instead",
+             can read it. Use MPFT_PASSWORD, --password-file or --password-stdin instead",
         );
     }
     Ok(())

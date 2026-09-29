@@ -1,4 +1,4 @@
-//! `mpt serve`: jobs over HTTP, progress by polling or WebSocket.
+//! `mpft serve`: jobs over HTTP, progress by polling or WebSocket.
 //!
 //! A job is one transfer (a source and its targets) or a batch of them.
 //! `POST /v1/jobs` and `POST /v1/batches` take one in and answer at once
@@ -37,7 +37,7 @@ use store::{Journal, Store};
 pub use api::router;
 
 /// How the server is set up: the `[server]` section and the flags of
-/// `mpt serve`, resolved.
+/// `mpft serve`, resolved.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     /// Where to listen. Port 0 picks a free one; see `port_file`.
@@ -127,7 +127,7 @@ impl ServerConfig {
         match (self.urls, name) {
             (UrlRule::Any, _) => Ok(()),
             (UrlRule::Profiles, None) => Err(Error::InvalidUrl(format!(
-                "{url}: only mpt://<profile>/ endpoints are accepted \
+                "{url}: only mpft://<profile>/ endpoints are accepted \
                  (set [server] urls = \"any\" or --allow-any-url to allow others)"
             ))),
             (UrlRule::Profiles, Some(name)) => {

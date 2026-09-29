@@ -74,7 +74,7 @@ impl SignFormat {
 pub struct SignSpec {
     pub format: SignFormat,
     pub key: Option<PathBuf>,
-    /// Passphrase of the key file (`MPT_SIGN_KEY_PASSPHRASE`).
+    /// Passphrase of the key file (`MPFT_SIGN_KEY_PASSPHRASE`).
     pub passphrase: Option<SecretString>,
 }
 
@@ -95,7 +95,7 @@ impl SignSpec {
                 "pgp needs a key file: pgp:<secret-key.asc>",
             ));
         }
-        let passphrase = std::env::var("MPT_SIGN_KEY_PASSPHRASE")
+        let passphrase = std::env::var("MPFT_SIGN_KEY_PASSPHRASE")
             .ok()
             .filter(|p| !p.is_empty())
             .map(SecretString::from)
@@ -370,7 +370,7 @@ pub mod ssh {
                 key: read_key(path, spec.passphrase.as_ref().map(|p| p.expose_secret()))?,
             }));
         }
-        // No key given: ssh-agent first, then MPT_SSH_KEY, then default key files.
+        // No key given: ssh-agent first, then MPFT_SSH_KEY, then default key files.
         #[cfg(feature = "ssh")]
         if crate::protocols::ssh::agent::available() {
             match agent::AgentSigner::connect().await {
@@ -378,7 +378,7 @@ pub mod ssh {
                 Err(e) => tracing::warn!("ssh-agent not usable for signing: {e}"),
             }
         }
-        let mut candidates: Vec<PathBuf> = std::env::var("MPT_SSH_KEY")
+        let mut candidates: Vec<PathBuf> = std::env::var("MPFT_SSH_KEY")
             .ok()
             .filter(|s| !s.is_empty())
             .map(|s| PathBuf::from(expand_tilde(&s)))
@@ -397,7 +397,7 @@ pub mod ssh {
             }
         }
         Err(Error::Config(
-            "no signing key: give --sign ssh:<key>, set MPT_SSH_KEY or run an ssh-agent".into(),
+            "no signing key: give --sign ssh:<key>, set MPFT_SSH_KEY or run an ssh-agent".into(),
         ))
     }
 
@@ -410,7 +410,7 @@ pub mod ssh {
         if key.is_encrypted() {
             let pw = passphrase.ok_or_else(|| {
                 Error::Auth(format!(
-                    "{} is encrypted; set MPT_SIGN_KEY_PASSPHRASE",
+                    "{} is encrypted; set MPFT_SIGN_KEY_PASSPHRASE",
                     path.display()
                 ))
             })?;
@@ -659,7 +659,7 @@ pub mod ssh {
                     .request_identities()
                     .await
                     .map_err(|e| Error::Auth(format!("ssh-agent: {e}")))?;
-                let wanted = std::env::var("MPT_SIGN_KEY_FINGERPRINT")
+                let wanted = std::env::var("MPFT_SIGN_KEY_FINGERPRINT")
                     .ok()
                     .or_else(|| crate::config::global().signing.agent_fingerprint.clone());
                 let identity = ids
@@ -808,7 +808,7 @@ pub mod pgp {
             .unlock(&password, |_, _| Ok(()))
             .map_err(|e| {
                 Error::Auth(format!(
-                    "cannot unlock {}: {e} (set MPT_SIGN_KEY_PASSPHRASE)",
+                    "cannot unlock {}: {e} (set MPFT_SIGN_KEY_PASSPHRASE)",
                     path.display()
                 ))
             })?

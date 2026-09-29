@@ -7,14 +7,14 @@
 //! [profiles.prod]
 //! url      = "sftp://deploy@srv.example.com/data/"
 //! password = { env = "PROD_PW" }                    # environment variable
-//! # password = { file = "~/.config/mpt/prod.pw" }   # first line of a file
+//! # password = { file = "~/.config/mpft/prod.pw" }   # first line of a file
 //! # password = { cmd = "op read op://Infra/prod/password" }   # any secret manager
-//! # password = { keyring = "mpt/prod" }             # OS key store  (feature "keyring")
-//! # password = { vault = "secret/data/mpt/prod#password" }    # (feature "vault")
+//! # password = { keyring = "mpft/prod" }             # OS key store  (feature "keyring")
+//! # password = { vault = "secret/data/mpft/prod#password" }    # (feature "vault")
 //! ```
 //!
 //! `cmd` runs what the file says, which is why the file's permissions are
-//! checked and why `./mpt.toml` may not carry credentials at all.
+//! checked and why `./mpft.toml` may not carry credentials at all.
 //!
 //! What `cmd`, `keyring` and `vault` return is kept for a while, ten minutes
 //! unless the reference says otherwise (`{ cmd = "…", ttl = "1h" }`), so that
@@ -311,7 +311,7 @@ async fn from_keyring(entry: &str) -> Fetched {
     Err("keyring credentials need the 'keyring' feature, which is not compiled in".into())
 }
 
-/// `<service>/<user>`, the shape `mpt credentials` uses as well.
+/// `<service>/<user>`, the shape `mpft credentials` uses as well.
 fn split_keyring_entry(entry: &str) -> Result<(String, String)> {
     match entry.rsplit_once('/') {
         Some((s, u)) if !s.is_empty() && !u.is_empty() => Ok((s.to_string(), u.to_string())),
@@ -321,13 +321,13 @@ fn split_keyring_entry(entry: &str) -> Result<(String, String)> {
     }
 }
 
-/// `<path>#<field>`, e.g. `secret/data/mpt/prod#password`.
+/// `<path>#<field>`, e.g. `secret/data/mpft/prod#password`.
 fn split_vault_ref(reference: &str) -> Result<(&str, &str)> {
     match reference.split_once('#') {
         Some((p, f)) if !p.is_empty() && !f.is_empty() => Ok((p, f)),
         _ => Err(Error::Config(format!(
             "vault reference '{reference}' must be <path>#<field>, \
-             e.g. secret/data/mpt/prod#password"
+             e.g. secret/data/mpft/prod#password"
         ))),
     }
 }
@@ -513,8 +513,8 @@ mod tests {
     #[tokio::test]
     async fn the_environment_and_a_file() {
         // SAFETY: single-threaded test, the variable is only read here.
-        unsafe { std::env::set_var("MPT_TEST_SECRET", "from-env") };
-        let s = parse("password = { env = \"MPT_TEST_SECRET\" }")
+        unsafe { std::env::set_var("MPFT_TEST_SECRET", "from-env") };
+        let s = parse("password = { env = \"MPFT_TEST_SECRET\" }")
             .resolve("test")
             .await
             .unwrap();
@@ -529,12 +529,12 @@ mod tests {
             .unwrap();
         assert_eq!(s.expose_secret(), "from-file", "only the first line");
 
-        let err = parse("password = { env = \"MPT_TEST_UNSET\" }")
+        let err = parse("password = { env = \"MPFT_TEST_UNSET\" }")
             .resolve("test")
             .await
             .unwrap_err()
             .to_string();
-        assert!(err.contains("MPT_TEST_UNSET"), "{err}");
+        assert!(err.contains("MPFT_TEST_UNSET"), "{err}");
     }
 
     #[tokio::test]
@@ -621,13 +621,13 @@ mod tests {
 
     #[test]
     fn references_are_checked_before_they_are_used() {
-        assert!(split_keyring_entry("mpt/prod").is_ok());
+        assert!(split_keyring_entry("mpft/prod").is_ok());
         assert!(split_keyring_entry("prod").is_err());
         assert_eq!(
-            split_vault_ref("secret/data/mpt/prod#password").unwrap(),
-            ("secret/data/mpt/prod", "password")
+            split_vault_ref("secret/data/mpft/prod#password").unwrap(),
+            ("secret/data/mpft/prod", "password")
         );
-        assert!(split_vault_ref("secret/data/mpt/prod").is_err());
+        assert!(split_vault_ref("secret/data/mpft/prod").is_err());
     }
 
     #[cfg(feature = "vault")]

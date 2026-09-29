@@ -1,7 +1,7 @@
 # Summary
 
 [Introduction](introduction.md)
-[Why mpt?](why-mpt.md)
+[Why mpft?](why-mpft.md)
 
 # Getting started
 
@@ -32,13 +32,13 @@
 
 # Automation
 
-- [Using mpt in scripts](automation/scripting.md)
+- [Using mpft in scripts](automation/scripting.md)
 - [Scheduled and triggered runs](automation/scheduling.md)
 - [Logging and observability](automation/logging.md)
 
 # Services
 
-- [Jobs over HTTP with mpt serve](server/serve.md)
+- [Jobs over HTTP with mpft serve](server/serve.md)
 - [Relaying through a fast host](server/relay.md)
 - [Running a relay](server/relay-host.md)
 - [Relay topologies: sources and chains](server/relay-topologies.md)
@@ -71,7 +71,7 @@
 
 # Appendix
 
-- [Using mpt as a library](appendix/library.md)
+- [Using mpft as a library](appendix/library.md)
 - [Windows](appendix/windows.md)
 - [Troubleshooting](appendix/troubleshooting.md)
 - [Glossary](appendix/glossary.md)

@@ -1,28 +1,28 @@
-//! The command line on local files only: what `mpt` prints and how it exits
+//! The command line on local files only: what `mpft` prints and how it exits
 //! when no server is involved.
 
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-/// Run `mpt` in `dir` with an empty configuration, so the user's own does
+/// Run `mpft` in `dir` with an empty configuration, so the user's own does
 /// not leak into the test.
-fn mpt(dir: &Path, args: &[&str]) -> Output {
-    mpt_with(dir, "", args, None)
+fn mpft(dir: &Path, args: &[&str]) -> Output {
+    mpft_with(dir, "", args, None)
 }
 
-/// [`mpt`] with `config` as the configuration file and `stdin` on
+/// [`mpft`] with `config` as the configuration file and `stdin` on
 /// standard input.
-fn mpt_with(dir: &Path, config: &str, args: &[&str], stdin: Option<&[u8]>) -> Output {
+fn mpft_with(dir: &Path, config: &str, args: &[&str], stdin: Option<&[u8]>) -> Output {
     let path = dir.join("test-config.toml");
     std::fs::write(&path, config).unwrap();
     let config = path;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mpt"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mpft"))
         .arg("--config")
         .arg(&config)
         .args(args)
         .current_dir(dir)
-        .env_remove("MPT_CONFIG")
-        .env_remove("MPT_PASSWORD")
+        .env_remove("MPFT_CONFIG")
+        .env_remove("MPFT_PASSWORD")
         .stdin(if stdin.is_some() {
             Stdio::piped()
         } else {
@@ -31,7 +31,7 @@ fn mpt_with(dir: &Path, config: &str, args: &[&str], stdin: Option<&[u8]>) -> Ou
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("running mpt");
+        .expect("running mpft");
     if let Some(bytes) = stdin {
         use std::io::Write;
         child.stdin.take().unwrap().write_all(bytes).unwrap();
@@ -55,7 +55,7 @@ fn a_dry_run_of_a_plain_copy_runs_nothing() {
     std::fs::write(dir.path().join("a.txt"), "a").unwrap();
     std::fs::create_dir(dir.path().join("out")).unwrap();
 
-    let out = mpt(
+    let out = mpft(
         dir.path(),
         &["cp", "--dry-run", "--delete-source", "a.txt", "out/"],
     );
@@ -67,7 +67,7 @@ fn a_dry_run_of_a_plain_copy_runs_nothing() {
         "the file was copied"
     );
 
-    let out = mpt(dir.path(), &["--json", "cp", "--dry-run", "a.txt", "out/"]);
+    let out = mpft(dir.path(), &["--json", "cp", "--dry-run", "a.txt", "out/"]);
     assert!(out.status.success(), "{}", stderr(&out));
     let line: serde_json::Value = serde_json::from_str(stdout(&out).trim()).unwrap();
     assert_eq!(line["job"], 1);
@@ -92,7 +92,7 @@ fn a_relay_of_an_unused_profile_changes_nothing() {
         std::fs::create_dir(dir.path().join(d)).unwrap();
     }
     let config = "[profiles.far]\nurl = \"sftp://h/in/\"\nvia = \"ssh://relay.invalid/\"\n";
-    let run = |args: &[&str]| mpt_with(dir.path(), config, args, None);
+    let run = |args: &[&str]| mpft_with(dir.path(), config, args, None);
 
     let out = run(&["--hash", "sha256", "cp", "a.txt", "out/"]);
     assert!(out.status.success(), "{}", stderr(&out));
@@ -112,7 +112,7 @@ fn a_relay_of_an_unused_profile_changes_nothing() {
     assert!(out.status.success(), "{}", stderr(&out));
 
     // The profile's relay is used, and refuses --check, when a job uses it.
-    let out = run(&["--check", "cp", "out/a.txt", "mpt://far/"]);
+    let out = run(&["--check", "cp", "out/a.txt", "mpft://far/"]);
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert!(
         stderr(&out).contains("not available with a relay"),
@@ -138,7 +138,7 @@ fn an_interrupt_ends_a_copy_stuck_in_a_read() {
             .unwrap()
             .success()
     );
-    // Opening the pipe for writing returns once mpt opened it for reading,
+    // Opening the pipe for writing returns once mpft opened it for reading,
     // and that is after it listens for signals.
     let mut writer = Command::new("sh")
         .arg("-c")
@@ -148,7 +148,7 @@ fn an_interrupt_ends_a_copy_stuck_in_a_read() {
         .unwrap();
     let config = dir.path().join("test-config.toml");
     std::fs::write(&config, "").unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mpt"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mpft"))
         .arg("--config")
         .arg(&config)
         .args(["cp", "fifo", "out/"])
@@ -162,7 +162,7 @@ fn an_interrupt_ends_a_copy_stuck_in_a_read() {
     while !dir.path().join("opened").exists() {
         assert!(
             started.elapsed() < Duration::from_secs(20),
-            "mpt never opened the pipe"
+            "mpft never opened the pipe"
         );
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -180,7 +180,7 @@ fn an_interrupt_ends_a_copy_stuck_in_a_read() {
         if started.elapsed() > Duration::from_secs(20) {
             let _ = child.kill();
             let _ = writer.kill();
-            panic!("mpt did not stop after SIGINT");
+            panic!("mpft did not stop after SIGINT");
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -193,7 +193,7 @@ fn an_interrupt_ends_a_copy_stuck_in_a_read() {
 }
 
 /// `--password-stdin` is refused with a command that reads standard input
-/// itself; `mpt relay` once swallowed the upload as the password, and
+/// itself; `mpft relay` once swallowed the upload as the password, and
 /// `credentials set` stored an empty secret.
 #[test]
 fn the_password_cannot_share_stdin_with_a_command_that_reads_it() {
@@ -206,7 +206,7 @@ fn the_password_cannot_share_stdin_with_a_command_that_reads_it() {
         refused.push(vec!["--password-stdin", "credentials", "set", "svc/user"]);
     }
     for args in refused {
-        let out = mpt_with(dir.path(), "", &args, Some(b"pw\nmore\n"));
+        let out = mpft_with(dir.path(), "", &args, Some(b"pw\nmore\n"));
         assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
         assert!(
             stderr(&out).contains("cannot both come from stdin"),
@@ -218,7 +218,7 @@ fn the_password_cannot_share_stdin_with_a_command_that_reads_it() {
     // Anywhere else only the first line is read.
     std::fs::write(dir.path().join("a.txt"), "a").unwrap();
     std::fs::create_dir(dir.path().join("out")).unwrap();
-    let out = mpt_with(
+    let out = mpft_with(
         dir.path(),
         "",
         &["--password-stdin", "cp", "a.txt", "out/"],
@@ -236,7 +236,7 @@ fn a_following_dry_run_numbers_every_job() {
     for name in ["a.csv", "b.csv", "c.txt"] {
         std::fs::write(dir.path().join(name), name).unwrap();
     }
-    let out = mpt_with(
+    let out = mpft_with(
         dir.path(),
         "",
         &["batch", "-", "--follow", "--dry-run"],
@@ -256,7 +256,7 @@ fn a_following_dry_run_numbers_every_job() {
     assert!(!dir.path().join("out").exists(), "the dry run copied");
 
     // A line that is not a job still fails the run.
-    let out = mpt_with(
+    let out = mpft_with(
         dir.path(),
         "",
         &["batch", "-", "--follow", "--dry-run"],
@@ -272,7 +272,7 @@ fn a_following_dry_run_numbers_every_job() {
 fn a_following_batch_names_the_line_it_rejects() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("c.txt"), "c").unwrap();
-    let out = mpt_with(
+    let out = mpft_with(
         dir.path(),
         "",
         &["batch", "-", "--follow", "--dry-run"],
@@ -296,7 +296,7 @@ fn config_check_lists_profiles_and_hides_secrets() {
     let config = "[mail]\nsmtp = \"smtp://u:s3cret@mail.example.com:587\"\n\
                   password = \"hunter2\"\n\
                   [profiles.backup]\nurl = \"/tmp/backup/\"\n";
-    let out = mpt_with(dir.path(), config, &["config", "check"], None);
+    let out = mpft_with(dir.path(), config, &["config", "check"], None);
     assert!(out.status.success(), "{}", stderr(&out));
     let text = stdout(&out);
     assert!(text.contains("[profiles]"), "{text}");
@@ -309,7 +309,7 @@ fn config_check_lists_profiles_and_hides_secrets() {
     assert!(text.contains("[mail] password"), "{text}");
 
     // Profiles alone are something set, not "nothing set".
-    let out = mpt_with(
+    let out = mpft_with(
         dir.path(),
         "[profiles.backup]\nurl = \"/tmp/backup/\"\n",
         &["config", "check"],
@@ -325,7 +325,7 @@ fn config_check_lists_profiles_and_hides_secrets() {
 fn a_copy_that_fails_early_still_prints_json() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("out")).unwrap();
-    let out = mpt(dir.path(), &["--json", "cp", "nosuch.txt", "out/"]);
+    let out = mpft(dir.path(), &["--json", "cp", "nosuch.txt", "out/"]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     let report: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
     assert_eq!(report["ok"], false);
@@ -367,7 +367,7 @@ fn a_wrong_setting_exits_with_2() {
         cases.push(("", vec!["serve", "--retention", "a while"]));
     }
     for (config, args) in cases {
-        let out = mpt_with(dir.path(), config, &args, None);
+        let out = mpft_with(dir.path(), config, &args, None);
         assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
     }
 }

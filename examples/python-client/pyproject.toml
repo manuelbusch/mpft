@@ -1,7 +1,7 @@
 [project]
-name = "mpt-client"
+name = "mpft-client"
 version = "0.1.0"
-description = "Talk to `mpt serve`: submit jobs and follow their progress over WebSocket"
+description = "Talk to `mpft serve`: submit jobs and follow their progress over WebSocket"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT OR Apache-2.0"
@@ -11,14 +11,14 @@ dependencies = [
 ]
 
 [project.scripts]
-mpt-client = "mpt_client.cli:main"
+mpft-client = "mpft_client.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mpt_client"]
+packages = ["src/mpft_client"]
 
 [dependency-groups]
 dev = [

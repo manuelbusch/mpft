@@ -137,7 +137,7 @@ impl BatchReport {
 }
 
 /// The files a batch writes, to refuse a second job on any of them: two
-/// jobs on one file would share a `.mpt-part` and destroy each other's
+/// jobs on one file would share a `.mpft-part` and destroy each other's
 /// upload. Mail targets are exempt, a mailbox can take the same attachment
 /// twice.
 #[derive(Debug, Default)]

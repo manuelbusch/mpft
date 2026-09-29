@@ -5,10 +5,10 @@ whatever the server offers. `webdav(s)://` speaks the WebDAV extensions on top,
 which add listing, renaming and directory creation.
 
 ```
-mpt cp https://example.com/data.json ./
-mpt cp report.pdf "https://api.example.com/upload?method=post"
-mpt cp report.pdf webdavs://cloud.example.com/documents/
-mpt ls webdavs://cloud.example.com/documents/
+mpft cp https://example.com/data.json ./
+mpft cp report.pdf "https://api.example.com/upload?method=post"
+mpft cp report.pdf webdavs://cloud.example.com/documents/
+mpft ls webdavs://cloud.example.com/documents/
 ```
 
 ## HTTP versus WebDAV
@@ -26,12 +26,12 @@ URL where plain HTTP would work, so the choice is usually just which prefix you
 type. `webdavs://` is WebDAV over HTTPS and is the form to use.
 
 Plain HTTP cannot rename, so a PUT goes straight to the final name. There is no
-`.mpt-part` and no `--resume`; an interrupted upload leaves whatever the server
+`.mpft-part` and no `--resume`; an interrupted upload leaves whatever the server
 kept.
 
 ## The request path
 
-The path goes to the server as the URL spells it. A file name that `mpt`
+The path goes to the server as the URL spells it. A file name that `mpft`
 appends, from a directory target or a listing, is percent-encoded segment by
 segment, so a space, `#`, `?`, `%` or `ä` in a name reaches the server as part
 of that name, in a `MOVE`'s `Destination` header as well. An encoded `/`
@@ -44,9 +44,9 @@ GET is used for reading. For writing, the method is `PUT` unless you say
 otherwise:
 
 ```
-mpt cp report.pdf "https://api.example.com/files/report.pdf"                # PUT
-mpt cp report.pdf "https://api.example.com/upload?method=post"              # POST
-mpt cp report.pdf "https://api.example.com/files/report.pdf?method=patch"   # PATCH
+mpft cp report.pdf "https://api.example.com/files/report.pdf"                # PUT
+mpft cp report.pdf "https://api.example.com/upload?method=post"              # POST
+mpft cp report.pdf "https://api.example.com/files/report.pdf?method=patch"   # PATCH
 ```
 
 The payload is streamed, so uploading a large file does not need memory for it.
@@ -54,23 +54,23 @@ The payload is streamed, so uploading a large file does not need memory for it.
 ## Headers and query parameters
 
 ```
-mpt cp report.pdf "https://api.example.com/upload?header=X-Api-Key:abc123&header=X-Run:42"
+mpft cp report.pdf "https://api.example.com/upload?header=X-Api-Key:abc123&header=X-Run:42"
 ```
 
 `?header=Name:Value` may be repeated, and a `webdav(s)://` endpoint sends its
 headers on every request as well. Anything else in the query of an
-`http(s)://` URL that `mpt` does not recognise is **passed through to the
+`http(s)://` URL that `mpft` does not recognise is **passed through to the
 server**, so an API's own parameters travel:
 
 ```
-mpt cp https://api.example.com/export?format=csv&range=30d ./
+mpft cp https://api.example.com/export?format=csv&range=30d ./
 ```
 
-The cost is that a [misspelled `mpt`
+The cost is that a [misspelled `mpft`
 option](../getting-started/addressing.md#options-belong-to-one-endpoint)
 becomes a query parameter instead of an error.
 
-The options `mpt` keeps for itself are `method`, `header`, `token`, `insecure`,
+The options `mpft` keeps for itself are `method`, `header`, `token`, `insecure`,
 `timeout` and `connect_retries`.
 
 ## Authentication
@@ -82,7 +82,7 @@ the credentials in the clear.
 For anything modern the answer is a bearer token:
 
 ```
-mpt cp report.pdf "https://graph.example.com/upload?token=eyJ0eXAi…"
+mpft cp report.pdf "https://graph.example.com/upload?token=eyJ0eXAi…"
 ```
 
 Better, keep it out of the command line and let it be fetched when it is
@@ -132,10 +132,10 @@ refuses a redirect to another host outright. It refuses the same downgrade.
 
 ## Listing
 
-`mpt ls` on `http://` fails, and says what to do about it:
+`mpft ls` on `http://` fails, and says what to do about it:
 
 ```
-$ mpt ls https://example.com/files/
+$ mpft ls https://example.com/files/
 error: listing https://example.com/files/?timeout=30: scheme 'http' cannot list
        (use webdav:// for PROPFIND)
 ```

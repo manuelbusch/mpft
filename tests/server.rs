@@ -1,4 +1,4 @@
-//! `mpt serve` end to end: the binary is started with a temporary
+//! `mpft serve` end to end: the binary is started with a temporary
 //! configuration and talked to over HTTP and WebSocket. Only local files
 //! are moved, so nothing here needs the test servers.
 
@@ -39,11 +39,11 @@ impl Server {
         let d = dir.path();
         std::fs::create_dir_all(d.join("src")).unwrap();
         std::fs::create_dir_all(d.join("dst")).unwrap();
-        let config = d.join("mpt.toml");
+        let config = d.join("mpft.toml");
         std::fs::write(
             &config,
             format!(
-                "[server]\ntoken = {{ env = \"MPT_TEST_TOKEN\" }}\n\
+                "[server]\ntoken = {{ env = \"MPFT_TEST_TOKEN\" }}\n\
                  [profiles.src]\nurl = \"{}/src/\"\n\
                  [profiles.dst]\nurl = \"{}/dst/\"\n{more_toml}",
                 d.display(),
@@ -58,9 +58,9 @@ impl Server {
         }
         let port_file = d.join("port");
         let log = d.join("server.log");
-        let child = Command::new(env!("CARGO_BIN_EXE_mpt"))
-            .env("MPT_TEST_TOKEN", TOKEN)
-            .env_remove("MPT_CONFIG")
+        let child = Command::new(env!("CARGO_BIN_EXE_mpft"))
+            .env("MPFT_TEST_TOKEN", TOKEN)
+            .env_remove("MPFT_CONFIG")
             .arg("--config")
             .arg(&config)
             .arg("-v")
@@ -209,7 +209,7 @@ async fn a_job_is_run_and_can_be_polled() {
         .post(
             "/v1/jobs",
             "application/json",
-            r#"{"src": "mpt://src/a.bin", "dst": "mpt://dst/", "options": {"hash": "sha256"}}"#
+            r#"{"src": "mpft://src/a.bin", "dst": "mpft://dst/", "options": {"hash": "sha256"}}"#
                 .into(),
         )
         .await;
@@ -234,12 +234,12 @@ async fn a_job_is_run_and_can_be_polled() {
     let (status, t) = server.get(&format!("{url}/transfers/0")).await;
     assert_eq!(status, 200);
     assert_eq!(t["state"], "done");
-    assert_eq!(t["src"], "mpt://src/a.bin", "{t}");
-    assert_eq!(t["dst"][0], "mpt://dst/", "{t}");
-    assert_eq!(t["report"]["source"], "mpt://src/a.bin", "{t}");
-    assert_eq!(t["report"]["targets"][0]["target"], "mpt://dst/", "{t}");
+    assert_eq!(t["src"], "mpft://src/a.bin", "{t}");
+    assert_eq!(t["dst"][0], "mpft://dst/", "{t}");
+    assert_eq!(t["report"]["source"], "mpft://src/a.bin", "{t}");
+    assert_eq!(t["report"]["targets"][0]["target"], "mpft://dst/", "{t}");
     assert_eq!(
-        t["report"]["targets"][0]["sidecar"], "mpt://dst/a.bin.sha256",
+        t["report"]["targets"][0]["sidecar"], "mpft://dst/a.bin.sha256",
         "{t}"
     );
 }
@@ -249,9 +249,9 @@ async fn a_batch_as_ndjson_reports_every_transfer() {
     let server = Server::start(&[]);
     std::fs::write(server.path().join("src/one"), b"1").unwrap();
     std::fs::write(server.path().join("src/two"), b"22").unwrap();
-    let lines = "{\"src\": \"mpt://src/one\", \"dst\": \"mpt://dst/\"}\n\
-                 {\"src\": \"mpt://src/two\", \"dst\": [\"mpt://dst/\"]}\n\
-                 {\"src\": \"mpt://src/missing\", \"dst\": \"mpt://dst/\"}\n";
+    let lines = "{\"src\": \"mpft://src/one\", \"dst\": \"mpft://dst/\"}\n\
+                 {\"src\": \"mpft://src/two\", \"dst\": [\"mpft://dst/\"]}\n\
+                 {\"src\": \"mpft://src/missing\", \"dst\": \"mpft://dst/\"}\n";
     let (status, body) = server
         .post(
             "/v1/batches?parallel=2",
@@ -270,7 +270,7 @@ async fn a_batch_as_ndjson_reports_every_transfer() {
     let transfers = job["transfers"].as_array().unwrap();
     assert_eq!(transfers[2]["state"], "failed");
     assert_eq!(transfers[2]["error"]["kind"], "io");
-    assert_eq!(transfers[2]["src"], "mpt://src/missing");
+    assert_eq!(transfers[2]["src"], "mpft://src/missing");
 
     // A job that fails in preparation says so in terms of the reference,
     // not of the directory behind the profile.
@@ -278,14 +278,14 @@ async fn a_batch_as_ndjson_reports_every_transfer() {
         .post(
             "/v1/jobs",
             "application/json",
-            r#"{"src": "mpt://src/*.none", "dst": "mpt://dst/"}"#.into(),
+            r#"{"src": "mpft://src/*.none", "dst": "mpft://dst/"}"#.into(),
         )
         .await;
     assert_eq!(status, 202, "{body}");
     let job = server.wait(body["url"].as_str().unwrap()).await;
     assert_eq!(job["state"], "failed", "{job}");
     let message = job["error"]["message"].as_str().unwrap();
-    assert!(message.contains("mpt://src/*.none"), "{message}");
+    assert!(message.contains("mpft://src/*.none"), "{message}");
     assert!(
         !message.contains(&server.path().display().to_string()),
         "{message}"
@@ -306,7 +306,7 @@ async fn the_websocket_sends_a_snapshot_first_and_done_last() {
         .post(
             "/v1/jobs",
             "application/json",
-            r#"{"src": "mpt://src/big.bin", "dst": "mpt://dst/"}"#.into(),
+            r#"{"src": "mpft://src/big.bin", "dst": "mpft://dst/"}"#.into(),
         )
         .await;
     assert_eq!(status, 202, "{body}");
@@ -379,7 +379,7 @@ async fn raw_urls_need_allow_any_url() {
         .post(
             "/v1/jobs",
             "application/json",
-            r#"{"src": "mpt://nowhere/x", "dst": "mpt://dst/"}"#.into(),
+            r#"{"src": "mpft://nowhere/x", "dst": "mpft://dst/"}"#.into(),
         )
         .await;
     assert_eq!(status, 400, "{resp}");
@@ -409,12 +409,12 @@ async fn a_conflict_is_worded_in_the_clients_terms() {
     // target: the answer names the reference, not the path behind it.
     for (body, target) in [
         (
-            r#"{"jobs": [{"src": "mpt://src/a", "dst": "mpt://dst/x"}, {"src": "mpt://src/b", "dst": "mpt://dst/x"}]}"#,
-            "mpt://dst/x",
+            r#"{"jobs": [{"src": "mpft://src/a", "dst": "mpft://dst/x"}, {"src": "mpft://src/b", "dst": "mpft://dst/x"}]}"#,
+            "mpft://dst/x",
         ),
         (
-            r#"{"jobs": [{"src": "mpt://src/a", "dst": "mpt://dst/"}, {"src": "mpt://src/a", "dst": "mpt://dst/"}]}"#,
-            "mpt://dst/a",
+            r#"{"jobs": [{"src": "mpft://src/a", "dst": "mpft://dst/"}, {"src": "mpft://src/a", "dst": "mpft://dst/"}]}"#,
+            "mpft://dst/a",
         ),
     ] {
         let (status, resp) = server
@@ -441,7 +441,7 @@ async fn a_job_left_in_the_journal_runs_again() {
         &journal,
         format!(
             "{{\"t\":\"submitted\",\"id\":\"{id}\",\"at\":\"2026-01-01T00:00:00Z\",\"attempt\":1,\
-             \"submission\":{{\"kind\":\"single\",\"specs\":[{{\"src\":\"mpt://src/j.bin\",\"dsts\":[\"mpt://dst/\"]}}]}}}}\n"
+             \"submission\":{{\"kind\":\"single\",\"specs\":[{{\"src\":\"mpft://src/j.bin\",\"dsts\":[\"mpft://dst/\"]}}]}}}}\n"
         ),
     )
     .unwrap();
@@ -459,7 +459,7 @@ async fn a_job_left_in_the_journal_runs_again() {
         .post(
             "/v1/jobs",
             "application/json",
-            r#"{"src": "mpt://src/j.bin", "dst": "mpt://dst/again/"}"#.into(),
+            r#"{"src": "mpft://src/j.bin", "dst": "mpft://dst/again/"}"#.into(),
         )
         .await;
     assert_eq!(status, 202, "{body}");
@@ -484,19 +484,19 @@ async fn a_misconfigured_profile_is_not_described_to_the_client() {
     let server = Server::start_with_profiles(
         tempfile::tempdir().unwrap(),
         &[],
-        "[profiles.chain]\nurl = \"mpt://src/\"\n",
+        "[profiles.chain]\nurl = \"mpft://src/\"\n",
     );
     let (status, body) = server
         .post(
             "/v1/jobs",
             "application/json",
-            r#"{"src": "mpt://chain/x", "dst": "mpt://dst/"}"#.into(),
+            r#"{"src": "mpft://chain/x", "dst": "mpft://dst/"}"#.into(),
         )
         .await;
     assert_eq!(status, 400, "{body}");
     let message = body["error"]["message"].as_str().unwrap();
     assert!(message.contains("profile 'chain'"), "{message}");
-    assert!(!message.contains("mpt://src/"), "{message}");
+    assert!(!message.contains("mpft://src/"), "{message}");
     assert!(
         server.log().contains("points at another profile"),
         "{}",
@@ -517,7 +517,7 @@ async fn a_job_cancelled_while_it_is_prepared_stops_there() {
         .post(
             "/v1/jobs",
             "application/json",
-            r#"{"src": "mpt://slow/a", "dst": "mpt://dst/"}"#.into(),
+            r#"{"src": "mpft://slow/a", "dst": "mpft://dst/"}"#.into(),
         )
         .await;
     assert_eq!(status, 202, "{body}");
@@ -577,8 +577,8 @@ async fn a_job_cancelled_while_it_is_prepared_stops_there() {
 #[test]
 fn delete_source_needs_allow_delete() {
     let dir = tempfile::tempdir().unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
-        .env_remove("MPT_CONFIG")
+    let out = Command::new(env!("CARGO_BIN_EXE_mpft"))
+        .env_remove("MPFT_CONFIG")
         .env("XDG_CONFIG_HOME", dir.path())
         .current_dir(dir.path())
         .args(["--delete-source", "serve", "--bind", "127.0.0.1:0"])
@@ -597,8 +597,8 @@ fn delete_source_needs_allow_delete() {
 #[test]
 fn no_token_means_loopback_only() {
     let dir = tempfile::tempdir().unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_mpt"))
-        .env_remove("MPT_CONFIG")
+    let out = Command::new(env!("CARGO_BIN_EXE_mpft"))
+        .env_remove("MPFT_CONFIG")
         .env("XDG_CONFIG_HOME", dir.path())
         .current_dir(dir.path())
         .args(["serve", "--bind", "0.0.0.0:0"])
@@ -618,7 +618,7 @@ async fn an_interrupt_stops_the_server_cleanly() {
         .post(
             "/v1/jobs",
             "application/json",
-            r#"{"src": "mpt://src/s", "dst": "mpt://dst/"}"#.into(),
+            r#"{"src": "mpft://src/s", "dst": "mpft://dst/"}"#.into(),
         )
         .await;
     assert_eq!(status, 202, "{body}");
@@ -633,7 +633,7 @@ async fn an_interrupt_stops_the_server_cleanly() {
     assert!(exit.1.contains("stopped"), "{}", exit.1);
 }
 
-/// Start `mpt relay --listen` in `dir` (its working directory) with a
+/// Start `mpft relay --listen` in `dir` (its working directory) with a
 /// fresh host key and one authorized client key, `keys/client`; the child
 /// and the `ssh://` URL a client reaches it with.
 #[cfg(feature = "relay")]
@@ -652,8 +652,8 @@ fn start_relay(dir: &Path) -> (Child, String) {
     keygen("client");
     std::fs::copy(dir.join("keys/client.pub"), dir.join("authorized_keys")).unwrap();
     let port_file = dir.join("relay.port");
-    let child = Command::new(env!("CARGO_BIN_EXE_mpt"))
-        .env_remove("MPT_CONFIG")
+    let child = Command::new(env!("CARGO_BIN_EXE_mpft"))
+        .env_remove("MPFT_CONFIG")
         .current_dir(dir)
         .args(["-vv", "relay", "--listen", "127.0.0.1:0", "--host-key"])
         .arg(dir.join("keys/host"))
@@ -700,8 +700,8 @@ async fn a_profiles_relay_serves_the_jobs_that_name_it() {
         &[],
         &format!(
             "[profiles.relay]\nurl = \"{via}\"\n\
-             [profiles.far]\nurl = \"in/\"\nvia = \"mpt://relay\"\n\
-             [profiles.farout]\nurl = \"out/\"\nvia = \"mpt://relay\"\n"
+             [profiles.far]\nurl = \"in/\"\nvia = \"mpft://relay\"\n\
+             [profiles.farout]\nurl = \"out/\"\nvia = \"mpft://relay\"\n"
         ),
     );
     std::fs::write(server.path().join("src/up.bin"), payload(3_000)).unwrap();
@@ -717,20 +717,20 @@ async fn a_profiles_relay_serves_the_jobs_that_name_it() {
     };
 
     // Read and written by the relay, where only it sees the paths.
-    let job = run(r#"{"src": "mpt://far/a.bin", "dst": "mpt://farout/"}"#).await;
+    let job = run(r#"{"src": "mpft://far/a.bin", "dst": "mpft://farout/"}"#).await;
     assert_eq!(job["state"], "done", "{job}\n{}", server.log());
     assert_eq!(
         std::fs::read(far.path().join("out/a.bin")).unwrap(),
         payload(50_000)
     );
     assert_eq!(
-        job["transfers"][0]["report"]["source"], "mpt://far/a.bin",
+        job["transfers"][0]["report"]["source"], "mpft://far/a.bin",
         "{job}"
     );
 
     // A tree, listed and made by the relay.
     let job = run(
-        r#"{"src": "mpt://far/", "dst": "mpt://farout/tree/", "options": {"recursive": true}}"#,
+        r#"{"src": "mpft://far/", "dst": "mpft://farout/tree/", "options": {"recursive": true}}"#,
     )
     .await;
     assert_eq!(job["state"], "done", "{job}\n{}", server.log());
@@ -740,7 +740,7 @@ async fn a_profiles_relay_serves_the_jobs_that_name_it() {
     );
 
     // Uploaded from here.
-    let job = run(r#"{"src": "mpt://src/up.bin", "dst": "mpt://farout/up/"}"#).await;
+    let job = run(r#"{"src": "mpft://src/up.bin", "dst": "mpft://farout/up/"}"#).await;
     assert_eq!(job["state"], "done", "{job}\n{}", server.log());
     assert_eq!(
         std::fs::read(far.path().join("out/up/up.bin")).unwrap(),
@@ -749,14 +749,14 @@ async fn a_profiles_relay_serves_the_jobs_that_name_it() {
 
     // What only this side has is refused before the job runs.
     let job = run(
-        r#"{"src": "mpt://far/a.bin", "dst": "mpt://farout/again/", "options": {"check": true}}"#,
+        r#"{"src": "mpft://far/a.bin", "dst": "mpft://farout/again/", "options": {"check": true}}"#,
     )
     .await;
     assert_eq!(job["state"], "failed", "{job}");
     assert_eq!(job["error"]["kind"], "invalid_option", "{job}");
     let message = job["error"]["message"].as_str().unwrap();
     assert!(message.contains("not available with a relay"), "{message}");
-    assert!(message.ends_with("copying mpt://far/a.bin"), "{message}");
+    assert!(message.ends_with("copying mpft://far/a.bin"), "{message}");
     assert!(!far.path().join("out/again").exists());
     assert!(!Path::new("in/a.bin").exists() && !Path::new("out").exists());
 

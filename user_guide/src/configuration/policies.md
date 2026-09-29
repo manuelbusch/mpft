@@ -24,7 +24,7 @@ Credentials that would travel unprotected [produce a
 warning](../trust/connections.md#credentials-in-the-clear).
 `refuse_plaintext_auth = true` makes that a refusal instead, before any
 connection is made; that page shows the message. `--refuse-plaintext-auth`
-and `MPT_REFUSE_PLAINTEXT_AUTH=1` do the same for one run, which shows what
+and `MPFT_REFUSE_PLAINTEXT_AUTH=1` do the same for one run, which shows what
 the policy would break before it is made permanent. Either of them holds even
 where the file says `refuse_plaintext_auth = false`.
 
@@ -51,7 +51,7 @@ answer is to fix the certificate or install the internal CA, since
 `known_hosts` sets the host-key policy for `sftp://` and `scp://`: `strict`,
 `accept-new` or `off`, as described under [SSH host
 keys](../trust/connections.md#ssh-host-keys). It is the default, and the
-least a run may ask for: a URL, a profile or `MPT_SSH_KNOWN_HOSTS` may choose a
+least a run may ask for: a URL, a profile or `MPFT_SSH_KNOWN_HOSTS` may choose a
 stricter policy, never a weaker one.
 
 ```
@@ -71,7 +71,7 @@ signature must be checked too. A `--check` without trusted keys then fails
 rather than settling for a bare checksum:
 
 ```
-$ mpt cp --check sftp://srv/in/report.pdf ./
+$ mpft cp --check sftp://srv/in/report.pdf ./
 error: policy.require_signature is set, but no trusted keys are given: use
        --verify-signers/--verify-keyring or [verify] in the configuration
 ```
@@ -84,7 +84,7 @@ run:
 require_signature = true
 
 [verify]
-allowed_signers = "~/.config/mpt/allowed_signers"
+allowed_signers = "~/.config/mpft/allowed_signers"
 ```
 
 It does not make checking mandatory; a plain `cp` is still a plain `cp`. It
@@ -121,12 +121,12 @@ the file is baked in.
 
 ## Where to put a policy
 
-For a person, `~/.config/mpt/config.toml` is the whole story.
+For a person, `~/.config/mpft/config.toml` is the whole story.
 
 For a service account, put the file where the account reads it and cannot edit
-it, and name it explicitly with `--config` or `$MPT_CONFIG`; see [where it is
+it, and name it explicitly with `--config` or `$MPFT_CONFIG`; see [where it is
 read from](file.md#where-it-is-read-from). A policy in a file the running user
-can rewrite is a reminder, not a control. `./mpt.toml` may add to a policy
+can rewrite is a reminder, not a control. `./mpft.toml` may add to a policy
 but [only make it stricter](file.md#the-file-in-the-working-directory), so a
 directory you are standing in cannot switch a rule off.
 
@@ -134,5 +134,5 @@ Because `[policy]` is process-wide, it applies to every endpoint of a run,
 including the ones a [profile](profiles.md) or a
 [job list](../guide/job-lists.md) named rather than you. The same holds for
 a process that runs other people's jobs: the policy of the machine that runs
-[`mpt serve`](../server/serve.md) covers every job it accepts, and the policy
+[`mpft serve`](../server/serve.md) covers every job it accepts, and the policy
 of a [relay](../server/relay.md) covers every target it delivers to.

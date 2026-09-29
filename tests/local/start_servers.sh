@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Start local test servers (no Docker needed) and print the MPT_IT_* variables
+# Start local test servers (no Docker needed) and print the MPFT_IT_* variables
 # for `cargo test --test integration`. Requires a Python venv with:
 #   pip install pyftpdlib pyopenssl aiosmtpd "moto[server]" wsgidav cheroot
 # Usage: bash tests/local/start_servers.sh <venv-dir> <work-dir>
 #        source <work-dir>/env.sh && cargo test --test integration
 # Stop:  bash tests/local/stop_servers.sh <work-dir>
 # The ports can be moved, to run a second set beside the first with a work
-# dir of its own: MPT_IT_PORT_FTP (2121), MPT_IT_PORT_FTPS (2122),
-# MPT_IT_PORT_SMTP (8025), MPT_IT_PORT_S3 (9000), MPT_IT_PORT_WEBDAV (8081),
-# MPT_IT_PORT_HTTP (8082), MPT_IT_PORT_SSH (2222).
+# dir of its own: MPFT_IT_PORT_FTP (2121), MPFT_IT_PORT_FTPS (2122),
+# MPFT_IT_PORT_SMTP (8025), MPFT_IT_PORT_S3 (9000), MPFT_IT_PORT_WEBDAV (8081),
+# MPFT_IT_PORT_HTTP (8082), MPFT_IT_PORT_SSH (2222).
 set -u
-FTP_PORT=${MPT_IT_PORT_FTP:-2121}; FTPS_PORT=${MPT_IT_PORT_FTPS:-2122}
-SMTP_PORT=${MPT_IT_PORT_SMTP:-8025}; S3_PORT=${MPT_IT_PORT_S3:-9000}
-WEBDAV_PORT=${MPT_IT_PORT_WEBDAV:-8081}; HTTP_PORT=${MPT_IT_PORT_HTTP:-8082}
-SSH_PORT=${MPT_IT_PORT_SSH:-2222}
+FTP_PORT=${MPFT_IT_PORT_FTP:-2121}; FTPS_PORT=${MPFT_IT_PORT_FTPS:-2122}
+SMTP_PORT=${MPFT_IT_PORT_SMTP:-8025}; S3_PORT=${MPFT_IT_PORT_S3:-9000}
+WEBDAV_PORT=${MPFT_IT_PORT_WEBDAV:-8081}; HTTP_PORT=${MPFT_IT_PORT_HTTP:-8082}
+SSH_PORT=${MPFT_IT_PORT_SSH:-2222}
 VENV=$(cd "${1:?venv dir}" && pwd); mkdir -p "${2:?work dir}"; WORK=$(cd "$2" && pwd); PY=$VENV/bin/python
 HERE=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$WORK"/{ftp,http,webdav,mail/tmp,mail/new,mail/cur,ssh,logs}
@@ -55,7 +55,7 @@ if [ ! -f ssh/host_key ]; then
   # certificate can let it in, which is what the cert test proves.
   ssh-keygen -q -t ed25519 -N "" -f ssh/ssh_ca
   ssh-keygen -q -t ed25519 -N "" -f ssh/cert_key
-  ssh-keygen -q -s ssh/ssh_ca -I mpt-test -n "$USER" -V -5m:+52w ssh/cert_key.pub
+  ssh-keygen -q -s ssh/ssh_ca -I mpft-test -n "$USER" -V -5m:+52w ssh/cert_key.pub
   SFTP=$(ls /usr/libexec/sftp-server /usr/lib/openssh/sftp-server /usr/lib/ssh/sftp-server 2>/dev/null | head -1)
   cat > ssh/sshd_config <<CFG
 Port 2222
@@ -80,7 +80,7 @@ start sshd $SSH_PORT /usr/sbin/sshd -f "$WORK/ssh/sshd_config" -p $SSH_PORT -D -
 # stop_servers.sh can stop it.
 AGENT_SOCK=$(cat agent.sock.path 2>/dev/null)
 if [ -z "$AGENT_SOCK" ] || [ ! -S "$AGENT_SOCK" ]; then
-  AGENT_SOCK=$(mktemp -d /tmp/mpt-agent.XXXXXX)/sock
+  AGENT_SOCK=$(mktemp -d /tmp/mpft-agent.XXXXXX)/sock
   echo "$AGENT_SOCK" > agent.sock.path
   nohup ssh-agent -D -a "$AGENT_SOCK" > logs/ssh-agent.log 2>&1 &
   echo $! > agent.pid
@@ -97,26 +97,26 @@ cat > env.sh <<ENV
 export AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_REGION=us-east-1
 # connect_retries: pyftpdlib duplicates its greeting on ~1.5 % of concurrent
 # connects (see ftp_server.py), which desynchronizes that one control channel.
-export MPT_IT_FTP="ftp://ftpuser:ftppass@127.0.0.1:$FTP_PORT/?connect_retries=1"
-export MPT_IT_FTPS="ftps://ftpuser:ftppass@127.0.0.1:$FTPS_PORT/?insecure=true&connect_retries=1"
-export MPT_IT_HTTP="http://127.0.0.1:$HTTP_PORT/"
-export MPT_IT_WEBDAV="webdav://127.0.0.1:$WEBDAV_PORT/"
-export MPT_IT_S3="s3://testbucket/it/?endpoint=http://127.0.0.1:$S3_PORT"
-export MPT_IT_MAILTO="mailto:dest@example.com?from=sender@example.com"
-export MPT_SMTP_URL="smtp://127.0.0.1:$SMTP_PORT/?tls=none"
-export MPT_IT_MAILDIR="$WORK/mail"
+export MPFT_IT_FTP="ftp://ftpuser:ftppass@127.0.0.1:$FTP_PORT/?connect_retries=1"
+export MPFT_IT_FTPS="ftps://ftpuser:ftppass@127.0.0.1:$FTPS_PORT/?insecure=true&connect_retries=1"
+export MPFT_IT_HTTP="http://127.0.0.1:$HTTP_PORT/"
+export MPFT_IT_WEBDAV="webdav://127.0.0.1:$WEBDAV_PORT/"
+export MPFT_IT_S3="s3://testbucket/it/?endpoint=http://127.0.0.1:$S3_PORT"
+export MPFT_IT_MAILTO="mailto:dest@example.com?from=sender@example.com"
+export MPFT_SMTP_URL="smtp://127.0.0.1:$SMTP_PORT/?tls=none"
+export MPFT_IT_MAILDIR="$WORK/mail"
 # connect_retries: under a burst of parallel tests the user-level sshd
 # occasionally resets a connection before authentication; one retry absorbs it.
-export MPT_IT_SFTP="sftp://$USER@127.0.0.1:$SSH_PORT/$WORK/ssh/data/?key=$WORK/ssh/client_key&known_hosts=off&connect_retries=1"
+export MPFT_IT_SFTP="sftp://$USER@127.0.0.1:$SSH_PORT/$WORK/ssh/data/?key=$WORK/ssh/client_key&known_hosts=off&connect_retries=1"
 # A directory of its own: sftp and scp targets in one fan-out would otherwise
-# write the same file (including the same .mpt-part) at the same time.
-export MPT_IT_SCP="scp://$USER@127.0.0.1:$SSH_PORT/$WORK/ssh/scp/?key=$WORK/ssh/client_key&known_hosts=off&connect_retries=1"
+# write the same file (including the same .mpft-part) at the same time.
+export MPFT_IT_SCP="scp://$USER@127.0.0.1:$SSH_PORT/$WORK/ssh/scp/?key=$WORK/ssh/client_key&known_hosts=off&connect_retries=1"
 # Certificate authentication: cert_key is not in authorized_keys, so this URL
 # only works if the certificate is presented.
-export MPT_IT_SFTP_CERT="sftp://$USER@127.0.0.1:$SSH_PORT/$WORK/ssh/data/?key=$WORK/ssh/cert_key&cert=$WORK/ssh/cert_key-cert.pub&known_hosts=off"
+export MPFT_IT_SFTP_CERT="sftp://$USER@127.0.0.1:$SSH_PORT/$WORK/ssh/data/?key=$WORK/ssh/cert_key&cert=$WORK/ssh/cert_key-cert.pub&known_hosts=off"
 # An agent that holds cert_key together with its certificate.
-export MPT_IT_SSH_AGENT="$AGENT_SOCK"
-export MPT_IT_SSH_HOSTKEY="$(ssh-keygen -lf "$WORK/ssh/host_key.pub" | cut -d' ' -f2)"
+export MPFT_IT_SSH_AGENT="$AGENT_SOCK"
+export MPFT_IT_SSH_HOSTKEY="$(ssh-keygen -lf "$WORK/ssh/host_key.pub" | cut -d' ' -f2)"
 ENV
 echo "servers started; logs in $WORK/logs"
 echo "next: source $WORK/env.sh && cargo test --test integration"

@@ -40,8 +40,8 @@ kind `remote`.
 code is used; otherwise the result is 1.
 
 ```
-mpt cp report.pdf sftp://a/ sftp://b/     # both refuse the password  → 4
-mpt cp report.pdf sftp://a/ sftp://b/     # one refuses, one times out → 1
+mpft cp report.pdf sftp://a/ sftp://b/     # both refuse the password  → 4
+mpft cp report.pdf sftp://a/ sftp://b/     # one refuses, one times out → 1
 ```
 
 **A batch** applies the same rule over its jobs, counting each failed job by
@@ -59,7 +59,7 @@ which is usually 2.
 the batch rule over jobs. A relay that could not be reached or logged into
 counts as a failed job with code 4 or 1, like any other endpoint.
 
-**`mpt serve` and `mpt relay --listen`** exit 0 after Ctrl-C or `SIGTERM`,
+**`mpft serve` and `mpft relay --listen`** exit 0 after Ctrl-C or `SIGTERM`,
 whatever the jobs they were running did (130 after a third one, which does not
 wait for them); those outcomes are in the API and in the log.
 
@@ -98,7 +98,7 @@ failure count as consequences, not as failures of their own. 130 is reserved
 for a run that was interrupted, so a script can tell the two apart.
 
 ```
-$ mpt cp --fail-fast --parallel 1 -t wall/ a b ; echo $?    # wall is a file
+$ mpft cp --fail-fast --parallel 1 -t wall/ a b ; echo $?    # wall is a file
 [1/2] FAILED copy a -> wall/: I/O error: Not a directory (os error 20)
 [2/2] FAILED b: cancelled
 0/2 jobs ok in 7.78ms (stopped after the first failure)

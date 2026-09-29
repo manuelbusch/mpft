@@ -1,6 +1,6 @@
 # Security overview
 
-What `mpt` trusts, what it checks, where a secret is at each moment, and what
+What `mpft` trusts, what it checks, where a secret is at each moment, and what
 ends up in a log. Every fact here is explained in full on another page; this
 page is the map for a review.
 
@@ -8,11 +8,11 @@ page is the map for a review.
 
 | Party | Sees | Never sees |
 |---|---|---|
-| **the client** (`mpt cp`, `batch`) | every URL, every resolved credential, the file | — |
+| **the client** (`mpft cp`, `batch`) | every URL, every resolved credential, the file | — |
 | **a relay** (`cp --via`) | the targets, the file as it passes, and either the passwords for the length of the transfer (`header`) or one password for the length of one login (`on-demand`) | a key file; with `on-demand`, a password between logins |
 | **a client of a relay** | what the relay's own profiles reach, named as they are; any other host with the credentials the client brings | the relay's disk (unless `--allow-local`), the relay's SSH keys and agent (unless `--own-keys`), its `?options` on a profile, its configuration errors in detail |
 | **a second relay** in a chain | its own target and the file; its questions go back through the first relay | anything about the other targets |
-| **the server** (`mpt serve`) | the profiles it is allowed to use, with their credentials, as the server's own user | a password from a client, unless `urls = "any"` is set |
+| **the server** (`mpft serve`) | the profiles it is allowed to use, with their credentials, as the server's own user | a password from a client, unless `urls = "any"` is set |
 | **a client of the server** | job states, progress and reports, with endpoints named as submitted | what a profile resolves to, why a provider failed |
 | **a target** | what its protocol sends: the file, the checksum file, the credentials for that endpoint | anything about the other targets |
 
@@ -50,8 +50,8 @@ message.
 
 | Stage | Where the secret is | How long |
 |---|---|---|
-| on the command line (`--password`, `user:pw@host`) | the argument list: `ps`, shell history | the process, and beyond it — which is why `mpt` warns |
-| `--password-stdin`, `--password-file`, `MPT_PASSWORD` | the process only | the run |
+| on the command line (`--password`, `user:pw@host`) | the argument list: `ps`, shell history | the process, and beyond it — which is why `mpft` warns |
+| `--password-stdin`, `--password-file`, `MPFT_PASSWORD` | the process only | the run |
 | a [credential reference](../configuration/credentials.md) | not in the file: an environment variable, a file, a command's output, the OS key store, Vault | fetched when the endpoint is used; a command's answer is kept ten minutes by default |
 | in memory | a type that redacts itself in debug output and overwrites its memory when dropped | until no endpoint needs it |
 | in a log line or an error | masked as `***` | — |
@@ -89,17 +89,17 @@ line format.
   and its targets, with two exceptions: an SCP target whose source cannot
   say its size spools to a temporary file (unless `--cache` holds it in
   memory), and a mail target assembles the message in memory.
-- A target being written holds `<name>.mpt-part` until the transfer is
+- A target being written holds `<name>.mpft-part` until the transfer is
   complete; a failed transfer removes it, `--resume` keeps it.
 - A relay keeps nothing: no spool, no part of a file after the session, no
   password between logins in `on-demand` mode. Its host key is generated
-  once under `~/.local/state/mpt/`.
+  once under `~/.local/state/mpft/`.
 - The server keeps jobs in memory, and in a journal file only when one is
   configured.
 
 ## Hardening checklist
 
-For a machine that runs `mpt` unattended, or for anyone else's jobs:
+For a machine that runs `mpft` unattended, or for anyone else's jobs:
 
 | Setting | Effect | Page |
 |---|---|---|
@@ -110,10 +110,10 @@ For a machine that runs `mpt` unattended, or for anyone else's jobs:
 | `[policy] strict_permissions = true` | a readable file with credentials is an error | [Strict file permissions](../configuration/policies.md#strict-file-permissions) |
 | the configuration where the account cannot rewrite it, named with `--config` | a policy is a control, not a suggestion | [Where to put a policy](../configuration/policies.md#where-to-put-a-policy) |
 | `--via-credentials on-demand`, the forwarded agent left on | a relay holds one password per login and no key | [Passwords on demand](../server/relay.md#passwords-in-the-header-or-asked-for-at-every-login) |
-| `mpt relay --credentials on-demand` | the relay refuses clients that would send passwords in the header | [Running a relay](../server/relay-host.md) |
-| `mpt relay` without `--cache`, with `--timeout` and `--max-entries` | a client cannot pin the relay's memory, hold a slot for ever or have a huge directory listed | [Running a relay](../server/relay-host.md#on-the-relay-host) |
-| `mpt serve` without `--cache`, with `--timeout` | the same for a job of the server | [What a job may set](../server/serve.md#what-a-job-may-set) |
-| `command="mpt relay",restrict,agent-forwarding` in `authorized_keys` | a relay account under `sshd` can do nothing else | [Through an existing sshd](../server/relay-host.md#through-an-existing-sshd) |
+| `mpft relay --credentials on-demand` | the relay refuses clients that would send passwords in the header | [Running a relay](../server/relay-host.md) |
+| `mpft relay` without `--cache`, with `--timeout` and `--max-entries` | a client cannot pin the relay's memory, hold a slot for ever or have a huge directory listed | [Running a relay](../server/relay-host.md#on-the-relay-host) |
+| `mpft serve` without `--cache`, with `--timeout` | the same for a job of the server | [What a job may set](../server/serve.md#what-a-job-may-set) |
+| `command="mpft relay",restrict,agent-forwarding` in `authorized_keys` | a relay account under `sshd` can do nothing else | [Through an existing sshd](../server/relay-host.md#through-an-existing-sshd) |
 | `[server] urls = "profiles"` (the default) and `profiles = […]` | the API reaches only the named profiles, and no request carries a password | [What a client can reach](../server/serve.md#what-a-client-can-reach) |
 | the server behind a reverse proxy with TLS | the token never crosses the network in the clear | [Securing the listener](../server/serve.md#securing-the-listener) |
 | `[server] allow_delete` left off | no job may delete its source | [What a job may set](../server/serve.md#what-a-job-may-set) |
@@ -121,7 +121,7 @@ For a machine that runs `mpt` unattended, or for anyone else's jobs:
 | `[relay] own_keys` left off | the relay's own SSH keys and agent never log in to a host a client names | [Trust](../server/relay-host.md#trust) |
 | `[relay] local_files` left off | a client reaches the relay's disk only through the relay's own profiles | [Trust](../server/relay-host.md#trust) |
 
-A [`./mpt.toml`](../configuration/file.md#the-file-in-the-working-directory)
+A [`./mpft.toml`](../configuration/file.md#the-file-in-the-working-directory)
 in the working directory cannot loosen any of this: it contributes only
 `[defaults]` and `[policy]`, never a profile, a credential command, a relay
 or `delete_source`.

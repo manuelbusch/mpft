@@ -268,7 +268,7 @@ pub struct TransferSnapshot {
     pub index: usize,
     /// `<job id>:<index>`.
     pub id: String,
-    /// The source as it was submitted: the `mpt://` reference (with the
+    /// The source as it was submitted: the `mpft://` reference (with the
     /// matched file in place of a pattern), or a full URL with its
     /// password masked.
     pub src: String,
@@ -452,17 +452,17 @@ mod tests {
     fn operator_errors_are_kept_from_the_client() {
         let e = ApiError::client_safe(
             &Error::Config("profile 'p' points at /secret/place".into()),
-            "mpt://p/x",
+            "mpft://p/x",
         );
         assert_eq!(e.kind, "config");
         assert!(!e.message.contains("/secret"), "{}", e.message);
         assert!(e.message.contains("profile 'p'"), "{}", e.message);
         let e = ApiError::client_safe(
             &Error::Auth("password of profile 'p': `op read x`".into()),
-            "mpt://p/",
+            "mpft://p/",
         );
         assert!(!e.message.contains("op read"), "{}", e.message);
-        let e = ApiError::client_safe(&Error::Remote("gone".into()), "mpt://p/");
+        let e = ApiError::client_safe(&Error::Remote("gone".into()), "mpft://p/");
         assert_eq!(e.message, "remote error: gone");
     }
 

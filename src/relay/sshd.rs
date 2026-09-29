@@ -1,5 +1,5 @@
 //! The relay's own SSH server: a host key, an `authorized_keys` file, and
-//! nothing but `exec "mpt relay"` on a session channel. No shell, no port
+//! nothing but `exec "mpft relay"` on a session channel. No shell, no port
 //! forwarding, no sftp — a client that is in the file may relay, and that
 //! is all. The user name of the login is not looked at: the key decides,
 //! as the file has no accounts to tell apart, and the name is only logged.
@@ -33,7 +33,7 @@ pub const MAX_SESSIONS_PER_CONNECTION: usize = 4;
 /// allows by default, enough for a client that offers several keys.
 const MAX_AUTH_ATTEMPTS: usize = 6;
 
-/// What `mpt relay --listen` needs.
+/// What `mpft relay --listen` needs.
 #[derive(Debug, Clone)]
 pub struct Listener {
     /// Address to listen on; port 0 picks a free one, see `port_file`.
@@ -254,13 +254,13 @@ impl Handler for Connection {
         data: &[u8],
         session: &mut Session,
     ) -> std::result::Result<(), Self::Error> {
-        // `mpt relay`, the program possibly by its path; nothing else runs
+        // `mpft relay`, the program possibly by its path; nothing else runs
         // here, and no argument is taken.
         let command = String::from_utf8_lossy(data);
         let words: Vec<&str> = command.split_whitespace().collect();
         let is_relay = matches!(
             words.as_slice(),
-            [program, "relay"] if *program == "mpt" || program.ends_with("/mpt")
+            [program, "relay"] if *program == "mpft" || program.ends_with("/mpft")
         );
         if is_relay {
             self.start(channel, session)
@@ -276,7 +276,7 @@ impl Handler for Connection {
         name: &str,
         session: &mut Session,
     ) -> std::result::Result<(), Self::Error> {
-        if name == "mpt" {
+        if name == "mpft" {
             self.start(channel, session)
         } else {
             debug!(peer = %self.peer, name, "subsystem refused");
@@ -651,11 +651,11 @@ mod tests {
         for (command, runs) in [
             ("ls", false),
             ("xmpt relay", false),
-            ("mpt relay --allow-delete", false),
-            ("mpt relay; ls", false),
-            ("mpt", false),
-            ("/usr/local/bin/mpt relay", true),
-            ("mpt relay", true),
+            ("mpft relay --allow-delete", false),
+            ("mpft relay; ls", false),
+            ("mpft", false),
+            ("/usr/local/bin/mpft relay", true),
+            ("mpft relay", true),
         ] {
             assert_eq!(exec(&f, command).await, runs, "{command}");
         }
@@ -697,7 +697,7 @@ mod tests {
         f.cancel.cancel();
         let Fixture { task, dir, .. } = f;
         task.await.unwrap().unwrap();
-        channel.exec(true, "mpt relay").await.unwrap();
+        channel.exec(true, "mpft relay").await.unwrap();
         let mut refused = false;
         while let Some(msg) = channel.wait().await {
             match msg {
@@ -847,7 +847,7 @@ mod tests {
             let channel = handle.channel_open_session().await.unwrap();
             // Started (`exec` waits for the channel reply), so it holds a
             // place; the header never comes.
-            channel.exec(true, "mpt relay").await.unwrap();
+            channel.exec(true, "mpft relay").await.unwrap();
             held.push(channel);
         }
         assert!(

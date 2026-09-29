@@ -4,7 +4,7 @@
 //! the client, and they stay there: the client forwards an agent over the
 //! session, and this is that agent. It answers `REQUEST_IDENTITIES` with
 //! the keys the client would have used for the targets — the target's own
-//! `?key=` (with its certificate), `[ssh] key`, `MPT_SSH_KEY`, the default
+//! `?key=` (with its certificate), `[ssh] key`, `MPFT_SSH_KEY`, the default
 //! files in `~/.ssh` — plus whatever the client's real agent holds, and it
 //! signs with the former and hands signing for the latter on. It signs
 //! SSH logins only: data that is not a public-key authentication request
