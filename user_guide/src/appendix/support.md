@@ -2,11 +2,8 @@
 
 ## Licence
 
-`mpft` is free software under either the MIT licence or the Apache License,
-Version 2.0, at your option — the arrangement most of the Rust ecosystem uses,
-so it combines with either family of licences without a conflict. The full
-texts are `LICENSE-MIT` and `LICENSE-APACHE` at the root of the repository,
-and `Cargo.toml` records the same choice as `MIT OR Apache-2.0`. Every
+`mpft` is free software under the MIT licence. The full text is `LICENSE` at
+the root of the repository, and `Cargo.toml` records it as `MIT`. Every
 dependency is listed in `Cargo.lock` with its version; their licences are
 their own, and a build has them at hand:
 

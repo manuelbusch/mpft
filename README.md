@@ -90,4 +90,4 @@ that would slot in next are listed there too.
 
 ## Licence
 
-MIT or Apache-2.0, at your option; see `LICENSE-MIT` and `LICENSE-APACHE`.
+MIT; see `LICENSE`.

@@ -6,7 +6,7 @@ edition = "2024"
 # aes need 1.89, the crate itself would build on less.
 rust-version = "1.89"
 description = "Send and receive files over many protocols, addressed by URL prefix (sftp://, ftps://, s3://, mailto:, ...)"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 
 [lib]
 name = "mpft"
